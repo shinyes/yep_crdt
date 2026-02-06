@@ -216,7 +216,3 @@ exists := mm.Exists("user")
 | `From(rootID).Update().InsertAt(path, prevID, val).Commit()` | 在序列指定位置插入 |
 | `From(rootID).Update().RemoveAt(path, elemID).Commit()` | 从序列移除元素 |
 | `From(rootID).GetSequence(path)` | 获取序列（带元素 ID）|
-
-## License
-
-MIT
