@@ -819,16 +819,16 @@ func (uq *UpdateQuery) findMap(root crdt.CRDT, path string) (*crdt.MapCRDT, erro
 	return mapC, nil
 }
 
-// GetContent 检索 ImmutableFile 根节点的文件内容。
+// GetContent 检索 LocalFile 根节点的文件内容。
 func (q *Query) GetContent() ([]byte, error) {
 	root, err := q.m.GetRoot(q.rootID)
 	if err != nil {
 		return nil, err
 	}
 
-	fRoot, ok := root.(*crdt.ImmutableFile)
+	fRoot, ok := root.(*crdt.LocalFile)
 	if !ok {
-		return nil, fmt.Errorf("根节点不是不可变文件")
+		return nil, fmt.Errorf("根节点不是本地文件")
 	}
 
 	val := fRoot.Value()

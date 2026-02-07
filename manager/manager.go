@@ -110,9 +110,9 @@ func (m *Manager) makeCRDT(id string, typ crdt.Type) (crdt.CRDT, error) {
 	return crdt.Factory.NewCRDT(id, typ)
 }
 
-// CreateImmutableFile 创建一个已注册的文件。
-// 它读取本地文件，将其存储在 BlobStore 中，并创建一个 ImmutableFile CRDT。
-func (m *Manager) CreateImmutableFile(rootID string, localPath string) (*crdt.ImmutableFile, error) {
+// CreateLocalFile 创建一个已注册的文件。
+// 它读取本地文件，将其存储在 BlobStore 中，并创建一个 LocalFile CRDT。
+func (m *Manager) CreateLocalFile(rootID string, localPath string) (*crdt.LocalFile, error) {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
 		return nil, err
@@ -134,7 +134,7 @@ func (m *Manager) CreateImmutableFile(rootID string, localPath string) (*crdt.Im
 		MimeType:  "application/octet-stream", // 需要探测逻辑？
 	}
 
-	c := crdt.NewImmutableFile(meta)
+	c := crdt.NewLocalFile(meta)
 	m.mu.Lock()
 	defer m.mu.Unlock() // 确保锁释放
 
@@ -143,7 +143,7 @@ func (m *Manager) CreateImmutableFile(rootID string, localPath string) (*crdt.Im
 	// 持久化元数据
 	rootMeta := &RootMetadata{
 		ID:        rootID,
-		Type:      crdt.TypeImmutableFile,
+		Type:      crdt.TypeLocalFile,
 		CreatedAt: time.Now().Unix(),
 	}
 	if err := m.SaveRootMetadata(rootMeta); err != nil {
@@ -156,8 +156,8 @@ func (m *Manager) CreateImmutableFile(rootID string, localPath string) (*crdt.Im
 	return c, nil
 }
 
-func (m *Manager) CreateFileRoot(rootID string, localPath string) (*crdt.ImmutableFile, error) {
-	return m.CreateImmutableFile(rootID, localPath)
+func (m *Manager) CreateFileRoot(rootID string, localPath string) (*crdt.LocalFile, error) {
+	return m.CreateLocalFile(rootID, localPath)
 }
 
 func (m *Manager) GetRoot(id string) (crdt.CRDT, error) {

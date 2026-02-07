@@ -100,7 +100,7 @@ func TestManagerAndPersistence(t *testing.T) {
 	}
 }
 
-func TestImmutableFileAndFetch(t *testing.T) {
+func TestLocalFileAndFetch(t *testing.T) {
 	dbPath := "./test_db_file"
 	blobPath := "./test_blobs_file"
 	os.RemoveAll(dbPath)
@@ -120,7 +120,7 @@ func TestImmutableFileAndFetch(t *testing.T) {
 	os.WriteFile(tmpFile, content, 0644)
 	defer os.Remove(tmpFile)
 
-	fileRoot, err := m.CreateImmutableFile("file1", tmpFile)
+	fileRoot, err := m.CreateLocalFile("file1", tmpFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,10 +155,10 @@ func TestImmutableFileAndFetch(t *testing.T) {
 	}()
 
 	// 将 CRDT 状态同步到 m2 (模拟同步)
-	op := crdt.NewImmutableFileOp("origin", meta, time.Now().UnixNano())
+	op := crdt.NewLocalFileOp("origin", meta, time.Now().UnixNano())
 
 	// 手动创建根节点并应用操作
-	root2, err := m2.CreateRoot("file1", crdt.TypeImmutableFile)
+	root2, err := m2.CreateRoot("file1", crdt.TypeLocalFile)
 	if err != nil {
 		t.Fatalf("创建根节点失败: %v", err)
 	}

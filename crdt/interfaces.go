@@ -9,7 +9,7 @@ const (
 	TypeRegister
 	TypeSequence
 	TypeMap
-	TypeImmutableFile
+	TypeLocalFile
 )
 
 // Op 表示对 CRDT 的操作。

@@ -21,8 +21,8 @@ func (f *CRDTFactory) NewCRDT(id string, typ Type) (CRDT, error) {
 		return NewMapCRDT(), nil
 	case TypeSequence:
 		return NewRGA(), nil
-	case TypeImmutableFile:
-		return &ImmutableFile{Register: NewLWWRegister(FileMetadata{}, 0)}, nil
+	case TypeLocalFile:
+		return &LocalFile{Register: NewLWWRegister(FileMetadata{}, 0)}, nil
 	case TypeRegister:
 		return NewLWWRegister(nil, 0), nil
 	default:
@@ -58,7 +58,7 @@ func (r *OpRegistry) UnmarshalOp(typ Type, data []byte) (Op, error) {
 		}
 		return o, nil
 
-	case TypeRegister, TypeImmutableFile:
+	case TypeRegister, TypeLocalFile:
 		var o LWWOp
 		if err := json.Unmarshal(data, &o); err != nil {
 			return nil, fmt.Errorf("反序列化 LWWOp 失败: %w", err)

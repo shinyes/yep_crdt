@@ -10,7 +10,7 @@ Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data 
   - `RGA`: 复制可增长数组 (Replicated Growable Array)，用于序列/文本编辑
   - `LWWRegister`: 最后写入胜出寄存器
   - `Map`: 嵌套映射支持
-  - `ImmutableFile`: 不可变文件同步
+  - `LocalFile`: 本地文件同步
 - **持久化存储**：集成 BadgerDB 进行数据持久化。
 - **Blob 存储**：支持大文件（Blob）的存储与检索。
 - **同步机制**：支持基于 Delta 的状态同步。
