@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/shinyes/yep_crdt/crdt"
+	"github.com/shinyes/yep_crdt/sync"
 )
 
 // 持久化助手
@@ -124,4 +125,37 @@ func (m *Manager) LoadOps(rootID string, fromTs int64) ([]crdt.Op, error) {
 		return nil, err
 	}
 	return ops, nil
+}
+
+// SaveVersionVector 保存根节点的版本向量到持久化存储。
+func (m *Manager) SaveVersionVector(rootID string, vc sync.VectorClock) error {
+	data := vc.Bytes()
+	key := []byte(fmt.Sprintf("vc/%s", rootID))
+	return m.store.Set(key, data)
+}
+
+// LoadVersionVector 从持久化存储加载根节点的版本向量。
+// 如果不存在，返回一个空的版本向量。
+func (m *Manager) LoadVersionVector(rootID string) (sync.VectorClock, error) {
+	key := []byte(fmt.Sprintf("vc/%s", rootID))
+	data, err := m.store.Get(key)
+	if err != nil {
+		// 如果不存在，返回空的版本向量
+		return sync.NewVectorClock(), nil
+	}
+	return sync.FromBytes(data)
+}
+
+// UpdateVersionVector 使用操作更新版本向量并保存。
+// 这应该在 SaveOp 后调用。
+func (m *Manager) UpdateVersionVector(rootID string, op crdt.Op) error {
+	vc, err := m.LoadVersionVector(rootID)
+	if err != nil {
+		return err
+	}
+
+	// 记录此操作
+	vc.RecordOp(op.Origin(), uint64(op.Timestamp()))
+
+	return m.SaveVersionVector(rootID, vc)
 }
