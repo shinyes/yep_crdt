@@ -7,30 +7,7 @@ import (
 	"github.com/shinyes/yep_crdt/crdt"
 )
 
-func TestGCounter(t *testing.T) {
-	g := crdt.NewGCounter("node1")
-
-	// 本地增加
-	op1 := crdt.GCounterOp{OriginID: "node1", Amount: 5, Ts: time.Now().UnixNano()}
-	g.Apply(op1)
-
-	if val := g.Value().(int64); val != 5 {
-		t.Errorf("期望值为 5，实际为 %d", val)
-	}
-
-	// 远程增加
-	op2 := crdt.GCounterOp{OriginID: "node2", Amount: 10, Ts: time.Now().UnixNano()}
-	g.Apply(op2)
-
-	if val := g.Value().(int64); val != 15 {
-		t.Errorf("期望值为 15，实际为 %d", val)
-	}
-
-	// 幂等性（G-Counter 状态合并通常处理此问题，但这里应用的是 Op。
-	// 我们的简单 Op 实现只是相加。实际的同步应该过滤掉重复项！）
-	// 对于当前测试，假设 Ops 对应唯一的增量。
-}
-
+// TestPNCounter 测试 PNCounter 的基本操作（增加和减少）。
 func TestPNCounter(t *testing.T) {
 	pn := crdt.NewPNCounter("node1")
 
@@ -48,6 +25,28 @@ func TestPNCounter(t *testing.T) {
 	}
 }
 
+// TestPNCounterIncrease 测试 PNCounter 的纯增加操作。
+func TestPNCounterIncrease(t *testing.T) {
+	pn := crdt.NewPNCounter("node1")
+
+	// 本地增加
+	op1 := crdt.PNCounterOp{OriginID: "node1", Amount: 5, Ts: time.Now().UnixNano()}
+	pn.Apply(op1)
+
+	if val := pn.Value().(int64); val != 5 {
+		t.Errorf("期望值为 5，实际为 %d", val)
+	}
+
+	// 远程增加
+	op2 := crdt.PNCounterOp{OriginID: "node2", Amount: 10, Ts: time.Now().UnixNano()}
+	pn.Apply(op2)
+
+	if val := pn.Value().(int64); val != 15 {
+		t.Errorf("期望值为 15，实际为 %d", val)
+	}
+}
+
+// TestPNCounterMerge 测试 PNCounter 的状态合并。
 func TestPNCounterMerge(t *testing.T) {
 	// 创建两个独立的 PNCounter（模拟两个节点）
 	pn1 := crdt.NewPNCounter("node1")

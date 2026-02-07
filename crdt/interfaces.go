@@ -10,7 +10,6 @@ const (
 	TypeSequence
 	TypeMap
 	TypeImmutableFile
-	TypePNCounter
 )
 
 // Op 表示对 CRDT 的操作。

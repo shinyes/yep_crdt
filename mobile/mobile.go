@@ -163,14 +163,8 @@ func (mq *MobileQuery) GetString(path string) (string, error) {
 	}
 }
 
-// CreateCounterRoot 创建一个新的 Counter 类型的根节点（PNCounter，支持增减）。
+// CreateCounterRoot 创建一个新的 Counter 类型的根节点（支持增减）。
 func (mm *MobileManager) CreateCounterRoot(id string) error {
-	_, err := mm.m.CreateRoot(id, crdt.TypePNCounter)
-	return err
-}
-
-// CreateGCounterRoot 创建一个新的 GCounter 类型的根节点（仅支持增加）。
-func (mm *MobileManager) CreateGCounterRoot(id string) error {
 	_, err := mm.m.CreateRoot(id, crdt.TypeCounter)
 	return err
 }

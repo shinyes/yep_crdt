@@ -204,7 +204,7 @@ func (m *Manager) GetRoot(id string) (crdt.CRDT, error) {
 
 	// 如果是从快照加载，可能只需要应用部分？
 	// 目前 CRDT Apply 是幂等的吗？
-	// GCounter: Idempotent map update? Yes, max(old, new).
+	// PNCounter: Idempotent map update? Yes, max(old, new).
 	// ORSet: Idempotent? Yes, add/rem set wins.
 	// RGA: Idempotent? InsertAt keys. Since OpID is unique and we check existence usually?
 	// RGA 实现通常检查是否已应用。

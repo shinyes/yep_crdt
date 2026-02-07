@@ -198,17 +198,12 @@ func (uq *UpdateQuery) Inc(path string, amount int64) *UpdateQuery {
 
 	child := parent.GetChild(key)
 	if child == nil {
-		// 初始化 Counter
-		initType := crdt.TypeCounter
-		if amount < 0 {
-			initType = crdt.TypePNCounter
-		}
-
+		// 初始化 Counter（现在所有计数器都是 PNCounter，支持增减）
 		initOp := crdt.MapOp{
 			OriginID: uq.m.NodeID(),
 			Key:      key,
 			IsInit:   true,
-			InitType: initType,
+			InitType: crdt.TypeCounter,
 			Ts:       uq.m.NextTimestamp(),
 		}
 		if err := parent.Apply(initOp); err != nil {
@@ -233,16 +228,6 @@ func (uq *UpdateQuery) Inc(path string, amount int64) *UpdateQuery {
 	var op crdt.Op
 	switch child.Type() {
 	case crdt.TypeCounter:
-		if amount < 0 {
-			uq.err = fmt.Errorf("GCounter 不能减少，请使用负数初始化以创建 PNCounter")
-			return uq
-		}
-		op = crdt.GCounterOp{
-			OriginID: uq.m.NodeID(),
-			Amount:   amount,
-			Ts:       uq.m.NextTimestamp(),
-		}
-	case crdt.TypePNCounter:
 		op = crdt.PNCounterOp{
 			OriginID: uq.m.NodeID(),
 			Amount:   amount,

@@ -5,8 +5,7 @@ Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data 
 ## 功能特性
 
 - **多种 CRDT 类型支持**：
-  - `GCounter`: 增长计数器（只增）
-  - `PNCounter`: 正负计数器（支持增减）
+  - `PNCounter`: 支持增减的计数器
   - `ORSet`: 观察-移除集合 (Observed-Remove Set)
   - `RGA`: 复制可增长数组 (Replicated Growable Array)，用于序列/文本编辑
   - `LWWRegister`: 最后写入胜出寄存器
@@ -27,7 +26,7 @@ Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data 
 go get github.com/shinyes/yep_crdt
 ```
 
-### 基本示例：GCounter
+### 基本示例：PNCounter
 
 ```go
 package main
@@ -39,44 +38,26 @@ import (
 
 func main() {
     // 创建两个副本的计数器
-    c1 := crdt.NewGCounter("node1")
-    c2 := crdt.NewGCounter("node2")
+    c1 := crdt.NewPNCounter("node1")
+    c2 := crdt.NewPNCounter("node2")
 
     // Node 1 增加 10
-    c1.Apply(crdt.GCounterOp{OriginID: "node1", Amount: 10})
+    c1.Apply(crdt.PNCounterOp{OriginID: "node1", Amount: 10})
 
-    // Node 2 增加 5
-    c2.Apply(crdt.GCounterOp{OriginID: "node2", Amount: 5})
+    // Node 2 增加 5，减少 2
+    c2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: 5})
+    c2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: -2})
 
     // 合并状态 (也就是同步)
     c1.Merge(c2.State())
     c2.Merge(c1.State())
 
-    fmt.Printf("Node 1 Value: %v\n", c1.Value()) // Output: 15
-    fmt.Printf("Node 2 Value: %v\n", c2.Value()) // Output: 15
+    fmt.Printf("Node 1 Value: %v\n", c1.Value()) // Output: 13
+    fmt.Printf("Node 2 Value: %v\n", c2.Value()) // Output: 13
 }
 ```
 
-### PNCounter 示例（支持增减）
 
-```go
-pn1 := crdt.NewPNCounter("node1")
-pn2 := crdt.NewPNCounter("node2")
-
-// Node 1: +10, -3
-pn1.Apply(crdt.PNCounterOp{OriginID: "node1", Amount: 10})
-pn1.Apply(crdt.PNCounterOp{OriginID: "node1", Amount: -3})
-
-// Node 2: +5, -2
-pn2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: 5})
-pn2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: -2})
-
-// 双向合并后两者一致
-pn1.Merge(pn2.State())
-pn2.Merge(pn1.State())
-
-fmt.Printf("Value: %v\n", pn1.Value()) // 10
-```
 
 ### Query API 示例
 
@@ -182,8 +163,7 @@ exists := mm.Exists("user")
 
 | 类型 | 描述 | 创建方法 |
 |------|------|----------|
-| GCounter | 只增计数器 | `crdt.NewGCounter(id)` |
-| PNCounter | 正负计数器 | `crdt.NewPNCounter(id)` |
+| PNCounter | 支持增减的计数器 | `crdt.NewPNCounter(id)` |
 | ORSet | 观察-移除集合 | `crdt.NewORSet()` |
 | RGA | 复制可增长数组 | `crdt.NewRGA()` |
 | LWWRegister | 最后写入胜出寄存器 | `crdt.NewLWWRegister(val, ts)` |

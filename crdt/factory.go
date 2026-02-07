@@ -14,8 +14,6 @@ type CRDTFactory struct{}
 func (f *CRDTFactory) NewCRDT(id string, typ Type) (CRDT, error) {
 	switch typ {
 	case TypeCounter:
-		return NewGCounter(id), nil
-	case TypePNCounter:
 		return NewPNCounter(id), nil
 	case TypeSet:
 		return NewORSet(), nil
@@ -41,13 +39,6 @@ type OpRegistry struct{}
 func (r *OpRegistry) UnmarshalOp(typ Type, data []byte) (Op, error) {
 	switch typ {
 	case TypeCounter:
-		var o GCounterOp
-		if err := json.Unmarshal(data, &o); err != nil {
-			return nil, fmt.Errorf("反序列化 GCounterOp 失败: %w", err)
-		}
-		return o, nil
-
-	case TypePNCounter:
 		var o PNCounterOp
 		if err := json.Unmarshal(data, &o); err != nil {
 			return nil, fmt.Errorf("反序列化 PNCounterOp 失败: %w", err)

@@ -69,7 +69,7 @@ func TestSyncManagerGetVersionVector(t *testing.T) {
 
 	// 应用操作并保存
 	ts := time.Now().UnixNano()
-	op := crdt.GCounterOp{OriginID: "node1", Amount: 100, Ts: ts}
+	op := crdt.PNCounterOp{OriginID: "node1", Amount: 100, Ts: ts}
 	root.Apply(op)
 	m.SaveOp("root1", op)
 	m.UpdateVersionVector("root1", op)
@@ -121,7 +121,7 @@ func TestSyncManagerDeltaSync(t *testing.T) {
 	// Node 1 创建根节点并添加操作
 	root1, _ := m1.CreateRoot("counter", crdt.TypeCounter)
 	ts1 := time.Now().UnixNano()
-	op1 := crdt.GCounterOp{OriginID: "node1", Amount: 10, Ts: ts1}
+	op1 := crdt.PNCounterOp{OriginID: "node1", Amount: 10, Ts: ts1}
 	root1.Apply(op1)
 	m1.SaveOp("counter", op1)
 	m1.UpdateVersionVector("counter", op1)
@@ -129,7 +129,7 @@ func TestSyncManagerDeltaSync(t *testing.T) {
 	// Node 2 创建同一根节点
 	root2, _ := m2.CreateRoot("counter", crdt.TypeCounter)
 	ts2 := time.Now().UnixNano()
-	op2 := crdt.GCounterOp{OriginID: "node2", Amount: 5, Ts: ts2}
+	op2 := crdt.PNCounterOp{OriginID: "node2", Amount: 5, Ts: ts2}
 	root2.Apply(op2)
 	m2.SaveOp("counter", op2)
 	m2.UpdateVersionVector("counter", op2)
@@ -228,7 +228,7 @@ func TestSyncDuplicateOperations(t *testing.T) {
 
 	// 创建操作
 	ts := time.Now().UnixNano()
-	op := crdt.GCounterOp{OriginID: "node1", Amount: 10, Ts: ts}
+	op := crdt.PNCounterOp{OriginID: "node1", Amount: 10, Ts: ts}
 
 	// 第一次应用
 	root.Apply(op)

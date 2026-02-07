@@ -61,8 +61,8 @@ func TestPNCounter(t *testing.T) {
 	root, _ := m.GetRoot(rootID)
 	mapC := root.(*crdt.MapCRDT)
 	child := mapC.GetChild("score")
-	if child.Type() != crdt.TypePNCounter {
-		t.Errorf("Expected TypePNCounter, got %v", child.Type())
+	if child.Type() != crdt.TypeCounter {
+		t.Errorf("Expected TypeCounter, got %v", child.Type())
 	}
 
 	// 4. 持久化与恢复测试

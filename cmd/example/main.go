@@ -66,11 +66,11 @@ func main() {
 	counter, _ := m.CreateRoot("visits", crdt.TypeCounter)
 
 	// 模拟来自不同节点的更新
-	op1 := crdt.GCounterOp{OriginID: "alice", Amount: 1, Ts: time.Now().UnixNano()}
+	op1 := crdt.PNCounterOp{OriginID: "alice", Amount: 1, Ts: time.Now().UnixNano()}
 	counter.Apply(op1)
 	fmt.Printf("Alice 访问了。当前计数: %v\n", counter.Value())
 
-	op2 := crdt.GCounterOp{OriginID: "bob", Amount: 5, Ts: time.Now().UnixNano()}
+	op2 := crdt.PNCounterOp{OriginID: "bob", Amount: 5, Ts: time.Now().UnixNano()}
 	counter.Apply(op2)
 	fmt.Printf("Bob 访问了 (5 次)。累计计数: %v\n", counter.Value())
 

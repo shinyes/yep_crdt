@@ -25,9 +25,9 @@ func (f *MockFetcher) Fetch(hash string) ([]byte, error) {
 
 func TestCRDTs(t *testing.T) {
 	// 1. 计数器
-	c := crdt.NewGCounter("A")
-	c.Apply(crdt.GCounterOp{OriginID: "A", Amount: 10})
-	c.Apply(crdt.GCounterOp{OriginID: "B", Amount: 5})
+	c := crdt.NewPNCounter("A")
+	c.Apply(crdt.PNCounterOp{OriginID: "A", Amount: 10})
+	c.Apply(crdt.PNCounterOp{OriginID: "B", Amount: 5})
 
 	if val := c.Value().(int64); val != 15 {
 		t.Errorf("期望值为 15，实际为 %v", val)
@@ -77,7 +77,7 @@ func TestManagerAndPersistence(t *testing.T) {
 	root, _ := m.CreateRoot("root1", crdt.TypeCounter)
 
 	// 应用操作
-	op := crdt.GCounterOp{OriginID: "node1", Amount: 100, Ts: time.Now().UnixNano()}
+	op := crdt.PNCounterOp{OriginID: "node1", Amount: 100, Ts: time.Now().UnixNano()}
 	root.Apply(op)
 	m.SaveOp("root1", op)
 
