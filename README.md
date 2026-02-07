@@ -11,6 +11,7 @@ Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data 
   - `LWWRegister`: 最后写入胜出寄存器
   - `Map`: 嵌套映射支持
   - `LocalFile`: 本地文件同步
+- **嵌套 CRDT 支持**：RGA 和 ORSet 的每个元素都可以持有任意 CRDT 类型（Map、Counter、Register 等），支持深层嵌套数据的字段级冲突解决。
 - **持久化存储**：集成 BadgerDB 进行数据持久化。
 - **Blob 存储**：支持大文件（Blob）的存储与检索。
 - **同步机制**：支持基于 Delta 的状态同步。
@@ -101,6 +102,46 @@ for _, e := range elems {
 }
 ```
 
+### 嵌套 CRDT 示例
+
+RGA 和 ORSet 的元素可以是任意 CRDT 类型，支持深层次嵌套：
+
+```go
+// 创建 RGA 并插入 Map 类型的元素
+rga := crdt.NewRGA()
+ts := time.Now().UnixNano()
+
+// 插入一个嵌套的 MapCRDT
+rga.Apply(crdt.RGAOp{
+    OriginID: "node1",
+    TypeCode: 0, // 插入
+    PrevID:   "start",
+    ElemID:   "item1",
+    InitType: crdt.TypeMap, // 元素类型为 Map
+    Ts:       ts,
+})
+
+// 获取嵌套的 Map 并操作
+child := rga.GetElement("item1")
+mapCRDT := child.(*crdt.MapCRDT)
+
+// 向嵌套 Map 添加字段
+mapCRDT.Apply(crdt.MapOp{Key: "name", IsInit: true, InitType: crdt.TypeRegister})
+mapCRDT.Apply(crdt.MapOp{Key: "name", ChildOp: crdt.LWWOp{Value: "Alice", Ts: ts}})
+
+// 使用子操作转发（无需获取子 CRDT 引用）
+rga.Apply(crdt.RGAOp{
+    OriginID: "node1",
+    TypeCode: 2, // 子操作转发
+    TargetID: "item1",
+    ChildOp:  crdt.MapOp{Key: "age", IsInit: true, InitType: crdt.TypeCounter},
+    Ts:       ts + 1,
+})
+
+// 获取值：[{"name": "Alice", "age": 0}]
+fmt.Println(rga.Value())
+```
+
 ### 根节点管理
 
 ```go
@@ -161,13 +202,22 @@ exists := mm.Exists("user")
 
 ### CRDT 类型
 
-| 类型 | 描述 | 创建方法 |
-|------|------|----------|
-| PNCounter | 支持增减的计数器 | `crdt.NewPNCounter(id)` |
-| ORSet | 观察-移除集合 | `crdt.NewORSet()` |
-| RGA | 复制可增长数组 | `crdt.NewRGA()` |
-| LWWRegister | 最后写入胜出寄存器 | `crdt.NewLWWRegister(val, ts)` |
-| MapCRDT | 嵌套映射 | `crdt.NewMapCRDT()` |
+| 类型 | 描述 | 嵌套支持 |
+|------|------|---------|
+| PNCounter | 支持增减的计数器 | ❌ 叶子节点 |
+| LWWRegister | 最后写入胜出寄存器 | ❌ 叶子节点 |
+| MapCRDT | 嵌套映射 | ✅ 子节点可为任意 CRDT |
+| ORSet | 观察-移除集合 | ✅ 元素可为任意 CRDT |
+| RGA | 复制可增长数组 | ✅ 元素可为任意 CRDT |
+
+### RGA/ORSet 嵌套 API
+
+| 方法 | 描述 |
+|------|------|
+| `rga.GetElement(id)` | 获取序列中指定 ID 元素的 CRDT 实例 |
+| `orset.GetElement(id)` | 获取集合中指定 ID 元素的 CRDT 实例 |
+| `RGAOp{TypeCode: 2, TargetID, ChildOp}` | 子操作转发（直接操作嵌套 CRDT） |
+| `ORSetOp{TypeCode: 2, TargetID, ChildOp}` | 子操作转发（直接操作嵌套 CRDT） |
 
 ### Manager API
 
@@ -187,16 +237,17 @@ exists := mm.Exists("user")
 | 方法 | 描述 |
 |------|------|
 | `From(rootID).Select(paths...).Get()` | 查询指定路径的值 |
-| `From(rootID).Update().Set(path, val).Commit()` | 设置值 |
-| `From(rootID).Update().Inc(path, amount).Commit()` | 增加计数器 |
-| `From(rootID).Update().Delete(path).Commit()` | 删除键 |
-| `From(rootID).Update().AddToSet(path, val).Commit()` | 向集合添加元素 |
-| `From(rootID).Update().RemoveFromSet(path, val).Commit()` | 从集合移除元素 |
-| `From(rootID).Update().Append(path, val).Commit()` | 在序列末尾追加 |
-| `From(rootID).Update().InsertAt(path, prevID, val).Commit()` | 在序列指定位置插入 |
-| `From(rootID).Update().RemoveAt(path, elemID).Commit()` | 从序列移除元素 |
+| `From(rootID).Update().Set(path, val).Commit()` | 设置值（LWWRegister） |
+| `From(rootID).Update().Inc(path, amount).Commit()` | 增加计数器（PNCounter） |
+| `From(rootID).Update().Delete(path).Commit()` | 删除键（MapCRDT） |
+| `From(rootID).Update().AddToSet(path, val).Commit()` | 向集合添加元素（ORSet） |
+| `From(rootID).Update().RemoveFromSet(path, val).Commit()` | 从集合移除元素（ORSet） |
+| `From(rootID).Update().Append(path, val).Commit()` | 在序列末尾追加（RGA） |
+| `From(rootID).Update().InsertAt(path, prevID, val).Commit()` | 在序列指定位置插入（RGA） |
+| `From(rootID).Update().RemoveAt(path, elemID).Commit()` | 从序列移除元素（RGA） |
 | `From(rootID).GetSequence(path)` | 获取序列（带元素 ID）|
 
 ## 开源协议
 
 本项目采用 [GPL-3.0](LICENSE) 开源协议。
+

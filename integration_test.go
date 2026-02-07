@@ -35,9 +35,9 @@ func TestCRDTs(t *testing.T) {
 
 	// 2. 集合
 	s := crdt.NewORSet()
-	s.Apply(crdt.ORSetOp{OriginID: "A", Add: true, Val: "foo", Tag: "t1"})
-	s.Apply(crdt.ORSetOp{OriginID: "B", Add: true, Val: "bar", Tag: "t2"})
-	s.Apply(crdt.ORSetOp{OriginID: "A", Add: false, Val: "foo", RemTags: []string{"t1"}})
+	s.Apply(crdt.ORSetOp{OriginID: "A", TypeCode: 0, ElemID: "e1", InitType: crdt.TypeRegister, InitVal: "foo", Tag: "t1"})
+	s.Apply(crdt.ORSetOp{OriginID: "B", TypeCode: 0, ElemID: "e2", InitType: crdt.TypeRegister, InitVal: "bar", Tag: "t2"})
+	s.Apply(crdt.ORSetOp{OriginID: "A", TypeCode: 1, RemoveID: "e1", RemTags: []string{"t1"}})
 
 	val := s.Value().([]interface{})
 	if len(val) != 1 || val[0] != "bar" {
@@ -48,9 +48,9 @@ func TestCRDTs(t *testing.T) {
 	r := crdt.NewRGA()
 	// 在开头插入 'H'
 	ts1 := time.Now().UnixNano()
-	r.Apply(crdt.RGAOp{OriginID: "A", TypeCode: 0, PrevID: "start", ElemID: "1", Value: "H", Ts: ts1})
+	r.Apply(crdt.RGAOp{OriginID: "A", TypeCode: 0, PrevID: "start", ElemID: "1", InitType: crdt.TypeRegister, InitVal: "H", Ts: ts1})
 	// 在 'H' 之后插入 'i'
-	r.Apply(crdt.RGAOp{OriginID: "A", TypeCode: 0, PrevID: "1", ElemID: "2", Value: "i", Ts: time.Now().UnixNano()})
+	r.Apply(crdt.RGAOp{OriginID: "A", TypeCode: 0, PrevID: "1", ElemID: "2", InitType: crdt.TypeRegister, InitVal: "i", Ts: time.Now().UnixNano()})
 
 	res := r.Value().([]interface{})
 	str := fmt.Sprintf("%v%v", res[0], res[1])

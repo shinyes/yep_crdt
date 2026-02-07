@@ -369,15 +369,19 @@ func (uq *UpdateQuery) AddToSet(path string, val interface{}) *UpdateQuery {
 		}
 	}
 
-	// 生成唯一标签
-	tag := fmt.Sprintf("%d_%s", uq.m.NextTimestamp(), uq.m.NodeID())
+	// 生成唯一标签和元素 ID
+	ts := uq.m.NextTimestamp()
+	elemID := fmt.Sprintf("%d_%s", ts, uq.m.NodeID())
+	tag := fmt.Sprintf("%d_%s", ts, uq.m.NodeID())
 
 	op := crdt.ORSetOp{
 		OriginID: uq.m.NodeID(),
-		Val:      val,
-		Add:      true,
+		TypeCode: 0, // 添加
+		ElemID:   elemID,
+		InitType: crdt.TypeRegister,
+		InitVal:  val,
 		Tag:      tag,
-		Ts:       uq.m.NextTimestamp(),
+		Ts:       ts,
 	}
 
 	mapOp := crdt.MapOp{
@@ -433,16 +437,25 @@ func (uq *UpdateQuery) RemoveFromSet(path string, val interface{}) *UpdateQuery 
 		return uq
 	}
 
-	tags := orset.GetTags(val)
-	if len(tags) == 0 {
+	// 根据值查找元素 ID（遍历所有元素查找匹配值）
+	var elemID string
+	var tags []string
+	for _, elem := range orset.Elements() {
+		if elem.Child != nil && elem.Child.Value() == val {
+			elemID = elem.ID
+			tags = orset.GetTagsByID(elem.ID)
+			break
+		}
+	}
+	if elemID == "" || len(tags) == 0 {
 		// 元素不存在
 		return uq
 	}
 
 	op := crdt.ORSetOp{
 		OriginID: uq.m.NodeID(),
-		Val:      val,
-		Add:      false,
+		TypeCode: 1, // 移除
+		RemoveID: elemID,
 		RemTags:  tags,
 		Ts:       uq.m.NextTimestamp(),
 	}
@@ -528,7 +541,8 @@ func (uq *UpdateQuery) InsertAt(path string, prevID string, value interface{}) *
 		TypeCode: 0, // 插入
 		PrevID:   prevID,
 		ElemID:   elemID,
-		Value:    value,
+		InitType: crdt.TypeRegister,
+		InitVal:  value,
 		Ts:       uq.m.NextTimestamp(),
 	}
 
@@ -617,7 +631,8 @@ func (uq *UpdateQuery) Append(path string, value interface{}) *UpdateQuery {
 		TypeCode: 0, // 插入
 		PrevID:   lastID,
 		ElemID:   elemID,
-		Value:    value,
+		InitType: crdt.TypeRegister,
+		InitVal:  value,
 		Ts:       uq.m.NextTimestamp(),
 	}
 
