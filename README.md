@@ -240,6 +240,8 @@ func main() {
     // 插入操作
     rga.Apply(crdt.OpRGAInsert[string]{AnchorID: rga.Head, Value: "Hello"})
     
+
+    // ...
     // 3. 垃圾回收 (GC)
     // 假设 safeTimestamp 是集群中最小的已知 HLC 时间
     safeTime := clock.Now() 
@@ -249,6 +251,28 @@ func main() {
     fmt.Printf("垃圾回收移除节点数: %d\n", removed)
 }
 ```
+
+### 垃圾回收机制详解 (Garbage Collection)
+
+Yep CRDT 采用 **基于稳定时间戳 (Safe Timestamp)** 的垃圾回收机制，以防止 CRDT 元数据（墓碑）无限膨胀。
+
+#### 核心概念：Safe Time
+Safe Time 是一个时间点，系统保证在该时间点之前的所有操作都已同步到所有节点。通常，`SafeTime = min(All nodes' current HLC time) - max_network_delay`。
+
+#### 工作原理
+1.  **ORSet**: 遍历 `Tombstones`，物理删除 `DeletionTime < SafeTime` 的记录。
+2.  **RGA**: 遍历链表，物理删除满足以下条件的节点：
+    *   **已标记删除** (`Deleted == true`)
+    *   **过期** (`DeletedAt < SafeTime`)
+    *   **叶子节点** (无子节点的节点)，防止破坏树结构。
+
+#### 使用建议
+建议在上层应用中定期（如每分钟或每小时）计算集群的 `SafeTime` 并调用 `GC` 接口。
+
+#### 离线节点处理策略 (Handling Offline Nodes)
+如果在计算 SafeTime 时有一个节点长期离线，它会拖慢 `SafeTime` 的推进，导致无法有效 GC。建议采取以下策略：
+1.  **超时剔除**: 设定阈值（如 24 小时）。若节点超时未发送心跳，计算 `SafeTime` 时将其排除。
+2.  **强制重置**: 当离线节点重新上线时，如果它落后于当前的 `SafeTime`，系统应拒绝其增量同步请求，强制其清空本地状态并进行 **全量同步 (Full Sync)**，以防止“僵尸数据”复活。
 
 ## 架构概览
 
