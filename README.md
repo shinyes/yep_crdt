@@ -1,23 +1,28 @@
-# Yep CRDT
+# Yep CRDT Database
 
-Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data Type) 库，旨在为分布式系统提供高可用性和强最终一致性的数据同步解决方案。
+一个简单的、支持 CRDT 的本地优先 (Local-First) 数据库，构建在 BadgerDB 之上，提供类似 SQL 的查询能力、自动索引以及针对特定 CRDT 类型的高级操作支持。
 
-## 功能特性
+## 特性
 
-- **多种 CRDT 类型支持**：
-  - `PNCounter`: 支持增减的计数器
-  - `ORSet`: 观察-移除集合 (Observed-Remove Set)
-  - `RGA`: 复制可增长数组 (Replicated Growable Array)，用于序列/文本编辑
-  - `LWWRegister`: 最后写入胜出寄存器
-  - `Map`: 嵌套映射支持
-  - `LocalFile`: 本地文件同步
-- **嵌套 CRDT 支持**：RGA 和 ORSet 的每个元素都可以持有任意 CRDT 类型（Map、Counter、Register 等），支持深层嵌套数据的字段级冲突解决。
-- **持久化存储**：集成 BadgerDB 进行数据持久化。
-- **Blob 存储**：支持大文件（Blob）的存储与检索。
-- **同步机制**：支持基于 Delta 的状态同步。
-- **流式 Query API**：类似 ORM 的流畅查询接口。
-- **Mobile 支持**：通过 gomobile 支持 Android/iOS 平台。
-- **多节点支持**：可配置节点 ID，支持多节点同步。
+*   **本地优先 (Local-First)**: 数据存储在本地，支持离线操作。
+*   **CRDT 支持**: 内置多种 CRDT 类型，支持细粒度的无冲突更新。
+    *   `LWW-Register`: 最后写入胜出 (Last-Write-Wins)，适用于普通字段。
+    *   `OR-Set`: 观察-移除集合 (Observed-Remove Set)，适用于标签、类别等。
+    *   `PN-Counter`: 正负计数器 (Positive-Negative Counter)，适用于点赞数、浏览量等。
+    *   `RGA`: 复制可增长数组 (Replicated Growable Array)，适用于有序列表、TODO 列表等。
+*   **SQL-Like 查询**: 提供流式 API 进行数据查询。
+    *   支持 `Where`, `And`, `Limit`, `Offset`, `OrderBy` 等操作。
+    *   支持 `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN` 等条件。
+*   **智能查询规划器**:
+    *   实现了 **最长前缀匹配 (Longest Prefix Match)** 算法。
+    *   自动选择最佳的复合索引或单列索引。
+*   **分布式基础**:
+    *   **NodeID 持久化**: 节点身份在重启后保持不变。
+    *   **混合逻辑时钟 (HLC)**: 提供因果一致的时间戳，为分布式同步奠定基础。
+*   **自动索引**: 定义 Schema 后自动维护二级索引。
+*   **多租户支持**: 基于文件系统的多租户隔离。
+*   **强制 UUIDv7**: 主键必须是有效的 UUIDv7 格式，以确保时间有序性和全局唯一性。
+*   **事务支持**: 所有更新操作都在 BadgerDB 的事务中原子执行。
 
 ## 快速开始
 
@@ -27,227 +32,193 @@ Yep CRDT 是一个基于 Go 语言实现的 CRDT (Conflict-free Replicated Data 
 go get github.com/shinyes/yep_crdt
 ```
 
-### 基本示例：PNCounter
+### 完整使用指南
+
+#### 1. 初始化数据库
 
 ```go
 package main
 
 import (
-    "fmt"
-    "github.com/shinyes/yep_crdt/crdt"
+	"log"
+	"os"
+	"fmt"
+
+	"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/shinyes/yep_crdt/pkg/meta"
+	"github.com/shinyes/yep_crdt/pkg/store"
+	"github.com/google/uuid"
 )
 
 func main() {
-    // 创建两个副本的计数器
-    c1 := crdt.NewPNCounter("node1")
-    c2 := crdt.NewPNCounter("node2")
+	// 初始化存储路径
+	dbPath := "./tmp/my_db"
+	os.MkdirAll(dbPath, 0755)
 
-    // Node 1 增加 10
-    c1.Apply(crdt.PNCounterOp{OriginID: "node1", Amount: 10})
+	// 创建 BadgerDB 存储后端
+	s, err := store.NewBadgerStore(dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
 
-    // Node 2 增加 5，减少 2
-    c2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: 5})
-    c2.Apply(crdt.PNCounterOp{OriginID: "node2", Amount: -2})
-
-    // 合并状态 (也就是同步)
-    c1.Merge(c2.State())
-    c2.Merge(c1.State())
-
-    fmt.Printf("Node 1 Value: %v\n", c1.Value()) // Output: 13
-    fmt.Printf("Node 2 Value: %v\n", c2.Value()) // Output: 13
-}
-```
-
-
-
-### Query API 示例
-
-```go
-// 创建带节点 ID 的 Manager
-m, _ := manager.NewManagerWithNodeID("./db", "./blobs", "node-A")
-defer m.Close()
-
-// 创建 Map 根节点
-m.CreateRoot("user_profile", crdt.TypeMap)
-
-// 使用流式 API 设置值
-m.From("user_profile").Update().
-    Set("name", "Alice").
-    Set("age", 30).
-    Set("settings.theme", "dark").
-    Commit()
-
-// 查询单个值
-name, _ := m.From("user_profile").Select("name").Get()
-
-// 增加计数器
-m.From("user_profile").Update().Inc("login_count", 1).Commit()
-
-// 集合操作
-m.From("user_profile").Update().
-    AddToSet("tags", "premium").
-    AddToSet("tags", "verified").
-    Commit()
-
-// 序列操作
-m.From("user_profile").Update().
-    Append("history", "action1").
-    Append("history", "action2").
-    Commit()
-
-// 获取序列（带元素 ID）
-elems, _ := m.From("user_profile").GetSequence("history")
-for _, e := range elems {
-    fmt.Printf("ID: %s, Value: %v\n", e.ID, e.Value)
-}
-```
-
-### 嵌套 CRDT 示例
-
-RGA 和 ORSet 的元素可以是任意 CRDT 类型，支持深层次嵌套：
-
-```go
-// 创建 RGA 并插入 Map 类型的元素
-rga := crdt.NewRGA()
-ts := time.Now().UnixNano()
-
-// 插入一个嵌套的 MapCRDT
-rga.Apply(crdt.RGAOp{
-    OriginID: "node1",
-    TypeCode: 0, // 插入
-    PrevID:   "start",
-    ElemID:   "item1",
-    InitType: crdt.TypeMap, // 元素类型为 Map
-    Ts:       ts,
-})
-
-// 获取嵌套的 Map 并操作
-child := rga.GetElement("item1")
-mapCRDT := child.(*crdt.MapCRDT)
-
-// 向嵌套 Map 添加字段
-mapCRDT.Apply(crdt.MapOp{Key: "name", IsInit: true, InitType: crdt.TypeRegister})
-mapCRDT.Apply(crdt.MapOp{Key: "name", ChildOp: crdt.LWWOp{Value: "Alice", Ts: ts}})
-
-// 使用子操作转发（无需获取子 CRDT 引用）
-rga.Apply(crdt.RGAOp{
-    OriginID: "node1",
-    TypeCode: 2, // 子操作转发
-    TargetID: "item1",
-    ChildOp:  crdt.MapOp{Key: "age", IsInit: true, InitType: crdt.TypeCounter},
-    Ts:       ts + 1,
-})
-
-// 获取值：[{"name": "Alice", "age": 0}]
-fmt.Println(rga.Value())
-```
-
-### 根节点管理
-
-```go
-// 列出所有根节点
-roots, _ := m.ListRoots()
-for _, r := range roots {
-    fmt.Printf("ID: %s, Type: %v\n", r.ID, r.Type)
-}
-
-// 检查是否存在
-if m.Exists("user_profile") {
+	// 打开数据库实例
+	myDB := db.Open(s)
     // ...
 }
-
-// 删除根节点
-m.DeleteRoot("old_data")
-
-// 手动保存快照
-m.TriggerSnapshot("user_profile")
 ```
 
-### Mobile 示例 (Android/iOS)
+#### 2. 定义 Schema (表结构)
+
+支持为每一列指定 CRDT 类型。如果未指定，默认为 `LWW`。
 
 ```go
-// 创建带节点 ID 的 MobileManager
-mm, _ := mobile.NewMobileManagerWithNodeID("./db", "./blobs", "device-123")
-defer mm.Close()
+	err := myDB.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			// 普通字段 (LWW)
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+			{Name: "age", Type: meta.ColTypeInt, CrdtType: meta.CrdtLWW},
+            
+			// 计数器 (Counter)
+			{Name: "views", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
+            
+			// 集合 (ORSet)
+			{Name: "tags", Type: meta.ColTypeString, CrdtType: meta.CrdtORSet},
+            
+			// 有序列表 (RGA)
+			{Name: "todos", Type: meta.ColTypeString, CrdtType: meta.CrdtRGA},
+		},
+		Indexes: []meta.IndexSchema{
+			// 复合索引
+			{Name: "idx_name_age", Columns: []string{"name", "age"}, Unique: false},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-// 创建根节点
-mm.CreateMapRoot("user")
-mm.CreateCounterRoot("stats")
-mm.CreateSequenceRoot("messages")
-
-// 设置/获取值
-mm.From("user").SetString("name", "Alice")
-name, _ := mm.From("user").GetString("name")
-
-// 序列操作
-mm.From("messages").Append("messages", "Hello")
-mm.From("messages").Append("messages", "World")
-json, _ := mm.From("messages").GetSequenceAsJSON("messages")
-
-// 根节点管理
-rootsJSON, _ := mm.ListRootsAsJSON()
-mm.DeleteRoot("old_data")
-exists := mm.Exists("user")
+	table := myDB.Table("users")
 ```
 
-## 目录结构
+#### 3. 基础操作 (LWW Register)
 
-- `crdt/`: CRDT 核心实现
-- `manager/`: 数据管理与持久化层
-- `store/`: 存储接口与实现
-- `sync/`: 同步协议相关
-- `mobile/`: 移动端 (Android/iOS) 绑定支持
+**注意**: 所有键必须是有效的 UUIDv7。
 
-## API 参考
+```go
+	// 生成 UUIDv7 主键
+	u1ID, _ := uuid.NewV7()
+	u1Key := u1ID.String()
 
-### CRDT 类型
+	// 插入或更新整行 (或部分 LWW 列)
+	table.Set(u1Key, map[string]interface{}{
+		"name": "Alice", 
+		"age": 30,
+	})
+```
 
-| 类型 | 描述 | 嵌套支持 |
-|------|------|---------|
-| PNCounter | 支持增减的计数器 | ❌ 叶子节点 |
-| LWWRegister | 最后写入胜出寄存器 | ❌ 叶子节点 |
-| MapCRDT | 嵌套映射 | ✅ 子节点可为任意 CRDT |
-| ORSet | 观察-移除集合 | ✅ 元素可为任意 CRDT |
-| RGA | 复制可增长数组 | ✅ 元素可为任意 CRDT |
+#### 4. 高级 CRDT 操作
 
-### RGA/ORSet 嵌套 API
+对于 `Counter`, `ORSet`, `RGA` 类型的列，请使用 `Add`, `Remove` 等专用方法，以保留并发合并特性。
 
-| 方法 | 描述 |
-|------|------|
-| `rga.GetElement(id)` | 获取序列中指定 ID 元素的 CRDT 实例 |
-| `orset.GetElement(id)` | 获取集合中指定 ID 元素的 CRDT 实例 |
-| `RGAOp{TypeCode: 2, TargetID, ChildOp}` | 子操作转发（直接操作嵌套 CRDT） |
-| `ORSetOp{TypeCode: 2, TargetID, ChildOp}` | 子操作转发（直接操作嵌套 CRDT） |
+##### 计数器 (Counter)
 
-### Manager API
+```go
+	// 增加
+	table.Add(u1Key, "views", 10) // views = 10
+	table.Add(u1Key, "views", 5)  // views = 15
 
-| 方法 | 描述 |
-|------|------|
-| `NewManager(dbPath, blobPath)` | 创建 Manager |
-| `NewManagerWithNodeID(dbPath, blobPath, nodeID)` | 创建带节点 ID 的 Manager |
-| `CreateRoot(id, type)` | 创建根节点 |
-| `GetRoot(id)` | 获取根节点 |
-| `ListRoots()` | 列出所有根节点 |
-| `DeleteRoot(id)` | 删除根节点 |
-| `Exists(id)` | 检查根节点是否存在 |
-| `TriggerSnapshot(id)` | 手动保存快照 |
+	// 减少 (两种方式)
+	table.Add(u1Key, "views", -3) // views = 12
+	table.Remove(u1Key, "views", 2) // views = 10
+```
 
-### Query API 方法
+##### 集合 (ORSet)
 
-| 方法 | 描述 |
-|------|------|
-| `From(rootID).Select(paths...).Get()` | 查询指定路径的值 |
-| `From(rootID).Update().Set(path, val).Commit()` | 设置值（LWWRegister） |
-| `From(rootID).Update().Inc(path, amount).Commit()` | 增加计数器（PNCounter） |
-| `From(rootID).Update().Delete(path).Commit()` | 删除键（MapCRDT） |
-| `From(rootID).Update().AddToSet(path, val).Commit()` | 向集合添加元素（ORSet） |
-| `From(rootID).Update().RemoveFromSet(path, val).Commit()` | 从集合移除元素（ORSet） |
-| `From(rootID).Update().Append(path, val).Commit()` | 在序列末尾追加（RGA） |
-| `From(rootID).Update().InsertAt(path, prevID, val).Commit()` | 在序列指定位置插入（RGA） |
-| `From(rootID).Update().RemoveAt(path, elemID).Commit()` | 从序列移除元素（RGA） |
-| `From(rootID).GetSequence(path)` | 获取序列（带元素 ID）|
+```go
+	// 添加元素
+	table.Add(u1Key, "tags", "developer")
+	table.Add(u1Key, "tags", "golang")
 
-## 开源协议
+	// 移除元素
+	table.Remove(u1Key, "tags", "developer")
+    // tags 现在只包含 "golang"
+```
 
-本项目采用 [GPL-3.0](LICENSE) 开源协议。
+##### 有序列表 (RGA)
 
+```go
+	// 追加到末尾
+	table.Add(u1Key, "todos", "Task 1")
+	table.Add(u1Key, "todos", "Task 3")
+    
+	// 在指定元素后插入
+	table.InsertAfter(u1Key, "todos", "Task 1", "Task 2")
+    // 列表顺序: [Task 1, Task 2, Task 3]
+
+	// 按索引插入 (0-based)
+	table.InsertAt(u1Key, "todos", 0, "Urgent Task")
+    // 列表顺序: [Urgent Task, Task 1, Task 2, Task 3]
+
+	// 按索引移除
+	table.RemoveAt(u1Key, "todos", 3) // 移除 "Task 3"
+```
+
+#### 5. 查询数据
+
+查询规划器会自动选择最佳索引。支持丰富的查询操作符和分页/排序。
+
+```go
+	// 简单主键查询
+	u1, _ := table.Get(u1Key)
+	fmt.Println(u1)
+
+	// 复杂条件查询
+	// 自动使用 idx_name_age 索引
+	results, err := table.Where("name", db.OpEq, "Alice").
+                          And("age", db.OpGt, 20).
+                          OrderBy("age", true). // 按 age 倒序
+                          Offset(0).
+                          Limit(10).
+                          Find()
+    
+    // IN 查询
+    results, err = table.Where("views", db.OpIn, []interface{}{100, 200}).Find()
+
+	for _, row := range results {
+		fmt.Printf("Row: %v\n", row)
+	}
+```
+
+#### 6. 事务支持
+
+使用 `Update` 或 `View` 方法执行原子性操作。
+
+```go
+	err := myDB.Update(func(tx *db.Tx) error {
+		// 获取绑定到事务的表句柄
+		t := tx.Table("users")
+		
+		// 所有的操作都在同一个事务中原子执行
+		err := t.Add(u1Key, "views", 100)
+		if err != nil {
+			return err // 返回错误将导致事务回滚
+		}
+
+		return t.Add(u2Key, "views", 100)
+	})
+```
+
+## 架构概览
+
+*   **pkg/store**: 底层 KV 存储抽象 (BadgerDB 实现)。
+*   **pkg/crdt**: 核心 CRDT 数据结构实现 (LWW, ORSet, PNCounter, RGA, Map)。
+*   **pkg/meta**: 元数据和 Schema 管理 (Catalog)。
+*   **pkg/index**: 索引编码和管理。
+*   **pkg/db**: 顶层数据库 API，集成 Schema、Index 和 Storage，包含查询规划器。
+
+## 待办事项
+
+*   [ ] 实现 CRDT 状态的 P2P 同步逻辑 (Merkle Tree / Vector Clocks)。
+*   [ ] 增加 HTTP/RPC 接口。
+*   [ ] 增加 Mobile (Android/iOS) 绑定支持。
