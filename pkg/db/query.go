@@ -24,7 +24,7 @@ const (
 type Condition struct {
 	Field string
 	Op    Operator
-	Value interface{}
+	Value any
 }
 
 type Query struct {
@@ -36,7 +36,7 @@ type Query struct {
 	desc       bool
 }
 
-func (t *Table) Where(field string, op Operator, val interface{}) *Query {
+func (t *Table) Where(field string, op Operator, val any) *Query {
 	return &Query{
 		table: t,
 		conditions: []Condition{
@@ -45,7 +45,7 @@ func (t *Table) Where(field string, op Operator, val interface{}) *Query {
 	}
 }
 
-func (q *Query) And(field string, op Operator, val interface{}) *Query {
+func (q *Query) And(field string, op Operator, val any) *Query {
 	q.conditions = append(q.conditions, Condition{Field: field, Op: op, Value: val})
 	return q
 }
@@ -66,24 +66,24 @@ func (q *Query) Limit(limit int) *Query {
 	return q
 }
 
-func (q *Query) Find() ([]map[string]interface{}, error) {
+func (q *Query) Find() ([]map[string]any, error) {
 	// 1. Plan Selection
 	// Find best index based on conditions (Longest Prefix Match).
 
 	// type plan struct {
 	// 	indexID      uint32
-	// 	prefixValues []interface{}
+	// 	prefixValues []any
 	// 	score        int // Number of matched columns
 	//  rangeCond    *Condition // If last matched column is a range query
 	// }
 
 	var bestIndexID uint32
-	var bestPrefix []interface{}
+	var bestPrefix []any
 	var bestScore int = -1
 	var bestRangeCond *Condition
 
 	for _, idx := range q.table.schema.Indexes {
-		currentPrefix := []interface{}{}
+		currentPrefix := []any{}
 		currentScore := 0
 		var currentRange *Condition
 
@@ -114,7 +114,7 @@ func (q *Query) Find() ([]map[string]interface{}, error) {
 		}
 	}
 
-	results := make([]map[string]interface{}, 0)
+	results := make([]map[string]any, 0)
 
 	err := q.table.inTx(false, func(txn store.Tx) error {
 		// 2. Execution
@@ -139,7 +139,7 @@ func (q *Query) findCondition(col string) *Condition {
 	return nil
 }
 
-func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []interface{}, rangeCond *Condition, results *[]map[string]interface{}) error {
+func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition, results *[]map[string]any) error {
 	basePrefix, err := index.EncodePrefix(q.table.schema.ID, idxID, prefixValues)
 	if err != nil {
 		return err
@@ -162,7 +162,7 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []interface{}
 	seekKey := basePrefix
 	if rangeCond != nil && !q.desc {
 		// Only optimize forward seek with range for now
-		seekValues := make([]interface{}, len(prefixValues))
+		seekValues := make([]any, len(prefixValues))
 		copy(seekValues, prefixValues)
 		if rangeCond.Op == OpGt || rangeCond.Op == OpGte {
 			seekValues = append(seekValues, rangeCond.Value)
@@ -206,7 +206,7 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []interface{}
 	return nil
 }
 
-func (q *Query) scanTable(txn store.Tx, results *[]map[string]interface{}) error {
+func (q *Query) scanTable(txn store.Tx, results *[]map[string]any) error {
 	prefix := []byte(strings.Split(string(q.table.dataKey([]byte("dummy"))), "dummy")[0])
 
 	opts := store.IteratorOptions{
@@ -232,7 +232,7 @@ func (q *Query) scanTable(txn store.Tx, results *[]map[string]interface{}) error
 		if err != nil {
 			continue
 		}
-		row := m.Value().(map[string]interface{})
+		row := m.Value().(map[string]any)
 
 		if q.matches(row) {
 			if skipped < q.offset {
@@ -249,7 +249,7 @@ func (q *Query) scanTable(txn store.Tx, results *[]map[string]interface{}) error
 	return nil
 }
 
-func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]interface{}, error) {
+func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]any, error) {
 	key := q.table.dataKey(pk)
 	val, err := txn.Get(key)
 	if err != nil {
@@ -259,10 +259,10 @@ func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]interface{}, error
 	if err != nil {
 		return nil, err
 	}
-	return m.Value().(map[string]interface{}), nil
+	return m.Value().(map[string]any), nil
 }
 
-func (q *Query) matches(row map[string]interface{}) bool {
+func (q *Query) matches(row map[string]any) bool {
 	for _, cond := range q.conditions {
 		val, ok := row[cond.Field]
 		if !ok {
@@ -298,7 +298,7 @@ func (q *Query) matches(row map[string]interface{}) bool {
 			}
 		case OpIn:
 			found := false
-			if list, ok := cond.Value.([]interface{}); ok {
+			if list, ok := cond.Value.([]any); ok {
 				for _, item := range list {
 					if compare(val, item) == 0 {
 						found = true
@@ -314,7 +314,7 @@ func (q *Query) matches(row map[string]interface{}) bool {
 	return true
 }
 
-func compare(a, b interface{}) int {
+func compare(a, b any) int {
 	// Robust comparison handling []byte and string
 	strA := toString(a)
 	strB := toString(b)
@@ -343,7 +343,7 @@ func compare(a, b interface{}) int {
 	return strings.Compare(strA, strB)
 }
 
-func toFloat(v interface{}) (float64, bool) {
+func toFloat(v any) (float64, bool) {
 	switch val := v.(type) {
 	case int:
 		return float64(val), true
@@ -385,7 +385,7 @@ func toFloat(v interface{}) (float64, bool) {
 	}
 }
 
-func toString(v interface{}) string {
+func toString(v any) string {
 	switch val := v.(type) {
 	case []byte:
 		return string(val)

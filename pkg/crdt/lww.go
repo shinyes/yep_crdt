@@ -23,7 +23,7 @@ func (r *LWWRegister) Type() Type {
 	return TypeLWW
 }
 
-func (r *LWWRegister) Value() interface{} {
+func (r *LWWRegister) Value() any {
 	return r.value
 }
 

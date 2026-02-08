@@ -30,7 +30,7 @@ func (s *ORSet[T]) Type() Type {
 	return TypeORSet
 }
 
-func (s *ORSet[T]) Value() interface{} {
+func (s *ORSet[T]) Value() any {
 	elements := make([]T, 0, len(s.AddSet))
 	for e, ids := range s.AddSet {
 		// 过滤掉在 Tombstones 中的 ID

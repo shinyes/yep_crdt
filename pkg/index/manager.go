@@ -16,7 +16,7 @@ func NewManager() *Manager {
 
 // UpdateIndexes 基于从 oldBody 到 newBody 的变化更新表的所有索引。
 // 必须在与数据更新相同的事务中调用此方法。
-func (m *Manager) UpdateIndexes(txn store.Tx, tableID uint32, indexes []meta.IndexSchema, pk []byte, oldBody, newBody map[string]interface{}) error {
+func (m *Manager) UpdateIndexes(txn store.Tx, tableID uint32, indexes []meta.IndexSchema, pk []byte, oldBody, newBody map[string]any) error {
 	for _, idx := range indexes {
 		// 1. 计算旧键和新键
 		oldValues_ := extractValues(idx.Columns, oldBody)
@@ -51,8 +51,8 @@ func (m *Manager) UpdateIndexes(txn store.Tx, tableID uint32, indexes []meta.Ind
 // extractValues 返回列的值。
 // 如果正文中缺少任何列，则返回 nil (意味着此行不应为此复合索引编制索引？
 // 或者是索引为 Null？为了简化 V1：仅当所有字段都存在时才索引)。
-func extractValues(cols []string, body map[string]interface{}) []interface{} {
-	vals := make([]interface{}, len(cols))
+func extractValues(cols []string, body map[string]any) []any {
+	vals := make([]any, len(cols))
 	for i, col := range cols {
 		v, ok := body[col]
 		if !ok || v == nil {

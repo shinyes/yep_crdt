@@ -52,7 +52,7 @@ func (r *RGA[T]) Type() Type { return TypeRGA }
 // Value 按顺序返回值的列表。
 // Value 按顺序返回值的列表。
 // 注意：对于大数据量，建议使用 Iterator() 以避免切片分配。
-func (r *RGA[T]) Value() interface{} {
+func (r *RGA[T]) Value() any {
 	var res []T
 	curr := r.Head
 	for curr != "" {

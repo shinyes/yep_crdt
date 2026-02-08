@@ -34,7 +34,7 @@ func (t *Table) inTx(update bool, fn func(store.Tx) error) error {
 // 为了使其完全支持 CRDT 泛型，输入可能应该是 CRDT Ops 或就绪的 CRDT。
 // 但检查 Fluent API 设计：Set(key, Data{...})。
 // 所以我们需要将 Data 转换为 CRDT。
-func (t *Table) Set(key string, data map[string]interface{}) error {
+func (t *Table) Set(key string, data map[string]any) error {
 	pk := []byte(key)
 
 	return t.inTx(true, func(txn store.Tx) error {
@@ -43,7 +43,7 @@ func (t *Table) Set(key string, data map[string]interface{}) error {
 		existingBytes, err := txn.Get(keyBytes)
 
 		var currentMap *crdt.MapCRDT
-		var oldBody map[string]interface{}
+		var oldBody map[string]any
 
 		if err == store.ErrKeyNotFound {
 			currentMap = crdt.NewMapCRDT()
@@ -54,7 +54,7 @@ func (t *Table) Set(key string, data map[string]interface{}) error {
 			if err != nil {
 				return fmt.Errorf("failed to decode existing data: %w", err)
 			}
-			oldBody = currentMap.Value().(map[string]interface{})
+			oldBody = currentMap.Value().(map[string]any)
 		}
 
 		// 2. 应用更改
@@ -82,7 +82,7 @@ func (t *Table) Set(key string, data map[string]interface{}) error {
 		}
 
 		// 3. 更新索引
-		newBody := currentMap.Value().(map[string]interface{})
+		newBody := currentMap.Value().(map[string]any)
 		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk, oldBody, newBody); err != nil {
 			return err
 		}
@@ -96,8 +96,8 @@ func (t *Table) Set(key string, data map[string]interface{}) error {
 	})
 }
 
-func (t *Table) Get(key string) (map[string]interface{}, error) {
-	var res map[string]interface{}
+func (t *Table) Get(key string) (map[string]any, error) {
+	var res map[string]any
 	err := t.inTx(false, func(txn store.Tx) error {
 		val, err := txn.Get(t.dataKey([]byte(key)))
 		if err != nil {
@@ -107,7 +107,7 @@ func (t *Table) Get(key string) (map[string]interface{}, error) {
 		if err != nil {
 			return err
 		}
-		res = m.Value().(map[string]interface{})
+		res = m.Value().(map[string]any)
 		return nil
 	})
 	return res, err
@@ -127,7 +127,7 @@ func (t *Table) dataKey(pk []byte) []byte {
 // ORSet: Add(val)
 // RGA: Append(val)
 // LWW: Set(val) (回退)
-func (t *Table) Add(key string, col string, val interface{}) error {
+func (t *Table) Add(key string, col string, val any) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -225,7 +225,7 @@ func (t *Table) Add(key string, col string, val interface{}) error {
 // Remove 执行特定 CRDT 的移除/减少操作。
 // ORSet: Remove(val)
 // RGA: RemoveByValue(val) (Remove all instances of val)
-func (t *Table) Remove(key string, col string, val interface{}) error {
+func (t *Table) Remove(key string, col string, val any) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func (t *Table) Remove(key string, col string, val interface{}) error {
 }
 
 // InsertAfter 在 RGA 中指定元素后插入。
-func (t *Table) InsertAfter(key string, col string, anchorVal interface{}, newVal interface{}) error {
+func (t *Table) InsertAfter(key string, col string, anchorVal any, newVal any) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -352,7 +352,7 @@ func (t *Table) InsertAfter(key string, col string, anchorVal interface{}, newVa
 }
 
 // InsertAt 在 RGA 第 N 个位置插入 (0-based).
-func (t *Table) InsertAt(key string, col string, index int, val interface{}) error {
+func (t *Table) InsertAt(key string, col string, index int, val any) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -532,12 +532,12 @@ func validateKey(key string) error {
 	return nil
 }
 
-func (t *Table) loadRow(txn store.Tx, pk []byte) (*crdt.MapCRDT, map[string]interface{}, error) {
+func (t *Table) loadRow(txn store.Tx, pk []byte) (*crdt.MapCRDT, map[string]any, error) {
 	keyBytes := t.dataKey(pk)
 	existingBytes, err := txn.Get(keyBytes)
 
 	var currentMap *crdt.MapCRDT
-	var oldBody map[string]interface{}
+	var oldBody map[string]any
 
 	if err == store.ErrKeyNotFound {
 		currentMap = crdt.NewMapCRDT()
@@ -548,13 +548,13 @@ func (t *Table) loadRow(txn store.Tx, pk []byte) (*crdt.MapCRDT, map[string]inte
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decode existing data: %w", err)
 		}
-		oldBody = currentMap.Value().(map[string]interface{})
+		oldBody = currentMap.Value().(map[string]any)
 	}
 	return currentMap, oldBody, nil
 }
 
-func (t *Table) saveRow(txn store.Tx, pk []byte, currentMap *crdt.MapCRDT, oldBody map[string]interface{}) error {
-	newBody := currentMap.Value().(map[string]interface{})
+func (t *Table) saveRow(txn store.Tx, pk []byte, currentMap *crdt.MapCRDT, oldBody map[string]any) error {
+	newBody := currentMap.Value().(map[string]any)
 	if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk, oldBody, newBody); err != nil {
 		return err
 	}
@@ -581,7 +581,7 @@ func (t *Table) getRGA(m *crdt.MapCRDT, col string) (*crdt.RGA[[]byte], error) {
 	return rga, nil
 }
 
-func toInt64(v interface{}) (int64, bool) {
+func toInt64(v any) (int64, bool) {
 	switch val := v.(type) {
 	case int:
 		return int64(val), true
@@ -595,7 +595,7 @@ func toInt64(v interface{}) (int64, bool) {
 }
 
 // Helper to encode value for LWW/RGA (bytes) or ORSet (string->bytes)
-func encodeValue(v interface{}) []byte {
+func encodeValue(v any) []byte {
 	if b, ok := v.([]byte); ok {
 		return b
 	}

@@ -115,7 +115,7 @@ func main() {
 	u1Key := u1ID.String()
 
 	// 插入或更新整行 (或部分 LWW 列)
-	table.Set(u1Key, map[string]interface{}{
+	table.Set(u1Key, map[string]any{
 		"name": "Alice", 
 		"age": 30,
 	})
@@ -187,7 +187,7 @@ func main() {
                           Find()
     
     // IN 查询
-    results, err = table.Where("views", db.OpIn, []interface{}{100, 200}).Find()
+    results, err = table.Where("views", db.OpIn, []any{100, 200}).Find()
 
 	for _, row := range results {
 		fmt.Printf("Row: %v\n", row)

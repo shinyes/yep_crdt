@@ -135,14 +135,14 @@ func main() {
 	// 10. Query Enhancements
 	fmt.Println("\n>>> Query: In [100, 200]...")
 	// Add name to U2
-	err = table.Set(u2Key, map[string]interface{}{
+	err = table.Set(u2Key, map[string]any{
 		"name": "Bob",
 		"age":  25,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	results, err = table.Where("views", db.OpIn, []interface{}{int64(100), int64(200)}).Find()
+	results, err = table.Where("views", db.OpIn, []any{int64(100), int64(200)}).Find()
 	if err != nil {
 		log.Fatal(err)
 	}

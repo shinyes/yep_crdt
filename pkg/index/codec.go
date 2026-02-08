@@ -11,7 +11,7 @@ const IndexPrefix byte = 'i'
 
 // EncodeKey 生成索引条目的 BadgerDB 键。
 // 格式：前缀(1) + TableID(4) + IndexID(4) + 值... + PK
-func EncodeKey(tableID uint32, indexID uint32, values []interface{}, pk []byte) ([]byte, error) {
+func EncodeKey(tableID uint32, indexID uint32, values []any, pk []byte) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// 1. 前缀
@@ -40,7 +40,7 @@ func EncodeKey(tableID uint32, indexID uint32, values []interface{}, pk []byte) 
 	return buf.Bytes(), nil
 }
 
-func encodeValue(buf *bytes.Buffer, v interface{}) error {
+func encodeValue(buf *bytes.Buffer, v any) error {
 	switch val := v.(type) {
 	case int:
 		// 转换为 int64 以保持一致性
@@ -67,7 +67,7 @@ func encodeValue(buf *bytes.Buffer, v interface{}) error {
 
 // EncodePrefix 生成用于迭代的前缀 (例如 "WHERE age > 20")
 // 格式：前缀(1) + TableID(4) + IndexID(4) + [部分值]
-func EncodePrefix(tableID uint32, indexID uint32, values []interface{}) ([]byte, error) {
+func EncodePrefix(tableID uint32, indexID uint32, values []any) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	buf.WriteByte(IndexPrefix)
 	binary.Write(buf, binary.BigEndian, tableID)

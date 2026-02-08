@@ -25,7 +25,7 @@ func (c *PNCounter) Type() Type {
 	return TypePNCounter
 }
 
-func (c *PNCounter) Value() interface{} {
+func (c *PNCounter) Value() any {
 	var total int64
 	for _, v := range c.Inc {
 		total += v

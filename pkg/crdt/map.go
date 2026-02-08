@@ -29,11 +29,11 @@ func NewMapCRDT() *MapCRDT {
 
 func (m *MapCRDT) Type() Type { return TypeMap }
 
-func (m *MapCRDT) Value() interface{} {
-	// 返回 map[string]interface{}
+func (m *MapCRDT) Value() any {
+	// 返回 map[string]any
 	// 仅返回反序列化的值用于演示。
 	// 调用者可能需要原始 CRDT。
-	res := make(map[string]interface{})
+	res := make(map[string]any)
 	for k, e := range m.Entries {
 		// 优先从 Cache 获取
 		if c, ok := m.cache[k]; ok {

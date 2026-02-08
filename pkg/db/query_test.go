@@ -43,12 +43,12 @@ func TestQueryPlanner(t *testing.T) {
 	// Insert Data
 	data := []struct {
 		Key  string
-		Data map[string]interface{}
+		Data map[string]any
 	}{
-		{"u1", map[string]interface{}{"region": "US", "age": 30, "name": "Alice"}},   // Matches
-		{"u2", map[string]interface{}{"region": "US", "age": 15, "name": "Bob"}},     // Region match, Age fail
-		{"u3", map[string]interface{}{"region": "EU", "age": 30, "name": "Charlie"}}, // Region fail
-		{"u4", map[string]interface{}{"region": "US", "age": 40, "name": "David"}},   // Matches
+		{"u1", map[string]any{"region": "US", "age": 30, "name": "Alice"}},   // Matches
+		{"u2", map[string]any{"region": "US", "age": 15, "name": "Bob"}},     // Region match, Age fail
+		{"u3", map[string]any{"region": "EU", "age": 30, "name": "Charlie"}}, // Region fail
+		{"u4", map[string]any{"region": "US", "age": 40, "name": "David"}},   // Matches
 	}
 
 	for _, d := range data {
