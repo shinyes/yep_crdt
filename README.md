@@ -252,6 +252,29 @@ func main() {
 }
 ```
 
+# 获取当前节点 HLC
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/shinyes/yep_crdt/pkg/db"
+    "github.com/shinyes/yep_crdt/pkg/store"
+)
+
+func main() {
+    // ... 初始化 DB ...
+    
+    // 获取当前逻辑时间戳
+    hlcTime := myDB.Now()
+    fmt.Printf("Current HLC Time: %d\n", hlcTime)
+    
+    // 获取 Clock 实例 (用于同步)
+    clock := myDB.Clock()
+    // clock.Update(remoteTimestamp)
+}
+```
+
 ### 垃圾回收机制详解 (Garbage Collection)
 
 Yep CRDT 采用 **基于稳定时间戳 (Safe Timestamp)** 的垃圾回收机制，以防止 CRDT 元数据（墓碑）无限膨胀。

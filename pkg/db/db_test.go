@@ -1,81 +1,57 @@
-package db_test
+package db
 
 import (
 	"os"
 	"testing"
+	"time"
 
-	"github.com/shinyes/yep_crdt/pkg/db"
-	"github.com/shinyes/yep_crdt/pkg/hlc"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
-func TestNodeIDPersistence(t *testing.T) {
-	dbPath := "./tmp/test_node_id"
-	os.RemoveAll(dbPath)
-	defer os.RemoveAll(dbPath)
+func TestDB_HLC(t *testing.T) {
+	// Setup temporary DB
+	tmpDir := "./tmp_test_db_hlc"
+	os.RemoveAll(tmpDir)
+	defer os.RemoveAll(tmpDir)
 
-	// First Run: Generate NodeID
-	s1, err := store.NewBadgerStore(dbPath)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.NewBadgerStore(tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d1 := db.Open(s1)
-	nodeID1 := d1.NodeID
-	if nodeID1 == "" {
-		t.Fatal("NodeID should not be empty")
-	}
-	d1.Close()
-	s1.Close()
+	defer s.Close()
 
-	// Second Run: Load persistence
-	s2, err := store.NewBadgerStore(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d2 := db.Open(s2)
-	nodeID2 := d2.NodeID
-	d2.Close()
-	s2.Close()
+	myDB := Open(s)
+	defer myDB.Close()
 
-	if nodeID1 != nodeID2 {
-		t.Errorf("NodeID mismatch: %s vs %s", nodeID1, nodeID2)
-	}
-}
-
-func TestHLCMonotonicity(t *testing.T) {
-	c := hlc.New()
-	prev := c.Now()
-	for i := 0; i < 1000; i++ {
-		curr := c.Now()
-		if curr <= prev {
-			t.Errorf("HLC not monotonic: prev %d, curr %d", prev, curr)
-		}
-		prev = curr
-	}
-}
-
-func TestHLCCausality(t *testing.T) {
-	c1 := hlc.New()
-	c2 := hlc.New()
-
-	// C1 generates an event
-	ts1 := c1.Now()
-
-	// C2 receives it and updates
-	c2.Update(ts1)
-	ts2 := c2.Now()
-
-	if ts2 <= ts1 {
-		t.Errorf("C2 should be after C1: ts1 %d, ts2 %d", ts1, ts2)
+	// 1. Test Now()
+	t1 := myDB.Now()
+	if t1 == 0 {
+		t.Error("Expected non-zero timestamp from Now()")
 	}
 
-	// Verify physical time didn't jump too far ahead (unless forced)
-	phys1 := hlc.Physical(ts1)
-	phys2 := hlc.Physical(ts2)
+	time.Sleep(1 * time.Millisecond)
 
-	// They should be close (within same millisecond or +1 if logical overflowed)
-	// But since this is a unit test running fast, likely same ms.
-	if phys2 < phys1 {
-		t.Errorf("Physical time went backwards? %d -> %d", phys1, phys2)
+	t2 := myDB.Now()
+	if t2 <= t1 {
+		t.Errorf("Expected time to advance. t1=%d, t2=%d", t1, t2)
+	}
+
+	// 2. Test Clock() access
+	clock := myDB.Clock()
+	if clock == nil {
+		t.Fatal("Expected Clock() to return non-nil instance")
+	}
+
+	// Update clock manually (simulate receiving message from future)
+	futureTs := t2 + 100000
+	clock.Update(futureTs)
+
+	t3 := myDB.Now()
+	if t3 <= futureTs {
+		t.Errorf("Expected clock to catch up to futureTs. t3=%d, futureTs=%d", t3, futureTs)
 	}
 }

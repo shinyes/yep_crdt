@@ -60,6 +60,18 @@ func (db *DB) Close() error {
 	return db.store.Close()
 }
 
+// Now 返回当前的混合逻辑时钟 (HLC) 时间戳。
+// 这对于生成操作时间戳或计算 SafeTime 非常有用。
+func (db *DB) Now() int64 {
+	return db.clock.Now()
+}
+
+// Clock 返回 DB 内部持有的 Clock 实例。
+// 允许外部系统进行更高级的钟同步操作 (如 Update)。
+func (db *DB) Clock() *hlc.Clock {
+	return db.clock
+}
+
 // DefineTable 注册表模式。
 func (db *DB) DefineTable(schema *meta.TableSchema) error {
 	return db.catalog.AddTable(schema)
