@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
@@ -89,5 +91,86 @@ func TestQueryPlanner(t *testing.T) {
 
 	if !names["Alice"] || !names["David"] {
 		t.Errorf("Expected Alice and David, got: %v", names)
+	}
+}
+
+func TestFindCRDTs_Iterator(t *testing.T) {
+	// Setup
+	dbPath := "./tmp/test_find_crdts"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+
+	s, _ := store.NewBadgerStore(dbPath)
+	defer s.Close()
+	defer os.RemoveAll(dbPath)
+
+	myDB := Open(s)
+
+	err := myDB.DefineTable(&meta.TableSchema{
+		ID:   2,
+		Name: "docs",
+		Columns: []meta.ColumnSchema{
+			{Name: "id", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+			{Name: "content", Type: meta.ColTypeString, CrdtType: meta.CrdtRGA}, // RGA field
+		},
+		Indexes: []meta.IndexSchema{
+			{ID: 1, Name: "idx_id", Columns: []string{"id"}, Unique: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	table := myDB.Table("docs")
+
+	// Insert data with RGA
+	u7, _ := uuid.NewV7()
+	key := u7.String()
+	table.Set(key, map[string]any{"id": "doc1"})
+
+	// Add RGA items
+	if err := table.Add(key, "content", "A"); err != nil {
+		t.Fatalf("Add A failed: %v", err)
+	}
+	if err := table.Add(key, "content", "B"); err != nil {
+		t.Fatalf("Add B failed: %v", err)
+	}
+	if err := table.Add(key, "content", "C"); err != nil {
+		t.Fatalf("Add C failed: %v", err)
+	}
+
+	// Use FindCRDTs
+	crdts, err := table.Where("id", OpEq, "doc1").FindCRDTs()
+	if err != nil {
+		t.Fatalf("FindCRDTs failed: %v", err)
+	}
+
+	if len(crdts) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(crdts))
+	}
+
+	doc := crdts[0]
+	// Access RGA directly. Note: Table implementation uses RGA[[]byte] by default.
+	rga, err := crdt.GetRGA[[]byte](doc, "content")
+	if err != nil {
+		t.Fatalf("GetRGA failed: %v", err)
+	}
+	if rga == nil {
+		t.Fatal("RGA not found")
+	}
+
+	// Use Iterator
+	iter := rga.Iterator()
+	var resultStr string
+	for {
+		val, ok := iter()
+		if !ok {
+			break
+		}
+		resultStr += string(val)
+	}
+
+	if resultStr != "ABC" {
+		t.Errorf("Expected ABC, got %s", resultStr)
 	}
 }

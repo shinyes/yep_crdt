@@ -299,18 +299,27 @@ Safe Time 是一个时间点，系统保证在该时间点之前的所有操作�
 
 ## 性能最佳实践 (Performance Best Practices)
 
-### 1. 遍历大型 RGA
-当 RGA 数据量较大（如超过 10,000 个元素）时，请避免使用 `.Value()` 方法，因为它会一次性分配巨大的内存切片。推荐使用 `.Iterator()` 进行零分配遍历。
+### 1. 遍历大型 RGA (Streaming Large Lists)
+当 RGA 数据量较大（如超过 10,000 个元素）时，请避免使用 `.Value()` 方法，因为它会一次性分配巨大的内存切片。
+推荐使用 `Query.FindCRDTs()` 获取原始对象，并结合 `.Iterator()` 进行零分配遍历。
 
 ```go
-// 推荐方式
-iter := rga.Iterator()
-for {
-    val, ok := iter()
-    if !ok {
-        break
+// 1. 获取包含原始 CRDT 的结果集（不自动反序列化 Value）
+crdts, _ := table.Where("id", db.OpEq, "doc1").FindCRDTs()
+
+for _, doc := range crdts {
+    // 2. 按需获取 RGA 实例
+    rga, _ := crdt.GetRGA[[]byte](doc, "content")
+    
+    // 3. 使用 Iterator 流式遍历
+    iter := rga.Iterator()
+    for {
+        val, ok := iter()
+        if !ok {
+            break
+        }
+        // 处理 val (无需全量加载到内存)
     }
-    // 处理 val
 }
 ```
 

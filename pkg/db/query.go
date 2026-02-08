@@ -68,15 +68,51 @@ func (q *Query) Limit(limit int) *Query {
 
 func (q *Query) Find() ([]map[string]any, error) {
 	// 1. Plan Selection
-	// Find best index based on conditions (Longest Prefix Match).
+	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
 
-	// type plan struct {
-	// 	indexID      uint32
-	// 	prefixValues []any
-	// 	score        int // Number of matched columns
-	//  rangeCond    *Condition // If last matched column is a range query
-	// }
+	results := make([]map[string]any, 0)
 
+	err := q.table.inTx(false, func(txn store.Tx) error {
+		// 2. Execution
+		var err error
+		if bestScore > 0 {
+			// Index Scan
+			results, err = q.scanIndex(txn, bestIndexID, bestPrefix, bestRangeCond)
+		} else {
+			// Fallback: Table Scan
+			results, err = q.scanTable(txn)
+		}
+		return err
+	})
+
+	return results, err
+}
+
+// FindCRDTs returns the raw MapCRDT objects instead of the value map.
+// This allows access to nested CRDTs (like RGA) for iterator usage.
+func (q *Query) FindCRDTs() ([]*crdt.MapCRDT, error) {
+	// 1. Plan Selection
+	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
+
+	results := make([]*crdt.MapCRDT, 0)
+
+	err := q.table.inTx(false, func(txn store.Tx) error {
+		// 2. Execution
+		var err error
+		if bestScore > 0 {
+			// Index Scan
+			results, err = q.scanIndexCRDT(txn, bestIndexID, bestPrefix, bestRangeCond)
+		} else {
+			// Fallback: Table Scan
+			results, err = q.scanTableCRDT(txn)
+		}
+		return err
+	})
+
+	return results, err
+}
+
+func (q *Query) selectPlan() (uint32, []any, int, *Condition) {
 	var bestIndexID uint32
 	var bestPrefix []any
 	var bestScore int = -1
@@ -101,7 +137,6 @@ func (q *Query) Find() ([]map[string]any, error) {
 				// Range condition. Must be the last part of prefix usage.
 				currentRange = cond
 				currentScore++ // Gives extra point? Yes, because we use index for it.
-				// But we stop here, we can't use further columns for prefix seek.
 				break
 			}
 		}
@@ -113,21 +148,7 @@ func (q *Query) Find() ([]map[string]any, error) {
 			bestRangeCond = currentRange
 		}
 	}
-
-	results := make([]map[string]any, 0)
-
-	err := q.table.inTx(false, func(txn store.Tx) error {
-		// 2. Execution
-		if bestScore > 0 {
-			// Index Scan
-			return q.scanIndex(txn, bestIndexID, bestPrefix, bestRangeCond, &results)
-		}
-
-		// Fallback: Table Scan
-		return q.scanTable(txn, &results)
-	})
-
-	return results, err
+	return bestIndexID, bestPrefix, bestScore, bestRangeCond
 }
 
 func (q *Query) findCondition(col string) *Condition {
@@ -139,10 +160,23 @@ func (q *Query) findCondition(col string) *Condition {
 	return nil
 }
 
-func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition, results *[]map[string]any) error {
+// scanIndex returns map[string]any
+func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition) ([]map[string]any, error) {
+	crdts, err := q.scanIndexCRDT(txn, idxID, prefixValues, rangeCond)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]map[string]any, len(crdts))
+	for i, c := range crdts {
+		results[i] = c.Value().(map[string]any)
+	}
+	return results, nil
+}
+
+func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition) ([]*crdt.MapCRDT, error) {
 	basePrefix, err := index.EncodePrefix(q.table.schema.ID, idxID, prefixValues)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	opts := store.IteratorOptions{
@@ -152,16 +186,8 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeC
 	iter := txn.NewIterator(opts)
 	defer iter.Close()
 
-	// Seek Logic
-	// If NOT reverse, we seek to specific range start.
-	// If Reverse, we might need to seek to end of range?
-	// For MVP: Simple seek to prefix for now, optimizing reverse range seek is complex.
-	// But if we have range condition (e.g. Age > 20) and Reverse=true, we need to be careful.
-	// Let's keep simple Prefix scan for now.
-
 	seekKey := basePrefix
 	if rangeCond != nil && !q.desc {
-		// Only optimize forward seek with range for now
 		seekValues := make([]any, len(prefixValues))
 		copy(seekValues, prefixValues)
 		if rangeCond.Op == OpGt || rangeCond.Op == OpGte {
@@ -172,46 +198,75 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeC
 			}
 		}
 	} else if q.desc {
-		// For reverse, we might want to seek to the "end" of the prefix?
-		// Badger's Reverse iterator + Seek(prefix + 0xFF) usually works.
-		// Construct a key that is strictly greater than prefix?
 		seekKey = append(basePrefix, 0xFF)
 	}
 
 	iter.Seek(seekKey)
 
+	results := make([]*crdt.MapCRDT, 0)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
 		_, pk, _ := iter.Item()
 
-		// Fetch Row
-		row, err := q.fetchRow(txn, pk)
+		// Fetch CRDT
+		m, err := q.fetchCRDT(txn, pk)
 		if err != nil {
 			continue
 		}
+
+		// To check conditions, we might need Values.
+		// Performance trade-off: We MUST load values to filter.
+		// But if we return MapCRDT, the user might NOT access the heavy RGA fields.
+		// matches() checks row map[string]any.
+		// For filtering, we can call Value().
+		// If the query is *only* on indexed fields, we assume index covered it?
+		// No, we still need to check other conditions.
+		// So we have to materialize the row for filtering.
+		// The optimization of FindCRDTs comes when we select HUGE documents
+		// but check conditions on small fields.
+		// Note: MapCRDT.Value() deserializes everything.
+		// To truly optimize, MapCRDT should support partial Value(), or matches() should check CRDT directly.
+		// For now, we rely on MapCRDT caching.
+		// If valid, append `m`.
+
+		// Optimization: matches() takes map[string]any.
+		row := m.Value().(map[string]any)
 
 		if q.matches(row) {
 			if skipped < q.offset {
 				skipped++
 				continue
 			}
-			*results = append(*results, row)
+			results = append(results, m)
 			count++
 			if q.limit > 0 && count >= q.limit {
 				break
 			}
 		}
 	}
-	return nil
+	return results, nil
 }
 
-func (q *Query) scanTable(txn store.Tx, results *[]map[string]any) error {
+// scanTable returns map[string]any
+func (q *Query) scanTable(txn store.Tx) ([]map[string]any, error) {
+	crdts, err := q.scanTableCRDT(txn)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]map[string]any, len(crdts))
+	for i, c := range crdts {
+		results[i] = c.Value().(map[string]any)
+	}
+	return results, nil
+}
+
+func (q *Query) scanTableCRDT(txn store.Tx) ([]*crdt.MapCRDT, error) {
 	prefix := []byte(strings.Split(string(q.table.dataKey([]byte("dummy"))), "dummy")[0])
 
 	opts := store.IteratorOptions{
 		Prefix:  prefix,
-		Reverse: q.desc, // Support Order By PK desc
+		Reverse: q.desc,
 	}
 
 	iter := txn.NewIterator(opts)
@@ -223,6 +278,7 @@ func (q *Query) scanTable(txn store.Tx, results *[]map[string]any) error {
 		iter.Seek(prefix)
 	}
 
+	results := make([]*crdt.MapCRDT, 0)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
@@ -232,6 +288,9 @@ func (q *Query) scanTable(txn store.Tx, results *[]map[string]any) error {
 		if err != nil {
 			continue
 		}
+
+		// For checking non-indexed conditions, we currently need full Value.
+		// Improving this is a future task (Partial Deserialization).
 		row := m.Value().(map[string]any)
 
 		if q.matches(row) {
@@ -239,27 +298,31 @@ func (q *Query) scanTable(txn store.Tx, results *[]map[string]any) error {
 				skipped++
 				continue
 			}
-			*results = append(*results, row)
+			results = append(results, m)
 			count++
 			if q.limit > 0 && count >= q.limit {
 				break
 			}
 		}
 	}
-	return nil
+	return results, nil
 }
 
 func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]any, error) {
+	m, err := q.fetchCRDT(txn, pk)
+	if err != nil {
+		return nil, err
+	}
+	return m.Value().(map[string]any), nil
+}
+
+func (q *Query) fetchCRDT(txn store.Tx, pk []byte) (*crdt.MapCRDT, error) {
 	key := q.table.dataKey(pk)
 	val, err := txn.Get(key)
 	if err != nil {
 		return nil, err
 	}
-	m, err := crdt.FromBytesMap(val)
-	if err != nil {
-		return nil, err
-	}
-	return m.Value().(map[string]any), nil
+	return crdt.FromBytesMap(val)
 }
 
 func (q *Query) matches(row map[string]any) bool {
