@@ -50,6 +50,8 @@ func NewRGA[T any](clock *hlc.Clock) *RGA[T] {
 func (r *RGA[T]) Type() Type { return TypeRGA }
 
 // Value 按顺序返回值的列表。
+// Value 按顺序返回值的列表。
+// 注意：对于大数据量，建议使用 Iterator() 以避免切片分配。
 func (r *RGA[T]) Value() interface{} {
 	var res []T
 	curr := r.Head
@@ -61,6 +63,28 @@ func (r *RGA[T]) Value() interface{} {
 		curr = v.Next
 	}
 	return res
+}
+
+// Iterator 返回一个迭代器函数。
+// 每次调用该函数，返回 (下一个值, true)。
+// 如果遍历结束，返回 (零值, false)。
+// 这种模式避免了在这里分配整个切片。
+func (r *RGA[T]) Iterator() func() (T, bool) {
+	currID := r.Vertices[r.Head].Next
+
+	return func() (T, bool) {
+		for currID != "" {
+			v := r.Vertices[currID]
+			currID = v.Next // 准备下一次迭代
+
+			if !v.Deleted {
+				return v.Value, true
+			}
+			// 如果已删除，继续循环寻找下一个
+		}
+		var zero T
+		return zero, false
+	}
 }
 
 // OpRGAInsert 在特定 ID 之后插入值。

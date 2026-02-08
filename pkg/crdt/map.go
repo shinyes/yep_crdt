@@ -9,6 +9,10 @@ import (
 // 这是 "行" 容器。
 type MapCRDT struct {
 	Entries map[string]*Entry
+	// cache 存储已反序列化的 CRDT 对象。
+	// 这是一个回写缓存 (Write-Back Cache)：产生的变更首先在 cache 中更新，
+	// 只有在调用 Bytes() 时才序列化回 Entries。
+	cache map[string]CRDT
 }
 
 type Entry struct {
@@ -19,6 +23,7 @@ type Entry struct {
 func NewMapCRDT() *MapCRDT {
 	return &MapCRDT{
 		Entries: make(map[string]*Entry),
+		cache:   make(map[string]CRDT),
 	}
 }
 
@@ -30,6 +35,11 @@ func (m *MapCRDT) Value() interface{} {
 	// 调用者可能需要原始 CRDT。
 	res := make(map[string]interface{})
 	for k, e := range m.Entries {
+		// 优先从 Cache 获取
+		if c, ok := m.cache[k]; ok {
+			res[k] = c.Value()
+			continue
+		}
 		c, err := Deserialize(e.Type, e.Data)
 		if err == nil {
 			res[k] = c.Value()
@@ -77,6 +87,9 @@ func (op OpMapUpdate) Type() Type { return TypeMap }
 func (m *MapCRDT) Apply(op Op) error {
 	switch o := op.(type) {
 	case OpMapSet:
+		// 更新缓存
+		m.cache[o.Key] = o.Value
+		// 同步更新 Entry，保证 Data 也是最新的（虽然有 Flush 机制，但 Set 较少见，稳妥起见）
 		b, err := o.Value.Bytes()
 		if err != nil {
 			return err
@@ -85,40 +98,34 @@ func (m *MapCRDT) Apply(op Op) error {
 			Type: o.Value.Type(),
 			Data: b,
 		}
+
 	case OpMapUpdate:
-		// MapUpdate needs to retrieve the CRDT and apply op.
-		// We need to deserialize, apply, and serialize back.
-		// Because MapCRDT stores []byte in Entry.
-		e, ok := m.Entries[o.Key]
-		if !ok {
-			return fmt.Errorf("key %s not found", o.Key)
+		// 1. 尝试从缓存获取
+		c, inCache := m.cache[o.Key]
+
+		if !inCache {
+			// 2. 缓存未命中，从 Entry 加载
+			e, ok := m.Entries[o.Key]
+			if !ok {
+				return fmt.Errorf("key %s not found", o.Key)
+			}
+			var err error
+			c, err = Deserialize(e.Type, e.Data)
+			if err != nil {
+				return err
+			}
+			// 放入缓存
+			m.cache[o.Key] = c
 		}
 
-		// 这里 Deserialize 使用默认类型 (string for ORSet)。
-		// 如果 Op 是针对 ORSet[int] 的，这里会失败（类型断言失败）。
-		// 这是一个严重的问题。
-		// 如果我们支持泛型，MapCRDT 必须知道类型。
-		// 但我们没有存储泛型类型元数据。
-		// 权宜之计：尝试猜测？或者 Op 应该携带类型信息？
-		// 目前假设 ORSet 都是 string。
-		// 如果用户使用 ORSet[int]，OpMapUpdate 将无法工作，除非我们修改 Deserialize 逻辑或者 Entry 结构。
-		// 鉴于时间限制，我们暂时只支持默认 string，并提供 GetORSet[T] 用于读取。
-		// 写入（Apply）如果类型不匹配，将返回 error 或者 panic。
-
-		c, err := Deserialize(e.Type, e.Data)
-		if err != nil {
-			return err
-		}
-
+		// 3. 应用操作到对象（内存中）
 		if err := c.Apply(o.Op); err != nil {
 			return err
 		}
 
-		newData, err := c.Bytes()
-		if err != nil {
-			return err
-		}
-		e.Data = newData
+		// 4. 不再立即序列化回 Entry.Data。
+		// Entry.Data 现在是脏数据，将在 Bytes() 或显式 Flush 时更新。
+		// 这将 O(N) 的序列化操作平摊到了 Save 时刻。
 
 	default:
 		return ErrInvalidOp
@@ -132,45 +139,132 @@ func (m *MapCRDT) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into MapCRDT", other)
 	}
 
+	// 合并前，我们需要确保本地 cache 中的脏数据已经持久化到 Entries 吗？
+	// 或者 Merge 直接操作 Entries？
+	// 远程过来的数据在 Entries 中。
+	// 本地的数据可能在 cache 中较新。
+	// 策略：
+	// 1. 遍历远程 Entries。
+	// 2. 如果本地 cache 中有对应项，直接 Merge 到 cache 中。并标记为脏（虽然已经是脏的）。
+	// 3. 如果本地 cache 没有，但 Entries 有，反序列化到 cache，然后 Merge。
+	// 4. 如果本地都没有，直接拷贝 Entry 到本地 Entries（且不通过 cache，或者放入 cache）。
+
+	// 简单起见，且为了正确性：
+	// 我们把远程的数据 merge 进本地的活跃对象 (cache) 中。
+
 	for k, remoteEntry := range o.Entries {
+		// 1. 尝试从缓存获取活跃对象
+		localC, inCache := m.cache[k]
+
+		if inCache {
+			// 本地有活跃对象，必须反序列化远程对象并 Merge 进去
+			remoteC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
+			if err != nil {
+				return err // 或者 log error continue
+			}
+			if err := localC.Merge(remoteC); err != nil {
+				return err
+			}
+			// Merge 完成，localC 更新了。Entry.Data 仍是陈旧的。
+			continue
+		}
+
+		// 2. 缓存无，检查本地 Entry
 		localEntry, exists := m.Entries[k]
 		if !exists {
+			// 本地完全没有，直接采纳远程 Entry
+			// 这种情况下，不需要反序列化，直接存 Entry 即可。cache 保持空白。
 			m.Entries[k] = remoteEntry
 			continue
 		}
 
+		// 3. 本地有 Entry 但无 Cache。需要比较/合并。
 		if localEntry.Type != remoteEntry.Type {
+			// 类型冲突，LWW 或其他策略。这里简单覆盖？或者保留本地？
+			// 假设类型一旦确定不变。如果变了，覆盖。
 			m.Entries[k] = remoteEntry
 		} else {
-			lC, _ := Deserialize(localEntry.Type, localEntry.Data)
-			rC, _ := Deserialize(remoteEntry.Type, remoteEntry.Data)
-			if lC != nil && rC != nil {
-				lC.Merge(rC)
-				b, _ := lC.Bytes()
-				localEntry.Data = b
+			// 两个都是冷数据 (Bytes)。
+			// 反序列化 -> Merge -> 序列化 -> 存回 Entry?
+			// 还是反序列化 -> Merge -> 放入 Cache? (推荐后者，Lazy)
+
+			lC, err := Deserialize(localEntry.Type, localEntry.Data)
+			if err != nil {
+				return err
 			}
+
+			rC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
+			if err != nil {
+				return err
+			}
+
+			if err := lC.Merge(rC); err != nil {
+				return err
+			}
+
+			// 放入 Cache，标记为活跃/脏
+			m.cache[k] = lC
 		}
 	}
 	return nil
 }
 
 func (m *MapCRDT) Bytes() ([]byte, error) {
+	// Flush Cache to Entries
+	for k, c := range m.cache {
+		b, err := c.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		// Update Entry
+		// 如果 Entry 不存在（新建的），创建它
+		if _, ok := m.Entries[k]; !ok {
+			m.Entries[k] = &Entry{Type: c.Type()}
+		}
+		m.Entries[k].Data = b
+	}
+
 	return json.Marshal(m)
 }
 
 func (m *MapCRDT) GC(safeTimestamp int64) int {
 	count := 0
-	for _, e := range m.Entries {
-		c, err := Deserialize(e.Type, e.Data)
-		if err == nil {
+	// 遍历所有数据。优先遍历 Cache，再遍历 Entries 中不在 Cache 的。
+	// 或者：先 Flush？
+	// GC 可能不需要 Flush，但如果 GC 修改了数据，需要更新。
+
+	// 策略：遍历 Entries 的所有 Key。
+	for k, e := range m.Entries {
+		var c CRDT
+		var inCache bool
+
+		if cached, ok := m.cache[k]; ok {
+			c = cached
+			inCache = true
+		} else {
+			var err error
+			c, err = Deserialize(e.Type, e.Data)
+			if err != nil {
+				continue // Skip bad data
+			}
+			// 不一定非要放入 Cache，除非 GC 发生了修改。
+			// 但为了简化，如果反序列化了，不妨放入 Cache？
+			// 算了，按需加载。
+		}
+
+		if c != nil {
 			removed := c.GC(safeTimestamp)
 			count += removed
 			if removed > 0 {
-				newData, _ := c.Bytes()
-				e.Data = newData
+				if !inCache {
+					// 如果刚才不在 Cache 里，现在修改了，必须放入 Cache (变成脏数据)
+					m.cache[k] = c
+				}
+				// 如果已经在 Cache 里，它已经被修改了，无需额外操作。
 			}
 		}
 	}
+
 	return count
 }
 
@@ -179,13 +273,22 @@ func FromBytesMap(data []byte) (*MapCRDT, error) {
 	if err := json.Unmarshal(data, m); err != nil {
 		return nil, err
 	}
+	// Entries 已加载。Cache 为空。
 	return m, nil
 }
 
 func (m *MapCRDT) GetCRDT(key string) CRDT {
+	// Try cache first
+	if c, ok := m.cache[key]; ok {
+		return c
+	}
+
 	if e, ok := m.Entries[key]; ok {
 		c, err := Deserialize(e.Type, e.Data)
 		if err == nil {
+			// Read-only access usually doesn't need caching, but for consistency?
+			// Let's cache it on read to speed up subsequent reads/writes.
+			m.cache[key] = c
 			return c
 		}
 	}
@@ -194,22 +297,48 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 
 // GetORSet 获取指定类型的 ORSet。
 func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
+	// Try cache
+	if c, ok := m.cache[key]; ok {
+		if val, castOk := c.(*ORSet[T]); castOk {
+			return val, nil
+		}
+		return nil, fmt.Errorf("type mismatch in cache")
+	}
+
 	if e, ok := m.Entries[key]; ok {
 		if e.Type != TypeORSet {
 			return nil, fmt.Errorf("type mismatch: expected ORSet, got %v", e.Type)
 		}
-		return FromBytesORSet[T](e.Data)
+		c, err := FromBytesORSet[T](e.Data)
+		if err != nil {
+			return nil, err
+		}
+		m.cache[key] = c
+		return c, nil
 	}
 	return nil, nil // Not found
 }
 
 // GetRGA 获取指定类型的 RGA。
 func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
+	// Try cache
+	if c, ok := m.cache[key]; ok {
+		if val, castOk := c.(*RGA[T]); castOk {
+			return val, nil
+		}
+		return nil, fmt.Errorf("type mismatch in cache")
+	}
+
 	if e, ok := m.Entries[key]; ok {
 		if e.Type != TypeRGA {
 			return nil, fmt.Errorf("type mismatch: expected RGA, got %v", e.Type)
 		}
-		return FromBytesRGA[T](e.Data)
+		c, err := FromBytesRGA[T](e.Data)
+		if err != nil {
+			return nil, err
+		}
+		m.cache[key] = c
+		return c, nil
 	}
 	return nil, nil
 }
