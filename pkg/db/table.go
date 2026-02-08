@@ -152,7 +152,7 @@ func (t *Table) Add(key string, col string, val interface{}) error {
 			case meta.CrdtORSet:
 				newCrdt = crdt.NewORSet()
 			case meta.CrdtRGA:
-				newCrdt = crdt.NewRGA()
+				newCrdt = crdt.NewRGA(t.db.clock)
 			}
 
 			if newCrdt != nil {
@@ -587,7 +587,7 @@ func (t *Table) getRGA(m *crdt.MapCRDT, col string) (*crdt.RGA, error) {
 	item := m.GetCRDT(col) // Only works if I add it.
 	if item == nil {
 		// Initialize if missing?
-		newRGA := crdt.NewRGA()
+		newRGA := crdt.NewRGA(t.db.clock)
 		// We need to put it into the map.
 		m.Apply(crdt.OpMapSet{Key: col, Value: newRGA})
 		return newRGA, nil

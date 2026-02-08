@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/shinyes/yep_crdt/pkg/hlc"
 )
 
 func TestRGABasic(t *testing.T) {
-	r := NewRGA()
+	clock := hlc.New()
+	r := NewRGA(clock)
 
 	// Insert "A" after Head
 	op1 := OpRGAInsert{AnchorID: r.Head, Value: []byte("A")}
@@ -42,11 +45,13 @@ func TestRGABasic(t *testing.T) {
 
 func TestRGAConcurrentInsert(t *testing.T) {
 	// Simulate two replicas starting state
-	r1 := NewRGA()
+	clock1 := hlc.New()
+	r1 := NewRGA(clock1)
 
 	// Create r2 from r1 (clone)
 	r2Bytes, _ := r1.Bytes()
 	r2, _ := FromBytesRGA(r2Bytes)
+	r2.Clock = hlc.New() // Give r2 its own clock
 
 	// Replica 1 inserts "A" after Head at T1
 	op1 := OpRGAInsert{AnchorID: r1.Head, Value: []byte("A")}

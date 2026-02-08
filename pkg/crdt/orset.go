@@ -76,10 +76,8 @@ func (s *ORSet) Apply(op Op) error {
 		for id := range ids {
 			s.Tombstones[id] = struct{}{}
 		}
-		// 可选：清理 AddSet如果我们要，但保留它有助于同步？
-		// 实际上，对于基于状态的，我们保留它。
-		// 但严格来说，如果我们要信任因果传递，我们可以将 ID 移动到 Tombstones 并从 AddSet 中删除以节省空间。
-		// 为了纯基于状态的合并安全性，我们将它们保留在 Tombstones 中。
+		// 立即从 AddSet 中删除，以节省空间和后续遍历时间
+		delete(s.AddSet, o.Element)
 
 	default:
 		return ErrInvalidOp
@@ -108,9 +106,17 @@ func (s *ORSet) Merge(other CRDT) error {
 		}
 	}
 
-	// 3. (优化) 从 AddSet 中移除在 Tombstones 中的 ID？
-	// 严格来说，我们可以，但分开保留使逻辑更清晰。
-	// 为了实现 "Value()"，我们检查 Tombstones。
+	// 3. 优化：清理 AddSet 中已经在 Tombstones 中的元素
+	for elem, ids := range s.AddSet {
+		for id := range ids {
+			if _, deleted := s.Tombstones[id]; deleted {
+				delete(s.AddSet[elem], id)
+			}
+		}
+		if len(s.AddSet[elem]) == 0 {
+			delete(s.AddSet, elem)
+		}
+	}
 	return nil
 }
 
