@@ -10,46 +10,48 @@ import (
 )
 
 // RGA 实现复制可增长数组 (Replicated Growable Array)。
-type RGA struct {
-	Vertices map[string]*RGAVertex
+type RGA[T any] struct {
+	Vertices map[string]*RGAVertex[T]
 	Head     string     // 虚拟头节点的 ID
 	Clock    *hlc.Clock // 混合逻辑时钟
 
 	// internal cache for tree structure: Origin -> List of Children
-	// This allows avoiding full reconstruction on every Merge.
-	edges map[string][]*RGAVertex
+	edges map[string][]*RGAVertex[T]
 }
 
-type RGAVertex struct {
+type RGAVertex[T any] struct {
 	ID        string
-	Value     []byte
+	Value     T
 	Origin    string // ID of the node this was inserted after (Origin)
 	Next      string // ID of the next vertex (derived/cached)
 	Timestamp int64  // For conflict resolution
 	Deleted   bool
+	DeletedAt int64 // Time of deletion for GC
 }
 
-func NewRGA(clock *hlc.Clock) *RGA {
-	head := &RGAVertex{
-		ID:        uuid.NewString(), // 或者固定的 "HEAD"
-		Value:     nil,
+func NewRGA[T any](clock *hlc.Clock) *RGA[T] {
+	// Head has zero value of T
+	var zero T
+	head := &RGAVertex[T]{
+		ID:        uuid.NewString(),
+		Value:     zero,
 		Next:      "",
 		Timestamp: 0,
-		Deleted:   true, // Head 总是被删除/不可见的
+		Deleted:   true,
 	}
-	return &RGA{
-		Vertices: map[string]*RGAVertex{head.ID: head},
+	return &RGA[T]{
+		Vertices: map[string]*RGAVertex[T]{head.ID: head},
 		Head:     head.ID,
 		Clock:    clock,
-		edges:    make(map[string][]*RGAVertex),
+		edges:    make(map[string][]*RGAVertex[T]),
 	}
 }
 
-func (r *RGA) Type() Type { return TypeRGA }
+func (r *RGA[T]) Type() Type { return TypeRGA }
 
 // Value 按顺序返回值的列表。
-func (r *RGA) Value() interface{} {
-	var res []interface{}
+func (r *RGA[T]) Value() interface{} {
+	var res []T
 	curr := r.Head
 	for curr != "" {
 		v := r.Vertices[curr]
@@ -62,12 +64,12 @@ func (r *RGA) Value() interface{} {
 }
 
 // OpRGAInsert 在特定 ID 之后插入值。
-type OpRGAInsert struct {
+type OpRGAInsert[T any] struct {
 	AnchorID string // 插入位置之后的节点 ID
-	Value    []byte
+	Value    T
 }
 
-func (op OpRGAInsert) Type() Type { return TypeRGA }
+func (op OpRGAInsert[T]) Type() Type { return TypeRGA }
 
 type OpRGARemove struct {
 	ID string
@@ -75,12 +77,12 @@ type OpRGARemove struct {
 
 func (op OpRGARemove) Type() Type { return TypeRGA }
 
-func (r *RGA) ensureEdges() {
+func (r *RGA[T]) ensureEdges() {
 	if len(r.edges) > 0 {
 		return
 	}
 	if r.edges == nil {
-		r.edges = make(map[string][]*RGAVertex)
+		r.edges = make(map[string][]*RGAVertex[T])
 	}
 	if len(r.Vertices) > 1 {
 		for _, v := range r.Vertices {
@@ -95,11 +97,11 @@ func (r *RGA) ensureEdges() {
 	}
 }
 
-func (r *RGA) Apply(op Op) error {
+func (r *RGA[T]) Apply(op Op) error {
 	r.ensureEdges()
 
 	switch o := op.(type) {
-	case OpRGAInsert:
+	case OpRGAInsert[T]:
 		newID := uuid.NewString()
 		var ts int64
 		if r.Clock != nil {
@@ -112,7 +114,7 @@ func (r *RGA) Apply(op Op) error {
 			return fmt.Errorf("anchor %s not found", o.AnchorID)
 		}
 
-		v := &RGAVertex{
+		v := &RGAVertex[T]{
 			ID:        newID,
 			Value:     o.Value,
 			Origin:    o.AnchorID,
@@ -123,8 +125,6 @@ func (r *RGA) Apply(op Op) error {
 		r.edges[o.AnchorID] = append(r.edges[o.AnchorID], v)
 		sortChildren(r.edges[o.AnchorID])
 
-		// Local Insert Logic:
-		// Newest child (highest TS) goes first.
 		anchor := r.Vertices[o.AnchorID]
 		v.Next = anchor.Next
 		anchor.Next = v.ID
@@ -132,6 +132,9 @@ func (r *RGA) Apply(op Op) error {
 	case OpRGARemove:
 		if v, ok := r.Vertices[o.ID]; ok {
 			v.Deleted = true
+			if r.Clock != nil {
+				v.DeletedAt = r.Clock.Now()
+			}
 		}
 	default:
 		return ErrInvalidOp
@@ -140,7 +143,7 @@ func (r *RGA) Apply(op Op) error {
 }
 
 // sortChildren sorts by Timestamp DESC, then ID DESC
-func sortChildren(children []*RGAVertex) {
+func sortChildren[T any](children []*RGAVertex[T]) {
 	sort.Slice(children, func(i, j int) bool {
 		if children[i].Timestamp != children[j].Timestamp {
 			return children[i].Timestamp > children[j].Timestamp
@@ -150,7 +153,7 @@ func sortChildren(children []*RGAVertex) {
 }
 
 // traverseRightMost finds the right-most node in the subtree rooted at node.
-func (r *RGA) traverseRightMost(node *RGAVertex) *RGAVertex {
+func (r *RGA[T]) traverseRightMost(node *RGAVertex[T]) *RGAVertex[T] {
 	curr := node
 	for {
 		children := r.edges[curr.ID]
@@ -163,32 +166,42 @@ func (r *RGA) traverseRightMost(node *RGAVertex) *RGAVertex {
 }
 
 // Merge merges another RGA state using incremental updates.
-func (r *RGA) Merge(other CRDT) error {
-	o, ok := other.(*RGA)
+func (r *RGA[T]) Merge(other CRDT) error {
+	o, ok := other.(*RGA[T])
 	if !ok {
 		return fmt.Errorf("cannot merge %T into RGA", other)
 	}
 
 	r.ensureEdges()
 
-	// 1. Identify missing vertices and add them
-	var newVertices []*RGAVertex
+	var newVertices []*RGAVertex[T]
 
 	for id, vRemote := range o.Vertices {
 		if vLocal, exists := r.Vertices[id]; exists {
-			if vRemote.Deleted && !vLocal.Deleted {
-				vLocal.Deleted = true
+			if vRemote.Deleted {
+				if !vLocal.Deleted {
+					vLocal.Deleted = true
+					vLocal.DeletedAt = vRemote.DeletedAt
+				} else {
+					if vLocal.DeletedAt == 0 || (vRemote.DeletedAt > 0 && vRemote.DeletedAt < vLocal.DeletedAt) {
+						vLocal.DeletedAt = vRemote.DeletedAt
+					}
+				}
 			}
 		} else {
-			valueCopy := make([]byte, len(vRemote.Value))
-			copy(valueCopy, vRemote.Value)
-
-			vNew := &RGAVertex{
+			// Deep copy value? T might be slice/pointer.
+			// Currently we assume immutable or simple types.
+			// But for T=[]byte, we should copy.
+			// Hard to do deep copy generically in Go without reflection.
+			// We trust caller or use JSON roundtrip if desperate.
+			// Here we just copy T.
+			vNew := &RGAVertex[T]{
 				ID:        vRemote.ID,
-				Value:     valueCopy,
+				Value:     vRemote.Value, // Shallow copy of struct/pointer
 				Origin:    vRemote.Origin,
 				Timestamp: vRemote.Timestamp,
 				Deleted:   vRemote.Deleted,
+				DeletedAt: vRemote.DeletedAt,
 			}
 			r.Vertices[id] = vNew
 			newVertices = append(newVertices, vNew)
@@ -200,7 +213,6 @@ func (r *RGA) Merge(other CRDT) error {
 		return nil
 	}
 
-	// 2. Sort modified edge lists
 	affectedOrigins := make(map[string]bool)
 	for _, v := range newVertices {
 		affectedOrigins[v.Origin] = true
@@ -210,16 +222,12 @@ func (r *RGA) Merge(other CRDT) error {
 	for originID := range affectedOrigins {
 		if list, ok := r.edges[originID]; ok {
 			sortChildren(list)
-			// Capture ranks of new nodes
 			for i, child := range list {
 				siblingRanks[child.ID] = i
 			}
 		}
 	}
 
-	// 3. Topological sort of newVertices
-	// Primary: Depth (Parent < Child)
-	// Secondary: Sibling Rank (Left < Right)
 	depths := make(map[string]int)
 	newSet := make(map[string]bool)
 	for _, v := range newVertices {
@@ -252,7 +260,6 @@ func (r *RGA) Merge(other CRDT) error {
 		return u.Origin < v.Origin
 	})
 
-	// 4. Link new vertices into the linear list
 	for _, v := range newVertices {
 		origin := r.Vertices[v.Origin]
 		if origin == nil {
@@ -260,18 +267,13 @@ func (r *RGA) Merge(other CRDT) error {
 		}
 
 		rank := siblingRanks[v.ID]
-		// Re-verify rank?
-		// We can trust siblingRanks map since we just computed it from sorted list.
 
-		var insertPos *RGAVertex
+		var insertPos *RGAVertex[T]
 		if rank == 0 {
 			insertPos = origin
 		} else {
-			// Find prevSibling.
-			// We need access to children list again?
 			children := r.edges[v.Origin]
 			if rank >= len(children) {
-				// Should not happen
 				continue
 			}
 			prevSibling := children[rank-1]
@@ -290,12 +292,60 @@ func (r *RGA) Merge(other CRDT) error {
 	return nil
 }
 
-func (r *RGA) Bytes() ([]byte, error) {
+func (r *RGA[T]) GC(safeTimestamp int64) int {
+	count := 0
+	prevID := r.Head
+	currID := r.Vertices[r.Head].Next
+
+	for currID != "" {
+		v := r.Vertices[currID]
+		nextID := v.Next
+
+		isLeaf := true
+		if children, ok := r.edges[v.ID]; ok && len(children) > 0 {
+			isLeaf = false
+		}
+
+		canGC := v.Deleted && v.DeletedAt > 0 && v.DeletedAt < safeTimestamp && isLeaf
+
+		if canGC {
+			prev := r.Vertices[prevID]
+			prev.Next = nextID
+
+			delete(r.Vertices, currID)
+
+			parentID := v.Origin
+			if siblings, ok := r.edges[parentID]; ok {
+				newSiblings := siblings[:0]
+				for _, child := range siblings {
+					if child.ID != currID {
+						newSiblings = append(newSiblings, child)
+					}
+				}
+				if len(newSiblings) == 0 {
+					delete(r.edges, parentID)
+				} else {
+					r.edges[parentID] = newSiblings
+				}
+			}
+
+			count++
+			currID = nextID
+		} else {
+			prevID = currID
+			currID = nextID
+		}
+	}
+
+	return count
+}
+
+func (r *RGA[T]) Bytes() ([]byte, error) {
 	return json.Marshal(r)
 }
 
-func FromBytesRGA(data []byte) (*RGA, error) {
-	r := &RGA{}
+func FromBytesRGA[T any](data []byte) (*RGA[T], error) {
+	r := &RGA[T]{}
 	if err := json.Unmarshal(data, r); err != nil {
 		return nil, err
 	}

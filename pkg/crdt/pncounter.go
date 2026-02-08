@@ -80,6 +80,10 @@ func (c *PNCounter) Bytes() ([]byte, error) {
 	return json.Marshal(c)
 }
 
+func (c *PNCounter) GC(safeTimestamp int64) int {
+	return 0
+}
+
 func FromBytesPNCounter(data []byte) (*PNCounter, error) {
 	// 注意：我们通常不知道字节中的 ID，除非已存储。
 	// 对于反序列化，ID 可能为空，或者我们需要传递它。

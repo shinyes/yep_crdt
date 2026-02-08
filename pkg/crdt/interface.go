@@ -33,6 +33,11 @@ type CRDT interface {
 	// 另一个状态通常是从字节反序列化的。
 	Merge(other CRDT) error
 
+	// GC 执行垃圾回收。
+	// safeTimestamp 是指所有节点都已确认看到的最小时间戳（因果稳定时间）。
+	// 返回被移除的（物理删除的）元素数量。
+	GC(safeTimestamp int64) int
+
 	// Bytes 将 CRDT 状态序列化为字节。
 	Bytes() ([]byte, error)
 }

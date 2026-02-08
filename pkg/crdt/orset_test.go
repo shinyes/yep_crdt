@@ -6,10 +6,10 @@ import (
 )
 
 func TestORSet_Basic(t *testing.T) {
-	s := NewORSet()
+	s := NewORSet[string]()
 
 	// 添加 "A"
-	op1 := OpORSetAdd{Element: "A"}
+	op1 := OpORSetAdd[string]{Element: "A"}
 	if err := s.Apply(op1); err != nil {
 		t.Fatalf("应用 op1 失败: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestORSet_Basic(t *testing.T) {
 	}
 
 	// 添加 "B"
-	op2 := OpORSetAdd{Element: "B"}
+	op2 := OpORSetAdd[string]{Element: "B"}
 	s.Apply(op2)
 
 	// 验证 "A", "B" 存在
@@ -32,7 +32,7 @@ func TestORSet_Basic(t *testing.T) {
 	}
 
 	// 移除 "A"
-	op3 := OpORSetRemove{Element: "A"}
+	op3 := OpORSetRemove[string]{Element: "A"}
 	s.Apply(op3)
 
 	// 验证只有 "B" 存在
@@ -43,14 +43,14 @@ func TestORSet_Basic(t *testing.T) {
 }
 
 func TestORSet_Merge(t *testing.T) {
-	s1 := NewORSet()
-	s2 := NewORSet()
+	s1 := NewORSet[string]()
+	s2 := NewORSet[string]()
 
 	// s1 添加 "A"
-	s1.Apply(OpORSetAdd{Element: "A"})
+	s1.Apply(OpORSetAdd[string]{Element: "A"})
 
 	// s2 添加 "B"
-	s2.Apply(OpORSetAdd{Element: "B"})
+	s2.Apply(OpORSetAdd[string]{Element: "B"})
 
 	// 合并 s2 到 s1
 	if err := s1.Merge(s2); err != nil {
@@ -74,11 +74,11 @@ func TestORSet_Merge(t *testing.T) {
 }
 
 func TestORSet_Merge_Remove(t *testing.T) {
-	s1 := NewORSet()
-	s2 := NewORSet()
+	s1 := NewORSet[string]()
+	s2 := NewORSet[string]()
 
 	// s1 添加 "A"
-	s1.Apply(OpORSetAdd{Element: "A"})
+	s1.Apply(OpORSetAdd[string]{Element: "A"})
 
 	// 合并 s1 到 s2, 所以两者都有 "A"
 	// 我们需要序列化/反序列化或者直接合并如果它们在内存中
@@ -88,7 +88,7 @@ func TestORSet_Merge_Remove(t *testing.T) {
 	s2.Merge(s1)
 
 	// s2 移除 "A"
-	s2.Apply(OpORSetRemove{Element: "A"})
+	s2.Apply(OpORSetRemove[string]{Element: "A"})
 
 	// 验证 s2 为空
 	if len(s2.Value().([]string)) != 0 {
@@ -105,19 +105,19 @@ func TestORSet_Merge_Remove(t *testing.T) {
 }
 
 func TestORSet_AddRemoveAdd(t *testing.T) {
-	s := NewORSet()
+	s := NewORSet[string]()
 
 	// 添加 "A"
-	s.Apply(OpORSetAdd{Element: "A"})
+	s.Apply(OpORSetAdd[string]{Element: "A"})
 	// 移除 "A"
-	s.Apply(OpORSetRemove{Element: "A"})
+	s.Apply(OpORSetRemove[string]{Element: "A"})
 
 	if len(s.Value().([]string)) != 0 {
 		t.Fatal("预期为空集")
 	}
 
 	// 再次添加 "A" (Observed-Remove 应该允许用新 ID 重新添加)
-	s.Apply(OpORSetAdd{Element: "A"})
+	s.Apply(OpORSetAdd[string]{Element: "A"})
 
 	vals := s.Value().([]string)
 	if len(vals) != 1 || vals[0] != "A" {

@@ -150,9 +150,9 @@ func (t *Table) Add(key string, col string, val interface{}) error {
 			case meta.CrdtCounter:
 				newCrdt = crdt.NewPNCounter(t.db.NodeID)
 			case meta.CrdtORSet:
-				newCrdt = crdt.NewORSet()
+				newCrdt = crdt.NewORSet[string]()
 			case meta.CrdtRGA:
-				newCrdt = crdt.NewRGA(t.db.clock)
+				newCrdt = crdt.NewRGA[[]byte](t.db.clock)
 			}
 
 			if newCrdt != nil {
@@ -180,7 +180,7 @@ func (t *Table) Add(key string, col string, val interface{}) error {
 		case meta.CrdtORSet:
 			op = crdt.OpMapUpdate{
 				Key: col,
-				Op:  crdt.OpORSetAdd{Element: string(encodeValue(val))},
+				Op:  crdt.OpORSetAdd[string]{Element: string(encodeValue(val))},
 			}
 		case meta.CrdtRGA:
 			// Append to end. Need to find tail?
@@ -207,7 +207,7 @@ func (t *Table) Add(key string, col string, val interface{}) error {
 
 			op = crdt.OpMapUpdate{
 				Key: col,
-				Op:  crdt.OpRGAInsert{AnchorID: lastID, Value: encodeValue(val)},
+				Op:  crdt.OpRGAInsert[[]byte]{AnchorID: lastID, Value: encodeValue(val)},
 			}
 		default: // LWW or Unknown
 			lww := crdt.NewLWWRegister(encodeValue(val), ts)
@@ -256,7 +256,7 @@ func (t *Table) Remove(key string, col string, val interface{}) error {
 		case meta.CrdtORSet:
 			op = crdt.OpMapUpdate{
 				Key: col,
-				Op:  crdt.OpORSetRemove{Element: string(encodeValue(val))},
+				Op:  crdt.OpORSetRemove[string]{Element: string(encodeValue(val))},
 			}
 		case meta.CrdtRGA:
 			// Remove by Value. Need to find all IDs with this value.
@@ -340,7 +340,7 @@ func (t *Table) InsertAfter(key string, col string, anchorVal interface{}, newVa
 
 		op := crdt.OpMapUpdate{
 			Key: col,
-			Op:  crdt.OpRGAInsert{AnchorID: anchorID, Value: encodeValue(newVal)},
+			Op:  crdt.OpRGAInsert[[]byte]{AnchorID: anchorID, Value: encodeValue(newVal)},
 		}
 
 		if err := currentMap.Apply(op); err != nil {
@@ -440,7 +440,7 @@ func (t *Table) InsertAt(key string, col string, index int, val interface{}) err
 
 		op := crdt.OpMapUpdate{
 			Key: col,
-			Op:  crdt.OpRGAInsert{AnchorID: targetAnchor, Value: encodeValue(val)},
+			Op:  crdt.OpRGAInsert[[]byte]{AnchorID: targetAnchor, Value: encodeValue(val)},
 		}
 
 		if err := currentMap.Apply(op); err != nil {
@@ -566,36 +566,17 @@ func (t *Table) saveRow(txn store.Tx, pk []byte, currentMap *crdt.MapCRDT, oldBo
 	return txn.Set(keyBytes, finalBytes, 0)
 }
 
-func (t *Table) getRGA(m *crdt.MapCRDT, col string) (*crdt.RGA, error) {
+func (t *Table) getRGA(m *crdt.MapCRDT, col string) (*crdt.RGA[[]byte], error) {
 	// Map stores generic CRDTs. We need to cast it.
-	// We need access to the `Entries` map of MapCRDT, but it's private?
-	// `Value()` returns interface{}, not CRDTs.
-	// We need `GetCRDT(key)` method on MapCRDT?
-
-	// Assuming we can't access `Entries` directly (it is lowercase in `pkg/crdt/map.go`?).
-	// Let's check `pkg/crdt/map.go`.
-	// If `Entries` is not public, we are in trouble.
-	// Wait, `Entries` in `MapCRDT` struct?
-
-	// Checking `pkg/crdt/map.go`: `type MapCRDT struct { entries map[string]CRDT }` (lowercase).
-	// We MUST add a public accessor `Get(key) CRDT` to MapCRDT.
-	// Or we use reflection? No.
-
-	// Temporary Hack: We assume we can add `GetCRDT` to MapCRDT.
-	// Since I am editing `pkg/crdt` anyway.
-
-	item := m.GetCRDT(col) // Only works if I add it.
-	if item == nil {
-		// Initialize if missing?
-		newRGA := crdt.NewRGA(t.db.clock)
-		// We need to put it into the map.
+	rga, err := crdt.GetRGA[[]byte](m, col)
+	if err != nil {
+		return nil, err
+	}
+	if rga == nil {
+		// Initialize
+		newRGA := crdt.NewRGA[[]byte](t.db.clock)
 		m.Apply(crdt.OpMapSet{Key: col, Value: newRGA})
 		return newRGA, nil
-	}
-
-	rga, ok := item.(*crdt.RGA)
-	if !ok {
-		return nil, fmt.Errorf("column %s is not RGA", col)
 	}
 	return rga, nil
 }

@@ -5,29 +5,33 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/shinyes/yep_crdt/pkg/hlc"
 )
 
 // ORSet 实现观察-移除 (Observed-Remove) 集合。
 // 它使用每个元素的活动 ID 集合和已删除 ID 的墓碑集合。
-type ORSet struct {
-	AddSet     map[string]map[string]struct{} // 元素 -> ID 集合
-	Tombstones map[string]struct{}            // 已删除 ID 的集合
+// T 必须是 comparable，以便用作 map 的键。
+type ORSet[T comparable] struct {
+	AddSet     map[T]map[string]struct{} // 元素 -> ID 集合
+	Tombstones map[string]int64          // 已删除 ID -> 删除时间戳
+	Clock      *hlc.Clock                // 混合逻辑时钟 (可选，用于 Apply)
 }
 
 // NewORSet 创建一个新的 ORSet。
-func NewORSet() *ORSet {
-	return &ORSet{
-		AddSet:     make(map[string]map[string]struct{}),
-		Tombstones: make(map[string]struct{}),
+func NewORSet[T comparable]() *ORSet[T] {
+	return &ORSet[T]{
+		AddSet:     make(map[T]map[string]struct{}),
+		Tombstones: make(map[string]int64),
+		Clock:      hlc.New(), // 默认自带时钟，也可外部注入
 	}
 }
 
-func (s *ORSet) Type() Type {
+func (s *ORSet[T]) Type() Type {
 	return TypeORSet
 }
 
-func (s *ORSet) Value() interface{} {
-	elements := make([]string, 0, len(s.AddSet))
+func (s *ORSet[T]) Value() interface{} {
+	elements := make([]T, 0, len(s.AddSet))
 	for e, ids := range s.AddSet {
 		// 过滤掉在 Tombstones 中的 ID
 		active := false
@@ -45,22 +49,22 @@ func (s *ORSet) Value() interface{} {
 }
 
 // OpORSetAdd 添加一个元素。
-type OpORSetAdd struct {
-	Element string
+type OpORSetAdd[T comparable] struct {
+	Element T
 }
 
-func (op OpORSetAdd) Type() Type { return TypeORSet }
+func (op OpORSetAdd[T]) Type() Type { return TypeORSet }
 
 // OpORSetRemove 移除一个元素。
-type OpORSetRemove struct {
-	Element string
+type OpORSetRemove[T comparable] struct {
+	Element T
 }
 
-func (op OpORSetRemove) Type() Type { return TypeORSet }
+func (op OpORSetRemove[T]) Type() Type { return TypeORSet }
 
-func (s *ORSet) Apply(op Op) error {
+func (s *ORSet[T]) Apply(op Op) error {
 	switch o := op.(type) {
-	case OpORSetAdd:
+	case OpORSetAdd[T]:
 		// 生成唯一 ID
 		id := uuid.NewString() // 在生产环境中，依赖混合逻辑时钟或类似机制
 		if s.AddSet[o.Element] == nil {
@@ -68,13 +72,17 @@ func (s *ORSet) Apply(op Op) error {
 		}
 		s.AddSet[o.Element][id] = struct{}{}
 
-	case OpORSetRemove:
+	case OpORSetRemove[T]:
 		ids, ok := s.AddSet[o.Element]
 		if !ok {
 			return nil // 无需移除
 		}
+		ts := int64(0)
+		if s.Clock != nil {
+			ts = s.Clock.Now()
+		}
 		for id := range ids {
-			s.Tombstones[id] = struct{}{}
+			s.Tombstones[id] = ts
 		}
 		// 立即从 AddSet 中删除，以节省空间和后续遍历时间
 		delete(s.AddSet, o.Element)
@@ -85,15 +93,17 @@ func (s *ORSet) Apply(op Op) error {
 	return nil
 }
 
-func (s *ORSet) Merge(other CRDT) error {
-	o, ok := other.(*ORSet)
+func (s *ORSet[T]) Merge(other CRDT) error {
+	o, ok := other.(*ORSet[T])
 	if !ok {
 		return fmt.Errorf("cannot merge %T into ORSet", other)
 	}
 
 	// 1. 合并 Tombstones
-	for id := range o.Tombstones {
-		s.Tombstones[id] = struct{}{}
+	for id, ts := range o.Tombstones {
+		if localTs, exists := s.Tombstones[id]; !exists || ts > localTs {
+			s.Tombstones[id] = ts
+		}
 	}
 
 	// 2. 合并 AddSets
@@ -120,12 +130,24 @@ func (s *ORSet) Merge(other CRDT) error {
 	return nil
 }
 
-func (s *ORSet) Bytes() ([]byte, error) {
+func (s *ORSet[T]) GC(safeTimestamp int64) int {
+	count := 0
+	for id, ts := range s.Tombstones {
+		if ts < safeTimestamp {
+			delete(s.Tombstones, id)
+			count++
+		}
+	}
+	return count
+}
+
+func (s *ORSet[T]) Bytes() ([]byte, error) {
 	return json.Marshal(s)
 }
 
-func FromBytesORSet(data []byte) (*ORSet, error) {
-	s := NewORSet()
+// FromBytesORSet 反序列化 ORSet。需要指定 T。
+func FromBytesORSet[T comparable](data []byte) (*ORSet[T], error) {
+	s := NewORSet[T]()
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, err
 	}

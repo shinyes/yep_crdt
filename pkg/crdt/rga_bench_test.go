@@ -8,12 +8,12 @@ import (
 
 func BenchmarkRGA_Apply(b *testing.B) {
 	clock := hlc.New()
-	r := NewRGA(clock)
+	r := NewRGA[[]byte](clock)
 	anchor := r.Head
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		op := OpRGAInsert{
+		op := OpRGAInsert[[]byte]{
 			AnchorID: anchor,
 			Value:    []byte("x"),
 		}
@@ -30,15 +30,15 @@ func BenchmarkRGA_Merge_Incremental(b *testing.B) {
 	// Merging one into another.
 	size := 1000
 	clock1 := hlc.New()
-	r1 := NewRGA(clock1)
+	r1 := NewRGA[[]byte](clock1)
 
 	clock2 := hlc.New()
-	r2 := NewRGA(clock2)
+	r2 := NewRGA[[]byte](clock2)
 
 	// Fill r2
 	last := r2.Head
 	for i := 0; i < size; i++ {
-		op := OpRGAInsert{AnchorID: last, Value: []byte("y")}
+		op := OpRGAInsert[[]byte]{AnchorID: last, Value: []byte("y")}
 		r2.Apply(op)
 		// Find new ID?
 		// Inspect r2 vertices to find the one we just added?
@@ -50,7 +50,7 @@ func BenchmarkRGA_Merge_Incremental(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Reset r1
-		r1 = NewRGA(clock1)
+		r1 = NewRGA[[]byte](clock1)
 		r1.Merge(r2)
 	}
 }

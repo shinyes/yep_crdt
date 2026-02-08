@@ -64,6 +64,10 @@ func (r *LWWRegister) Merge(other CRDT) error {
 	return nil
 }
 
+func (r *LWWRegister) GC(safeTimestamp int64) int {
+	return 0
+}
+
 // Bytes 序列化 LWWRegister。
 // 格式：时间戳 (8 字节) + 值
 func (r *LWWRegister) Bytes() ([]byte, error) {

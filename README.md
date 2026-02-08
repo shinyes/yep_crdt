@@ -7,9 +7,9 @@
 *   **本地优先 (Local-First)**: 数据存储在本地，支持离线操作。
 *   **CRDT 支持**: 内置多种 CRDT 类型，支持细粒度的无冲突更新。
     *   `LWW-Register`: 最后写入胜出 (Last-Write-Wins)，适用于普通字段。
-    *   `OR-Set`: 观察-移除集合 (Observed-Remove Set)，适用于标签、类别等。
+    *   `OR-Set`: 观察-移除集合 (Observed-Remove Set)，支持泛型 `ORSet[T]`，适用于标签、类别等。
     *   `PN-Counter`: 正负计数器 (Positive-Negative Counter)，适用于点赞数、浏览量等。
-    *   `RGA`: 复制可增长数组 (Replicated Growable Array)，适用于有序列表、TODO 列表等。
+    *   `RGA`: 复制可增长数组 (Replicated Growable Array)，支持泛型 `RGA[T]`，适用于有序列表、TODO 列表等。
 *   **SQL-Like 查询**: 提供流式 API 进行数据查询。
     *   支持 `Where`, `And`, `Limit`, `Offset`, `OrderBy` 等操作。
     *   支持 `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN` 等条件。
@@ -21,6 +21,10 @@
     *   **混合逻辑时钟 (HLC)**: 提供因果一致的时间戳，为分布式同步奠定基础。
 *   **自动索引**: 定义 Schema 后自动维护二级索引。
 *   **多租户支持**: 基于文件系统的多租户隔离。
+*   **泛型支持 (Generics)**: 核心 CRDT 类型 (`ORSet`, `RGA`) 全面支持 Go 泛型，提供更好的类型安全和开发体验。
+*   **垃圾回收 (Garbage Collection)**:
+    *   **稳定时间戳**: 基于 Hybrid Logical Clock (HLC) 的 Safe Time 机制。
+    *   **自动清理**: 自动清理过期的 Tombstones (ORSet) 和物理移除已删除的节点 (RGA)，彻底解决 CRDT 元数据膨胀问题。
 *   **强制 UUIDv7**: 主键必须是有效的 UUIDv7 格式，以确保时间有序性和全局唯一性。
 *   **事务支持**: 所有更新操作都在 BadgerDB 的事务中原子执行。
 
@@ -207,6 +211,43 @@ func main() {
 
 		return t.Add(u2Key, "views", 100)
 	})
+```
+
+## 独立使用 CRDT 包 (Standalone CRDT Package)
+
+`pkg/crdt` 可以作为独立的 Go 库使用，支持泛型和垃圾回收。
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/shinyes/yep_crdt/pkg/crdt"
+    "github.com/shinyes/yep_crdt/pkg/hlc"
+)
+
+func main() {
+    // 1. 泛型 ORSet (支持任意 comparable 类型)
+    intSet := crdt.NewORSet[int]()
+    intSet.Apply(crdt.OpORSetAdd[int]{Element: 100})
+    intSet.Apply(crdt.OpORSetAdd[int]{Element: 200})
+    fmt.Println(intSet.Value()) // Output: [100 200]
+
+    // 2. 泛型 RGA (支持任意类型)
+    clock := hlc.New()
+    rga := crdt.NewRGA[string](clock)
+    
+    // 插入操作
+    rga.Apply(crdt.OpRGAInsert[string]{AnchorID: rga.Head, Value: "Hello"})
+    
+    // 3. 垃圾回收 (GC)
+    // 假设 safeTimestamp 是集群中最小的已知 HLC 时间
+    safeTime := clock.Now() 
+    
+    // 执行 GC，物理移除已删除且过期的节点
+    removed := rga.GC(safeTime)
+    fmt.Printf("垃圾回收移除节点数: %d\n", removed)
+}
 ```
 
 ## 架构概览
