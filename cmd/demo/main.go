@@ -24,7 +24,7 @@ func main() {
 	defer s.Close()
 
 	// 2. 打开 DB (租户)
-	myDB := db.Open(s)
+	myDB := db.Open(s, "tenant-1")
 
 	// 3. 定义 Schema
 	// 3. Define Schema (With CRDT Types!)

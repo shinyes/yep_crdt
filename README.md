@@ -67,8 +67,8 @@ func main() {
 	}
 	defer s.Close()
 
-	// 打开数据库实例
-	myDB := db.Open(s)
+	// 打开数据库实例 (需要指定唯一的数据库 ID)
+	myDB := db.Open(s, "tenant-1")
 	// 设置文件存储根目录（用于 LocalFileCRDT）
 	myDB.SetFileStorageDir("./data/files")
     // ...

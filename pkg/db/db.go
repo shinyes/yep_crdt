@@ -11,15 +11,17 @@ import (
 )
 
 // DB 代表数据库实例 (针对特定租户)。
+// DB 代表数据库实例 (针对特定租户)。
 type DB struct {
 	store   store.Store
 	catalog *meta.Catalog
 	idxMgr  *index.Manager
 	clock   *hlc.Clock
 
-	mu     sync.Mutex
-	tables map[string]*Table
-	NodeID string
+	mu         sync.Mutex
+	tables     map[string]*Table
+	NodeID     string
+	DatabaseID string
 
 	// FileStorageDir 是存储 LocalFileCRDT 文件的根目录。
 	// 如果为空，LocalFileCRDT.ReadAll 等操作将失败。
@@ -34,14 +36,39 @@ func WithFileStorageDir(dir string) Option {
 	}
 }
 
-func Open(s store.Store, opts ...Option) *DB {
+// Open 打开数据库。
+// databaseID 是数据库的唯一标识 (如 "tenant-1")。
+// 如果存储中已存在 ID 且与传入的不一致，将 panic。
+func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	c := meta.NewCatalog(s)
 	// Try loading existing catalog
 	_ = c.Load()
 
-	// Load or generate NodeID
-	var nodeID string
+	// 1. Check Database ID
+	var storedDBID string
 	err := s.View(func(txn store.Tx) error {
+		val, err := txn.Get([]byte("_sys/database_id"))
+		if err == nil {
+			storedDBID = string(val)
+			return nil
+		}
+		return err
+	})
+
+	if storedDBID != "" {
+		if storedDBID != databaseID {
+			panic("Database ID mismatch: expected " + storedDBID + ", got " + databaseID)
+		}
+	} else {
+		// First time, store it
+		_ = s.Update(func(txn store.Tx) error {
+			return txn.Set([]byte("_sys/database_id"), []byte(databaseID), 0)
+		})
+	}
+
+	// 2. Load or generate NodeID
+	var nodeID string
+	err = s.View(func(txn store.Tx) error {
 		val, err := txn.Get([]byte("_sys/node_id"))
 		if err == nil {
 			nodeID = string(val)
@@ -58,12 +85,13 @@ func Open(s store.Store, opts ...Option) *DB {
 	}
 
 	db := &DB{
-		store:   s,
-		catalog: c,
-		idxMgr:  index.NewManager(),
-		clock:   hlc.New(),
-		tables:  make(map[string]*Table),
-		NodeID:  nodeID,
+		store:      s,
+		catalog:    c,
+		idxMgr:     index.NewManager(),
+		clock:      hlc.New(),
+		tables:     make(map[string]*Table),
+		NodeID:     nodeID,
+		DatabaseID: databaseID,
 	}
 
 	for _, opt := range opts {

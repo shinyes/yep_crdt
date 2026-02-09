@@ -30,7 +30,7 @@ func TestQueryLocalFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	d := Open(s)
+	d := Open(s, "test-files")
 	defer d.Close()
 
 	d.SetFileStorageDir(fileStoreDir)

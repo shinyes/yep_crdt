@@ -19,7 +19,7 @@ func TestQueryPlanner(t *testing.T) {
 	defer s.Close()
 	defer os.RemoveAll(dbPath)
 
-	myDB := Open(s)
+	myDB := Open(s, "test-query-planner")
 
 	// Define Schema with Composite Index
 	err := myDB.DefineTable(&meta.TableSchema{
@@ -110,7 +110,7 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 	defer s.Close()
 	defer os.RemoveAll(dbPath)
 
-	myDB := Open(s)
+	myDB := Open(s, "test-find-crdts")
 
 	err := myDB.DefineTable(&meta.TableSchema{
 		ID:   2,
