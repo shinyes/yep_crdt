@@ -69,7 +69,14 @@ func main() {
 
 ### 3.2 定义 Schema (表结构)
 
-在使用表之前，必须定义其 Schema。Schema 决定了每一列的数据类型和 CRDT 类型，以及索引策略。
+在使用表之前，必须定义其 Schema。
+
+`DefineTable` 的主要作用是 **注册表结构 (Schema)**，它的行为类似于 **"Create If Not Exists" (如果不存在则创建)**。
+
+1. **如果表不存在**：它会在 Catalog 中创建新表，分配 Table ID 并持久化。
+2. **如果表已存在**：它**不会**覆盖旧结构，直接返回成功，确保操作的幂等性。
+
+Schema 决定了每一列的数据类型和 CRDT 类型，以及索引策略。
 
 ```go
 import "github.com/shinyes/yep_crdt/pkg/meta"
