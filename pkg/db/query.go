@@ -277,6 +277,9 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 		if err != nil {
 			continue
 		}
+		if q.table.db.FileStorageDir != "" {
+			m.SetBaseDir(q.table.db.FileStorageDir)
+		}
 
 		// Optimization: matches() takes ReadOnlyMap
 		if q.matches(m) {
@@ -308,7 +311,11 @@ func (q *Query) fetchCRDT(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crdt.FromBytesMap(val)
+	m, err := crdt.FromBytesMap(val)
+	if err == nil && q.table.db.FileStorageDir != "" {
+		m.SetBaseDir(q.table.db.FileStorageDir)
+	}
+	return m, err
 }
 
 func (q *Query) matches(row crdt.ReadOnlyMap) bool {

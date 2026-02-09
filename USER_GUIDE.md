@@ -60,6 +60,8 @@ func main() {
 	// 3. 打开数据库实例
 	// Open 会启动后台服务（如 HLC 时钟）
 	myDB := db.Open(s)
+	// (可选) 设置文件存储根目录，用于 LocalFileCRDT
+	myDB.SetFileStorageDir("./data/files")
     
     // ... 后续操作
 }
@@ -94,6 +96,10 @@ err := myDB.DefineTable(&meta.TableSchema{
         // 4. RGA (Replicated Growable Array): 有序列表
         // 适用于文档内容、评论列表、待办事项。支持并发插入/排序。
         {Name: "comments", Type: meta.ColTypeString, CrdtType: meta.CrdtRGA},
+
+        // 5. LocalFile (本地文件): 引用外部文件
+        // 适用于图片、附件、大文件。只存储元数据，支持按需读取内容。
+        {Name: "avatar", Type: meta.ColTypeString, CrdtType: meta.CrdtLocalFile},
     },
     Indexes: []meta.IndexSchema{
         // 简单索引
@@ -194,7 +200,41 @@ table.InsertAt(id, "comments", 0, "Top comment")
 table.RemoveAt(id, "comments", 1) // 移除索引为 1 的元素 ("First comment")
 ```
 
+
 > **注意**: `InsertAfter` 需要提供锚点元素的值。如果有多个相同值的元素，它会查找第一个未被删除的匹配项。
+
+### 4.5 本地文件操作 (LocalFile)
+
+LocalFileCRDT 仅存储文件的元数据（Path, Size, Hash），实际文件存储在本地文件系统。
+
+
+```go
+// 插入本地文件 (自动导入)
+// 数据库会自动将 /tmp/img.png 复制到 <FileStorageDir>/images/avatar.png
+// 并自动计算哈希和文件大小
+err = table.Set(id, map[string]any{
+    "avatar": db.FileImport{
+        LocalPath:    "/tmp/img.png",
+        RelativePath: "images/avatar.png",
+    },
+})
+
+// 读取文件 (必须使用 FindCRDTs 获取强类型对象)
+rows, _ := table.Where("id", db.OpEq, id).FindCRDTs()
+for _, row := range rows {
+    if file, err := row.GetLocalFile("avatar"); err == nil {
+        // 读取全部内容 -> []byte
+        content, _ := file.ReadAll()
+        
+        // 随机读取 (offset, length) -> []byte
+        header, _ := file.ReadAt(0, 100)
+        
+        // 获取元数据
+        meta := file.Value().(crdt.FileMetadata)
+        fmt.Println("File Size:", meta.Size)
+    }
+}
+```
 
 ---
 
@@ -332,5 +372,6 @@ Yep CRDT 设计为去中心化架构的基础。
 | **CrdtCounter** | `Add`, `Remove` | 计数器、统计数据 (PN-Counter) |
 | **CrdtORSet** | `Add`, `Remove` | 标签、分类、ID 集合 (Observed-Remove Set) |
 | **CrdtRGA** | `Add`, `InsertAt`, `InsertAfter`, `Remove`, `RemoveAt` | 文本编辑、即时通讯消息流、任务列表 (RGA) |
+| **LocalFile** | `Set` (via `FileMetadata`), `ReadAll`, `ReadAt` (read-only) | 图片、附件、大文件引用 |
 
 ---

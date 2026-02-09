@@ -11,6 +11,7 @@ const (
 	TypePNCounter Type = 0x03
 	TypeRGA       Type = 0x04
 	TypeMap       Type = 0x05
+	TypeLocalFile Type = 0x06
 )
 
 var (
@@ -77,4 +78,12 @@ type ReadOnlyMap interface {
 	GetRGABytes(key string) (ReadOnlyRGA[[]byte], error)
 	GetSetString(key string) (ReadOnlySet[string], error)
 	GetSetInt(key string) (ReadOnlySet[int], error)
+	GetLocalFile(key string) (ReadOnlyLocalFile, error)
+}
+
+// ReadOnlyLocalFile 定义了 LocalFileCRDT 的只读接口。
+type ReadOnlyLocalFile interface {
+	Value() any
+	ReadAll() ([]byte, error)
+	ReadAt(offset int64, length int) ([]byte, error)
 }

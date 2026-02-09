@@ -10,6 +10,7 @@
     *   `OR-Set`: 观察-移除集合 (Observed-Remove Set)，支持泛型 `ORSet[T]`，适用于标签、类别等。
     *   `PN-Counter`: 正负计数器 (Positive-Negative Counter)，适用于点赞数、浏览量等。
     *   `RGA`: 复制可增长数组 (Replicated Growable Array)，支持泛型 `RGA[T]`，适用于有序列表、TODO 列表等。
+    *   `LocalFile`: 本地文件关联 CRDT，存储文件元数据（路径、大小、哈希）并提供内容读取能力，适用于图片、文档附件等。
 *   **SQL-Like 查询**: 提供流式 API 进行数据查询。
     *   支持 `Where`, `And`, `Limit`, `Offset`, `OrderBy` 等操作。
     *   支持 `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN` 等条件。
@@ -68,6 +69,8 @@ func main() {
 
 	// 打开数据库实例
 	myDB := db.Open(s)
+	// 设置文件存储根目录（用于 LocalFileCRDT）
+	myDB.SetFileStorageDir("./data/files")
     // ...
 }
 ```
@@ -92,6 +95,9 @@ func main() {
             
 			// 有序列表 (RGA)
 			{Name: "todos", Type: meta.ColTypeString, CrdtType: meta.CrdtRGA},
+
+			// 本地文件 (LocalFile)
+			{Name: "avatar", Type: meta.ColTypeString, CrdtType: meta.CrdtLocalFile},
 		},
 		Indexes: []meta.IndexSchema{
 			// 复合索引
@@ -165,6 +171,34 @@ func main() {
 
 	// 按索引移除
 	table.RemoveAt(u1ID, "todos", 3) // 移除 "Task 3"
+```
+
+##### 本地文件 (LocalFile)
+
+```go
+    // 假设物理文件已存在于 /local/path/avatar.jpg
+    
+    // 自动导入文件：复制到数据库存储目录并计算元数据
+    fileImport := db.FileImport{
+        LocalPath:    "/local/path/avatar.jpg",
+        RelativePath: "images/avatar.jpg",
+    }
+    
+    // 插入
+    table.Set(u1ID, map[string]any{
+        "avatar": fileImport,
+    })
+    
+    // 读取文件内容 (需通过 FindCRDTs 获取 ReadOnlyLocalFile)
+    rows, _ := table.Where("id", db.OpEq, u1ID).FindCRDTs()
+    for _, row := range rows {
+        if file, err := row.GetLocalFile("avatar"); err == nil {
+            // 读取全部
+            content, _ := file.ReadAll()
+            // 或随机读取
+            header, _ := file.ReadAt(0, 100)
+        }
+    }
 ```
 
 #### 5. 查询数据
@@ -315,6 +349,7 @@ Safe Time 是一个时间点，系统保证在该时间点之前的所有操作�
 - `GetRGABytes(key string) (ReadOnlyRGA[[]byte], error)`: 获取只读的 RGA[[]byte]。
 - `GetSetString(key string) (ReadOnlySet[string], error)`: 获取只读的 ORSet[string]。
 - `GetSetInt(key string) (ReadOnlySet[int], error)`: 获取只读的 ORSet[int]。
+- `GetLocalFile(key string) (ReadOnlyLocalFile, error)`: 获取只读的 LocalFileCRDT。
 
 **ReadOnlyRGA[T]**:
 - `Value() any`: 获取全量切片（慎用）。

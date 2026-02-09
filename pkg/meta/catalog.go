@@ -18,10 +18,11 @@ const (
 )
 
 const (
-	CrdtLWW     = "lww"
-	CrdtCounter = "counter"
-	CrdtORSet   = "orset"
-	CrdtRGA     = "rga"
+	CrdtLWW       = "lww"
+	CrdtCounter   = "counter"
+	CrdtORSet     = "orset"
+	CrdtRGA       = "rga"
+	CrdtLocalFile = "file"
 )
 
 type ColumnSchema struct {

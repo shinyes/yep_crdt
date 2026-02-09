@@ -20,12 +20,24 @@ type DB struct {
 	mu     sync.Mutex
 	tables map[string]*Table
 	NodeID string
+
+	// FileStorageDir 是存储 LocalFileCRDT 文件的根目录。
+	// 如果为空，LocalFileCRDT.ReadAll 等操作将失败。
+	FileStorageDir string
 }
 
-func Open(s store.Store) *DB {
+type Option func(*DB)
+
+func WithFileStorageDir(dir string) Option {
+	return func(db *DB) {
+		db.FileStorageDir = dir
+	}
+}
+
+func Open(s store.Store, opts ...Option) *DB {
 	c := meta.NewCatalog(s)
 	// Try loading existing catalog
-	_ = c.Load() // Ignore error for fresh DB (or log it?)
+	_ = c.Load()
 
 	// Load or generate NodeID
 	var nodeID string
@@ -40,13 +52,12 @@ func Open(s store.Store) *DB {
 
 	if nodeID == "" || err == store.ErrKeyNotFound {
 		nodeID = "node-" + uuid.NewString()
-		// Save it
 		_ = s.Update(func(txn store.Tx) error {
 			return txn.Set([]byte("_sys/node_id"), []byte(nodeID), 0)
 		})
 	}
 
-	return &DB{
+	db := &DB{
 		store:   s,
 		catalog: c,
 		idxMgr:  index.NewManager(),
@@ -54,6 +65,17 @@ func Open(s store.Store) *DB {
 		tables:  make(map[string]*Table),
 		NodeID:  nodeID,
 	}
+
+	for _, opt := range opts {
+		opt(db)
+	}
+
+	return db
+}
+
+// SetFileStorageDir 设置文件存储目录。
+func (db *DB) SetFileStorageDir(dir string) {
+	db.FileStorageDir = dir
 }
 
 func (db *DB) Close() error {

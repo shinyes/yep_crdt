@@ -1,7 +1,11 @@
 package db
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
@@ -16,6 +20,13 @@ type Table struct {
 	schema       *meta.TableSchema
 	indexManager *index.Manager
 	tx           store.Tx
+}
+
+// FileImport 用于在 Set 操作中指定要导入的外部文件。
+// 数据库会自动计算哈希、大小，并将文件复制到 storageDir。
+type FileImport struct {
+	LocalPath    string // 本地源文件路径
+	RelativePath string // 目标存储相对路径
 }
 
 func (t *Table) inTx(update bool, fn func(store.Tx) error) error {
@@ -69,6 +80,62 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 			// 查找列模式
 			// colType := t.findColType(col)
 			// 目前，默认为 LWW。
+
+			// 检查是否已经是 CRDT
+			if c, ok := val.(crdt.CRDT); ok {
+				op := crdt.OpMapSet{
+					Key:   col,
+					Value: c,
+				}
+				if err := currentMap.Apply(op); err != nil {
+					return err
+				}
+				continue
+			}
+
+			// 检查是否是 FileImport (自动导入)
+			if fImport, ok := val.(FileImport); ok {
+				if t.db.FileStorageDir == "" {
+					return fmt.Errorf("FileStorageDir not configured, cannot import file")
+				}
+
+				// 1. 确保源文件存在
+				srcInfo, err := os.Stat(fImport.LocalPath)
+				if err != nil {
+					return fmt.Errorf("source file error: %w", err)
+				}
+				if srcInfo.IsDir() {
+					return fmt.Errorf("source path is a directory")
+				}
+
+				// 2. 准备目标路径
+				destPath := filepath.Join(t.db.FileStorageDir, fImport.RelativePath)
+				// 确保父目录存在
+				if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+					return fmt.Errorf("failed to create destination dir: %w", err)
+				}
+
+				// 3. 复制文件
+				if err := copyFile(fImport.LocalPath, destPath); err != nil {
+					return fmt.Errorf("failed to copy file: %w", err)
+				}
+
+				// 4. 创建元数据 (从目标文件读取，确保一致性)
+				meta, err := createFileMetadata(destPath, fImport.RelativePath)
+				if err != nil {
+					return fmt.Errorf("failed to create file metadata: %w", err)
+				}
+
+				lf := crdt.NewLocalFileCRDT(meta, t.db.clock.Now())
+				op := crdt.OpMapSet{
+					Key:   col,
+					Value: lf,
+				}
+				if err := currentMap.Apply(op); err != nil {
+					return err
+				}
+				continue
+			}
 
 			// 构造 LWW 寄存器
 			ts := t.db.clock.Now()
@@ -592,4 +659,58 @@ func encodeValue(v any) []byte {
 		return []byte(s)
 	}
 	return []byte(fmt.Sprintf("%v", v))
+}
+
+func copyFile(src, dst string) error {
+	sourceFileStat, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	if _, err := io.Copy(destination, source); err != nil {
+		return err
+	}
+	return nil
+}
+
+// createFileMetadata 根据本地文件路径创建 FileMetadata。
+// 它会自动计算文件大小和 SHA256 哈希值。
+func createFileMetadata(localPath string, relativePath string) (crdt.FileMetadata, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return crdt.FileMetadata{}, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return crdt.FileMetadata{}, err
+	}
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return crdt.FileMetadata{}, err
+	}
+
+	return crdt.FileMetadata{
+		Path: relativePath,
+		Size: info.Size(),
+		Hash: fmt.Sprintf("%x", h.Sum(nil)),
+	}, nil
 }

@@ -12,7 +12,8 @@ type MapCRDT struct {
 	// cache 存储已反序列化的 CRDT 对象。
 	// 这是一个回写缓存 (Write-Back Cache)：产生的变更首先在 cache 中更新，
 	// 只有在调用 Bytes() 时才序列化回 Entries。
-	cache map[string]CRDT
+	cache   map[string]CRDT
+	baseDir string // 文件存储的基础目录
 }
 
 type Entry struct {
@@ -24,6 +25,19 @@ func NewMapCRDT() *MapCRDT {
 	return &MapCRDT{
 		Entries: make(map[string]*Entry),
 		cache:   make(map[string]CRDT),
+	}
+}
+
+// SetBaseDir 设置用于 LocalFileCRDT 的基础目录。
+// 会递归设置缓存中的 LocalFileCRDT 和嵌套的 MapCRDT。
+func (m *MapCRDT) SetBaseDir(dir string) {
+	m.baseDir = dir
+	for _, c := range m.cache {
+		if lf, ok := c.(*LocalFileCRDT); ok {
+			lf.SetBaseDir(dir)
+		} else if subMap, ok := c.(*MapCRDT); ok {
+			subMap.SetBaseDir(dir)
+		}
 	}
 }
 
@@ -42,6 +56,11 @@ func (m *MapCRDT) Value() any {
 		}
 		c, err := Deserialize(e.Type, e.Data)
 		if err == nil {
+			// 在 Value() 中我们不做 SetBaseDir，因为通常 Value() 只是查看元数据。
+			// 如果真的需要读取内容，应该使用 GetLocalFile。
+			// 不过为了一致性，如果我们临时反序列化了，也许应该设置？
+			// 但这里没有把 c 放入 cache，所以它是临时的。
+			// 如果 c 是 LocalFileCRDT，Value() 返回 Metadata，不需要 BaseDir。
 			res[k] = c.Value()
 		}
 	}
@@ -62,7 +81,10 @@ func Deserialize(t Type, data []byte) (CRDT, error) {
 		return FromBytesPNCounter(data)
 	case TypeRGA:
 		return FromBytesRGA[[]byte](data)
-	// case TypeMap: 嵌套？
+	case TypeMap:
+		return FromBytesMap(data)
+	case TypeLocalFile:
+		return FromBytesLocalFile(data)
 	default:
 		return nil, fmt.Errorf("unknown type %v", t)
 	}
@@ -87,6 +109,13 @@ func (op OpMapUpdate) Type() Type { return TypeMap }
 func (m *MapCRDT) Apply(op Op) error {
 	switch o := op.(type) {
 	case OpMapSet:
+		// 如果是 LocalFileCRDT，注入 BaseDir
+		if lf, ok := o.Value.(*LocalFileCRDT); ok && m.baseDir != "" {
+			lf.SetBaseDir(m.baseDir)
+		} else if subMap, ok := o.Value.(*MapCRDT); ok && m.baseDir != "" {
+			subMap.SetBaseDir(m.baseDir)
+		}
+
 		// 更新缓存
 		m.cache[o.Key] = o.Value
 		// 同步更新 Entry，保证 Data 也是最新的（虽然有 Flush 机制，但 Set 较少见，稳妥起见）
@@ -113,6 +142,12 @@ func (m *MapCRDT) Apply(op Op) error {
 			c, err = Deserialize(e.Type, e.Data)
 			if err != nil {
 				return err
+			}
+			// 注入 BaseDir
+			if lf, ok := c.(*LocalFileCRDT); ok && m.baseDir != "" {
+				lf.SetBaseDir(m.baseDir)
+			} else if subMap, ok := c.(*MapCRDT); ok && m.baseDir != "" {
+				subMap.SetBaseDir(m.baseDir)
 			}
 			// 放入缓存
 			m.cache[o.Key] = c
@@ -162,6 +197,8 @@ func (m *MapCRDT) Merge(other CRDT) error {
 			if err != nil {
 				return err // 或者 log error continue
 			}
+			// 注入 BaseDir 到远程对象 (虽然它只是用来读取数据的，但为了 Merge 安全?)
+			// Merge 通常只比较元数据，不需要 ReadAll。
 			if err := localC.Merge(remoteC); err != nil {
 				return err
 			}
@@ -191,6 +228,11 @@ func (m *MapCRDT) Merge(other CRDT) error {
 			lC, err := Deserialize(localEntry.Type, localEntry.Data)
 			if err != nil {
 				return err
+			}
+			if lf, ok := lC.(*LocalFileCRDT); ok && m.baseDir != "" {
+				lf.SetBaseDir(m.baseDir)
+			} else if subMap, ok := lC.(*MapCRDT); ok && m.baseDir != "" {
+				subMap.SetBaseDir(m.baseDir)
 			}
 
 			rC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
@@ -288,6 +330,12 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 		if err == nil {
 			// Read-only access usually doesn't need caching, but for consistency?
 			// Let's cache it on read to speed up subsequent reads/writes.
+			// 注入 BaseDir
+			if lf, ok := c.(*LocalFileCRDT); ok && m.baseDir != "" {
+				lf.SetBaseDir(m.baseDir)
+			} else if subMap, ok := c.(*MapCRDT); ok && m.baseDir != "" {
+				subMap.SetBaseDir(m.baseDir)
+			}
 			m.cache[key] = c
 			return c
 		}
@@ -424,6 +472,21 @@ func (m *MapCRDT) GetSetInt(key string) (ReadOnlySet[int], error) {
 		return nil, nil
 	}
 	return &readOnlySet[int]{s: s}, nil
+}
+
+// GetLocalFile 获取 LocalFileCRDT 只读接口。
+func (m *MapCRDT) GetLocalFile(key string) (ReadOnlyLocalFile, error) {
+	// Try cache via GetCRDT (which handles lazy loading and baseDir injection)
+	c := m.GetCRDT(key)
+	if c == nil {
+		return nil, nil
+	}
+
+	lf, ok := c.(*LocalFileCRDT)
+	if !ok {
+		return nil, fmt.Errorf("type mismatch: expected LocalFileCRDT, got %v", c.Type())
+	}
+	return lf, nil
 }
 
 // GetRGA 获取指定类型的 RGA。
