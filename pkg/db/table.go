@@ -28,18 +28,21 @@ func (t *Table) inTx(update bool, fn func(store.Tx) error) error {
 	return t.db.store.View(fn)
 }
 
+func (t *Table) tablePrefix() []byte {
+	return []byte(fmt.Sprintf("/d/%s/", t.schema.Name))
+}
+
 // Set 插入或更新一行。
 // data 是 column -> value 的映射 (原始 Go 类型，还不是 CRDT)。
 // 为了简化 V1，我们假设数据映射到 LWWRegister 或者我们需要根据模式处理类型。
 // 为了使其完全支持 CRDT 泛型，输入可能应该是 CRDT Ops 或就绪的 CRDT。
 // 但检查 Fluent API 设计：Set(key, Data{...})。
 // 所以我们需要将 Data 转换为 CRDT。
-func (t *Table) Set(key string, data map[string]any) error {
-	pk := []byte(key)
+func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 
 	return t.inTx(true, func(txn store.Tx) error {
 		// 1. 加载现有 CRDT (用于索引比较)
-		keyBytes := t.dataKey(pk)
+		keyBytes := t.dataKey(key)
 		existingBytes, err := txn.Get(keyBytes)
 
 		var currentMap *crdt.MapCRDT
@@ -83,7 +86,7 @@ func (t *Table) Set(key string, data map[string]any) error {
 
 		// 3. 更新索引
 		newBody := currentMap.Value().(map[string]any)
-		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk, oldBody, newBody); err != nil {
+		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldBody, newBody); err != nil {
 			return err
 		}
 
@@ -96,10 +99,10 @@ func (t *Table) Set(key string, data map[string]any) error {
 	})
 }
 
-func (t *Table) Get(key string) (map[string]any, error) {
+func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
 	var res map[string]any
 	err := t.inTx(false, func(txn store.Tx) error {
-		val, err := txn.Get(t.dataKey([]byte(key)))
+		val, err := txn.Get(t.dataKey(key))
 		if err != nil {
 			return err
 		}
@@ -113,13 +116,10 @@ func (t *Table) Get(key string) (map[string]any, error) {
 	return res, err
 }
 
-func (t *Table) dataKey(pk []byte) []byte {
-	// 格式：/t/<tenant>/d/<table>/<pk>
-	// 但 Store 已经限定在租户范围内。
-	// 所以：/d/<table>/<pk>
-	return []byte(fmt.Sprintf("/d/%s/%s", t.schema.Name, string(pk)))
-	// 更好：使用 TableID 以更紧凑
-	// /d/<TableID>/<PK>
+func (t *Table) dataKey(u uuid.UUID) []byte {
+	// 格式：/d/<table>/<16-byte-uuid>
+	prefix := t.tablePrefix()
+	return append(prefix, u[:]...)
 }
 
 // Add 执行特定 CRDT 的添加/增加操作。
@@ -127,18 +127,18 @@ func (t *Table) dataKey(pk []byte) []byte {
 // ORSet: Add(val)
 // RGA: Append(val)
 // LWW: Set(val) (回退)
-func (t *Table) Add(key string, col string, val any) error {
-	if err := validateKey(key); err != nil {
-		return err
+func (t *Table) Add(key uuid.UUID, col string, val any) error {
+	// Validate key version if strict
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil {
 		return err
 	}
 
-	pk := []byte(key)
 	return t.inTx(true, func(txn store.Tx) error {
-		currentMap, oldBody, err := t.loadRow(txn, pk)
+		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
 		}
@@ -218,25 +218,25 @@ func (t *Table) Add(key string, col string, val any) error {
 			return err
 		}
 
-		return t.saveRow(txn, pk, currentMap, oldBody)
+		return t.saveRow(txn, key, currentMap, oldBody)
+
 	})
 }
 
 // Remove 执行特定 CRDT 的移除/减少操作。
 // ORSet: Remove(val)
 // RGA: RemoveByValue(val) (Remove all instances of val)
-func (t *Table) Remove(key string, col string, val any) error {
-	if err := validateKey(key); err != nil {
-		return err
+func (t *Table) Remove(key uuid.UUID, col string, val any) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil {
 		return err
 	}
 
-	pk := []byte(key)
 	return t.inTx(true, func(txn store.Tx) error {
-		currentMap, oldBody, err := t.loadRow(txn, pk)
+		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ func (t *Table) Remove(key string, col string, val any) error {
 					return err
 				}
 			}
-			return t.saveRow(txn, pk, currentMap, oldBody)
+			return t.saveRow(txn, key, currentMap, oldBody)
 
 		default:
 			return fmt.Errorf("remove not supported for type %s", colType)
@@ -293,23 +293,23 @@ func (t *Table) Remove(key string, col string, val any) error {
 			return err
 		}
 
-		return t.saveRow(txn, pk, currentMap, oldBody)
+		return t.saveRow(txn, key, currentMap, oldBody)
+
 	})
 }
 
 // InsertAfter 在 RGA 中指定元素后插入。
-func (t *Table) InsertAfter(key string, col string, anchorVal any, newVal any) error {
-	if err := validateKey(key); err != nil {
-		return err
+func (t *Table) InsertAfter(key uuid.UUID, col string, anchorVal any, newVal any) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
 		return fmt.Errorf("InsertAfter only supported for RGA")
 	}
 
-	pk := []byte(key)
 	return t.inTx(true, func(txn store.Tx) error {
-		currentMap, oldBody, err := t.loadRow(txn, pk)
+		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
 		}
@@ -347,23 +347,22 @@ func (t *Table) InsertAfter(key string, col string, anchorVal any, newVal any) e
 			return err
 		}
 
-		return t.saveRow(txn, pk, currentMap, oldBody)
+		return t.saveRow(txn, key, currentMap, oldBody)
 	})
 }
 
 // InsertAt 在 RGA 第 N 个位置插入 (0-based).
-func (t *Table) InsertAt(key string, col string, index int, val any) error {
-	if err := validateKey(key); err != nil {
-		return err
+func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
 		return fmt.Errorf("InsertAt only supported for RGA")
 	}
 
-	pk := []byte(key)
 	return t.inTx(true, func(txn store.Tx) error {
-		currentMap, oldBody, err := t.loadRow(txn, pk)
+		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
 		}
@@ -447,23 +446,22 @@ func (t *Table) InsertAt(key string, col string, index int, val any) error {
 			return err
 		}
 
-		return t.saveRow(txn, pk, currentMap, oldBody)
+		return t.saveRow(txn, key, currentMap, oldBody)
 	})
 }
 
 // RemoveAt Removes element at index N.
-func (t *Table) RemoveAt(key string, col string, index int) error {
-	if err := validateKey(key); err != nil {
-		return err
+func (t *Table) RemoveAt(key uuid.UUID, col string, index int) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
 		return fmt.Errorf("RemoveAt only supported for RGA")
 	}
 
-	pk := []byte(key)
 	return t.inTx(true, func(txn store.Tx) error {
-		currentMap, oldBody, err := t.loadRow(txn, pk)
+		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
 		}
@@ -503,7 +501,7 @@ func (t *Table) RemoveAt(key string, col string, index int) error {
 			return err
 		}
 
-		return t.saveRow(txn, pk, currentMap, oldBody)
+		return t.saveRow(txn, key, currentMap, oldBody)
 	})
 }
 
@@ -521,18 +519,9 @@ func (t *Table) getColCrdtType(col string) (string, error) {
 	return "", fmt.Errorf("column not found: %s", col)
 }
 
-func validateKey(key string) error {
-	u, err := uuid.Parse(key)
-	if err != nil {
-		return fmt.Errorf("invalid key format (must be UUID): %v", err)
-	}
-	if u.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
-	}
-	return nil
-}
+// validateKey logic removed as we use uuid.UUID type. Check version if needed.
 
-func (t *Table) loadRow(txn store.Tx, pk []byte) (*crdt.MapCRDT, map[string]any, error) {
+func (t *Table) loadRow(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, map[string]any, error) {
 	keyBytes := t.dataKey(pk)
 	existingBytes, err := txn.Get(keyBytes)
 
@@ -553,9 +542,9 @@ func (t *Table) loadRow(txn store.Tx, pk []byte) (*crdt.MapCRDT, map[string]any,
 	return currentMap, oldBody, nil
 }
 
-func (t *Table) saveRow(txn store.Tx, pk []byte, currentMap *crdt.MapCRDT, oldBody map[string]any) error {
+func (t *Table) saveRow(txn store.Tx, pk uuid.UUID, currentMap *crdt.MapCRDT, oldBody map[string]any) error {
 	newBody := currentMap.Value().(map[string]any)
-	if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk, oldBody, newBody); err != nil {
+	if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk[:], oldBody, newBody); err != nil {
 		return err
 	}
 	finalBytes, err := currentMap.Bytes()

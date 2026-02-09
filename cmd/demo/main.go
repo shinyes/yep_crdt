@@ -48,10 +48,8 @@ func main() {
 	table := myDB.Table("users")
 
 	// 4. Basic Insert (LWW)
-	u1ID, _ := uuid.NewV7()
-	u1Key := u1ID.String()
-	u2ID, _ := uuid.NewV7()
-	u2Key := u2ID.String()
+	u1Key, _ := uuid.NewV7()
+	u2Key, _ := uuid.NewV7()
 
 	fmt.Println(">>> Inserting Data (LWW)...")
 	table.Add(u1Key, "name", "Alice")

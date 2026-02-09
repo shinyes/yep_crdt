@@ -42,18 +42,25 @@ func TestQueryPlanner(t *testing.T) {
 	table := myDB.Table("users")
 
 	// Insert Data
+	u1, _ := uuid.NewV7()
+	u2, _ := uuid.NewV7()
+	u3, _ := uuid.NewV7()
+	u4, _ := uuid.NewV7()
+
 	data := []struct {
-		Key  string
+		Key  uuid.UUID
 		Data map[string]any
 	}{
-		{"u1", map[string]any{"region": "US", "age": 30, "name": "Alice"}},   // Matches
-		{"u2", map[string]any{"region": "US", "age": 15, "name": "Bob"}},     // Region match, Age fail
-		{"u3", map[string]any{"region": "EU", "age": 30, "name": "Charlie"}}, // Region fail
-		{"u4", map[string]any{"region": "US", "age": 40, "name": "David"}},   // Matches
+		{u1, map[string]any{"region": "US", "age": 30, "name": "Alice"}},   // Matches
+		{u2, map[string]any{"region": "US", "age": 15, "name": "Bob"}},     // Region match, Age fail
+		{u3, map[string]any{"region": "EU", "age": 30, "name": "Charlie"}}, // Region fail
+		{u4, map[string]any{"region": "US", "age": 40, "name": "David"}},   // Matches
 	}
 
 	for _, d := range data {
-		table.Set(d.Key, d.Data)
+		if err := table.Set(d.Key, d.Data); err != nil {
+			t.Fatalf("Set failed for %s: %v", d.Key, err)
+		}
 	}
 
 	// Query: Region="US" AND Age > 20
@@ -124,17 +131,16 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 
 	// Insert data with RGA
 	u7, _ := uuid.NewV7()
-	key := u7.String()
-	table.Set(key, map[string]any{"id": "doc1"})
+	table.Set(u7, map[string]any{"id": "doc1"})
 
 	// Add RGA items
-	if err := table.Add(key, "content", "A"); err != nil {
+	if err := table.Add(u7, "content", "A"); err != nil {
 		t.Fatalf("Add A failed: %v", err)
 	}
-	if err := table.Add(key, "content", "B"); err != nil {
+	if err := table.Add(u7, "content", "B"); err != nil {
 		t.Fatalf("Add B failed: %v", err)
 	}
-	if err := table.Add(key, "content", "C"); err != nil {
+	if err := table.Add(u7, "content", "C"); err != nil {
 		t.Fatalf("Add C failed: %v", err)
 	}
 

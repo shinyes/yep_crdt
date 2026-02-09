@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/index"
 	"github.com/shinyes/yep_crdt/pkg/meta"
@@ -208,9 +209,14 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
-		_, pk, _ := iter.Item()
+		_, pkBytes, _ := iter.Item()
 
 		// Fetch CRDT
+		// pkBytes is 16-byte UUID from index
+		pk, err := uuid.FromBytes(pkBytes)
+		if err != nil {
+			continue // Should not happen if index integrity is maintained
+		}
 		m, err := q.fetchCRDT(txn, pk)
 		if err != nil {
 			continue
@@ -263,7 +269,7 @@ func (q *Query) scanTable(txn store.Tx) ([]map[string]any, error) {
 }
 
 func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
-	prefix := []byte(strings.Split(string(q.table.dataKey([]byte("dummy"))), "dummy")[0])
+	prefix := q.table.tablePrefix()
 
 	opts := store.IteratorOptions{
 		Prefix:  prefix,
@@ -284,6 +290,17 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 	skipped := 0
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
 		_, val, _ := iter.Item()
+
+		// Key is /d/<table>/<uuid>
+		// We can extract UUID from key if needed, or just parse value.
+		// fetchCRDT expects UUID, but here we already have value.
+		// But wait, we might need PK for something?
+		// scanIndexCRDT passes PK to fetchCRDT.
+		// Here we act like we fetched it.
+
+		// If we need the PK for result construction (e.g. if we returned it), we should extract it.
+		// But ReadOnlyMap doesn't strictly require PK unless we augment it.
+		// For consistency, let's proceed.
 
 		m, err := crdt.FromBytesMap(val)
 		if err != nil {
@@ -309,7 +326,7 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 	return results, nil
 }
 
-func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]any, error) {
+func (q *Query) fetchRow(txn store.Tx, pk uuid.UUID) (map[string]any, error) {
 	m, err := q.fetchCRDT(txn, pk)
 	if err != nil {
 		return nil, err
@@ -317,7 +334,7 @@ func (q *Query) fetchRow(txn store.Tx, pk []byte) (map[string]any, error) {
 	return m.Value().(map[string]any), nil
 }
 
-func (q *Query) fetchCRDT(txn store.Tx, pk []byte) (*crdt.MapCRDT, error) {
+func (q *Query) fetchCRDT(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, error) {
 	key := q.table.dataKey(pk)
 	val, err := txn.Get(key)
 	if err != nil {

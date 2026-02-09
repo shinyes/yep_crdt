@@ -112,10 +112,9 @@ func main() {
 ```go
 	// 生成 UUIDv7 主键
 	u1ID, _ := uuid.NewV7()
-	u1Key := u1ID.String()
 
 	// 插入或更新整行 (或部分 LWW 列)
-	table.Set(u1Key, map[string]any{
+	table.Set(u1ID, map[string]any{
 		"name": "Alice", 
 		"age": 30,
 	})
@@ -129,23 +128,23 @@ func main() {
 
 ```go
 	// 增加
-	table.Add(u1Key, "views", 10) // views = 10
-	table.Add(u1Key, "views", 5)  // views = 15
+	table.Add(u1ID, "views", 10) // views = 10
+	table.Add(u1ID, "views", 5)  // views = 15
 
 	// 减少 (两种方式)
-	table.Add(u1Key, "views", -3) // views = 12
-	table.Remove(u1Key, "views", 2) // views = 10
+	table.Add(u1ID, "views", -3) // views = 12
+	table.Remove(u1ID, "views", 2) // views = 10
 ```
 
 ##### 集合 (ORSet)
 
 ```go
 	// 添加元素
-	table.Add(u1Key, "tags", "developer")
-	table.Add(u1Key, "tags", "golang")
+	table.Add(u1ID, "tags", "developer")
+	table.Add(u1ID, "tags", "golang")
 
 	// 移除元素
-	table.Remove(u1Key, "tags", "developer")
+	table.Remove(u1ID, "tags", "developer")
     // tags 现在只包含 "golang"
 ```
 
@@ -153,19 +152,19 @@ func main() {
 
 ```go
 	// 追加到末尾
-	table.Add(u1Key, "todos", "Task 1")
-	table.Add(u1Key, "todos", "Task 3")
+	table.Add(u1ID, "todos", "Task 1")
+	table.Add(u1ID, "todos", "Task 3")
     
 	// 在指定元素后插入
-	table.InsertAfter(u1Key, "todos", "Task 1", "Task 2")
+	table.InsertAfter(u1ID, "todos", "Task 1", "Task 2")
     // 列表顺序: [Task 1, Task 2, Task 3]
 
 	// 按索引插入 (0-based)
-	table.InsertAt(u1Key, "todos", 0, "Urgent Task")
+	table.InsertAt(u1ID, "todos", 0, "Urgent Task")
     // 列表顺序: [Urgent Task, Task 1, Task 2, Task 3]
 
 	// 按索引移除
-	table.RemoveAt(u1Key, "todos", 3) // 移除 "Task 3"
+	table.RemoveAt(u1ID, "todos", 3) // 移除 "Task 3"
 ```
 
 #### 5. 查询数据
@@ -174,7 +173,7 @@ func main() {
 
 ```go
 	// 简单主键查询
-	u1, _ := table.Get(u1Key)
+	u1, _ := table.Get(u1ID)
 	fmt.Println(u1)
 
 	// 复杂条件查询
@@ -204,12 +203,12 @@ func main() {
 		t := tx.Table("users")
 		
 		// 所有的操作都在同一个事务中原子执行
-		err := t.Add(u1Key, "views", 100)
+		err := t.Add(u1ID, "views", 100)
 		if err != nil {
 			return err // 返回错误将导致事务回滚
 		}
 
-		return t.Add(u2Key, "views", 100)
+		return t.Add(u2ID, "views", 100)
 	})
 ```
 
