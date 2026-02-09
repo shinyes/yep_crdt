@@ -30,7 +30,8 @@ func (s *ORSet[T]) Type() Type {
 	return TypeORSet
 }
 
-func (s *ORSet[T]) Value() any {
+// Elements 返回集合中的所有元素。
+func (s *ORSet[T]) Elements() []T {
 	elements := make([]T, 0, len(s.AddSet))
 	for e, ids := range s.AddSet {
 		// 过滤掉在 Tombstones 中的 ID
@@ -46,6 +47,24 @@ func (s *ORSet[T]) Value() any {
 		}
 	}
 	return elements
+}
+
+func (s *ORSet[T]) Value() any {
+	return s.Elements()
+}
+
+// Contains 检查集合中是否包含某个元素。
+func (s *ORSet[T]) Contains(element T) bool {
+	ids, ok := s.AddSet[element]
+	if !ok {
+		return false
+	}
+	for id := range ids {
+		if _, deleted := s.Tombstones[id]; !deleted {
+			return true
+		}
+	}
+	return false
 }
 
 // OpORSetAdd 添加一个元素。

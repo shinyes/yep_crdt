@@ -301,26 +301,51 @@ Safe Time 是一个时间点，系统保证在该时间点之前的所有操作�
 
 ### 1. 遍历大型 RGA (Streaming Large Lists)
 当 RGA 数据量较大（如超过 10,000 个元素）时，请避免使用 `.Value()` 方法，因为它会一次性分配巨大的内存切片。
-推荐使用 `Query.FindCRDTs()` 获取原始对象，并结合 `.Iterator()` 进行零分配遍历，**另外还需要记住，使用 `Query.FindCRDTs()` 获取到的 CRDT 对象是内存中的副本，对它们的修改不会自动持久化到数据库**。
+推荐使用 `Query.FindCRDTs()` 获取原始对象，并结合 `.Iterator()` 进行零分配遍历。
+**注意：`Query.FindCRDTs()` 返回的是只读接口 (比如：`ReadOnlyMap`、`ReadOnlyRGA`)，强制禁止修改，以防止误用和非持久化的变更。**
 
-**请勿在遍历中修改RGA中的数据，否则会导致诸多问题，请采用读写分离的方式来编写代码，想要修改还是要使用 query API。**
+#### 只读接口概览
+
+`Query.FindCRDTs()` 返回 `[]crdt.ReadOnlyMap`。该接口提供了类型安全的只读访问方法：
+
+**ReadOnlyMap**:
+- `Get(key string) (any, bool)`: 获取任意类型的值。
+- `GetString(key string) (string, bool)`: 获取字符串值。
+- `GetInt(key string) (int, bool)`: 获取整数值。
+- `GetRGAString(key string) (ReadOnlyRGA[string], error)`: 获取只读的 RGA[string]。
+- `GetRGABytes(key string) (ReadOnlyRGA[[]byte], error)`: 获取只读的 RGA[[]byte]。
+- `GetSetString(key string) (ReadOnlySet[string], error)`: 获取只读的 ORSet[string]。
+- `GetSetInt(key string) (ReadOnlySet[int], error)`: 获取只读的 ORSet[int]。
+
+**ReadOnlyRGA[T]**:
+- `Value() any`: 获取全量切片（慎用）。
+- `Iterator() func() (T, bool)`: 获取迭代器，用于流式遍历。
+
+**ReadOnlySet[T]**:
+- `Value() any`: 获取全量切片。
+- `Contains(element T) bool`: 检查元素是否存在。
+- `Elements() []T`: 获取所有元素。
 
 ```go
 // 1. 获取包含原始 CRDT 的结果集（不自动反序列化 Value）
+// 返回 []crdt.ReadOnlyMap
 crdts, _ := table.Where("id", db.OpEq, "doc1").FindCRDTs()
 
 for _, doc := range crdts {
-    // 2. 按需获取 RGA 实例
-    rga, _ := crdt.GetRGA[[]byte](doc, "content")
+    // 2. 按需获取 RGA 实例 (只读)
+    // 使用类型安全的方法获取 (例如 GetRGABytes 或 GetRGAString)
+    rga, _ := doc.GetRGABytes("content")
     
     // 3. 使用 Iterator 流式遍历
-    iter := rga.Iterator()
-    for {
-        val, ok := iter()
-        if !ok {
-            break
+    if rga != nil {
+        iter := rga.Iterator()
+        for {
+            val, ok := iter()
+            if !ok {
+                break
+            }
+            // 处理 val (无需全量加载到内存)
         }
-        // 处理 val (无需全量加载到内存)
     }
 }
 ```

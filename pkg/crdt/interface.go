@@ -49,3 +49,32 @@ type CRDT interface {
 type Op interface {
 	Type() Type
 }
+
+// ReadOnlyRGA 定义了 RGA 的只读接口。
+type ReadOnlyRGA[T any] interface {
+	Value() any
+	Iterator() func() (T, bool)
+}
+
+// ReadOnlySet 定义了 ORSet 的只读接口。
+type ReadOnlySet[T comparable] interface {
+	Value() any
+	Contains(element T) bool
+	Elements() []T
+}
+
+// ReadOnlyMap 定义了 MapCRDT 的只读接口。
+type ReadOnlyMap interface {
+	Value() any
+	Get(key string) (any, bool)
+	Has(key string) bool
+
+	// 类型安全访问器
+	GetString(key string) (string, bool)
+	GetInt(key string) (int, bool)
+	GetRGA(key string) (ReadOnlyRGA[any], error)
+	GetRGAString(key string) (ReadOnlyRGA[string], error)
+	GetRGABytes(key string) (ReadOnlyRGA[[]byte], error)
+	GetSetString(key string) (ReadOnlySet[string], error)
+	GetSetInt(key string) (ReadOnlySet[int], error)
+}

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
@@ -150,8 +149,8 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 	}
 
 	doc := crdts[0]
-	// Access RGA directly. Note: Table implementation uses RGA[[]byte] by default.
-	rga, err := crdt.GetRGA[[]byte](doc, "content")
+	// Access RGA directly via ReadOnlyMap interface
+	rga, err := doc.GetRGABytes("content")
 	if err != nil {
 		t.Fatalf("GetRGA failed: %v", err)
 	}

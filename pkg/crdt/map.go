@@ -319,6 +319,113 @@ func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
 	return nil, nil // Not found
 }
 
+// Has 检查键是否存在。
+func (m *MapCRDT) Has(key string) bool {
+	if _, ok := m.cache[key]; ok {
+		return true
+	}
+	_, ok := m.Entries[key]
+	return ok
+}
+
+// Get 获取键的值。
+func (m *MapCRDT) Get(key string) (any, bool) {
+	c := m.GetCRDT(key)
+	if c == nil {
+		return nil, false
+	}
+	return c.Value(), true
+}
+
+// GetString 获取字符串类型的值。
+func (m *MapCRDT) GetString(key string) (string, bool) {
+	v, ok := m.Get(key)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// GetInt 获取整数类型的值。
+func (m *MapCRDT) GetInt(key string) (int, bool) {
+	v, ok := m.Get(key)
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case int:
+		return val, true
+	case int64:
+		return int(val), true
+	case float64:
+		return int(val), true
+	}
+	return 0, false
+}
+
+// GetRGA 获取通用的 RGA 只读接口。
+func (m *MapCRDT) GetRGA(key string) (ReadOnlyRGA[any], error) {
+	// 注意：底层 RGA 必须实际上是 RGA[any]，否则会类型转换失败。
+	// 如果底层是 RGA[string]，这里会报错。
+	r, err := GetRGA[any](m, key)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, nil
+	}
+	return &readOnlyRGA[any]{r: r}, nil
+}
+
+// GetRGAString 获取字符串类型的 RGA 只读接口。
+func (m *MapCRDT) GetRGAString(key string) (ReadOnlyRGA[string], error) {
+	r, err := GetRGA[string](m, key)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, nil
+	}
+	return &readOnlyRGA[string]{r: r}, nil
+}
+
+// GetRGABytes 获取字节数组类型的 RGA 只读接口。
+func (m *MapCRDT) GetRGABytes(key string) (ReadOnlyRGA[[]byte], error) {
+	r, err := GetRGA[[]byte](m, key)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, nil
+	}
+	return &readOnlyRGA[[]byte]{r: r}, nil
+}
+
+// GetSetString 获取字符串类型的 ORSet 只读接口。
+func (m *MapCRDT) GetSetString(key string) (ReadOnlySet[string], error) {
+	s, err := GetORSet[string](m, key)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, nil
+	}
+	return &readOnlySet[string]{s: s}, nil
+}
+
+// GetSetInt 获取 int 类型的 ORSet 只读接口。
+func (m *MapCRDT) GetSetInt(key string) (ReadOnlySet[int], error) {
+	s, err := GetORSet[int](m, key)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, nil
+	}
+	return &readOnlySet[int]{s: s}, nil
+}
+
 // GetRGA 获取指定类型的 RGA。
 func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
 	// Try cache

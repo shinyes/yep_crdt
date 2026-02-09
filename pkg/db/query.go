@@ -6,6 +6,7 @@ import (
 
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/index"
+	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
@@ -88,13 +89,13 @@ func (q *Query) Find() ([]map[string]any, error) {
 	return results, err
 }
 
-// FindCRDTs returns the raw MapCRDT objects instead of the value map.
-// This allows access to nested CRDTs (like RGA) for iterator usage.
-func (q *Query) FindCRDTs() ([]*crdt.MapCRDT, error) {
+// FindCRDTs returns the raw MapCRDT objects as ReadOnlyMap interface.
+// This allows access to nested CRDTs (like RGA) for iterator usage but prevents modification.
+func (q *Query) FindCRDTs() ([]crdt.ReadOnlyMap, error) {
 	// 1. Plan Selection
 	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
 
-	results := make([]*crdt.MapCRDT, 0)
+	results := make([]crdt.ReadOnlyMap, 0)
 
 	err := q.table.inTx(false, func(txn store.Tx) error {
 		// 2. Execution
@@ -173,7 +174,7 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeC
 	return results, nil
 }
 
-func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition) ([]*crdt.MapCRDT, error) {
+func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, rangeCond *Condition) ([]crdt.ReadOnlyMap, error) {
 	basePrefix, err := index.EncodePrefix(q.table.schema.ID, idxID, prefixValues)
 	if err != nil {
 		return nil, err
@@ -203,7 +204,7 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 
 	iter.Seek(seekKey)
 
-	results := make([]*crdt.MapCRDT, 0)
+	results := make([]crdt.ReadOnlyMap, 0)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
@@ -261,7 +262,7 @@ func (q *Query) scanTable(txn store.Tx) ([]map[string]any, error) {
 	return results, nil
 }
 
-func (q *Query) scanTableCRDT(txn store.Tx) ([]*crdt.MapCRDT, error) {
+func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 	prefix := []byte(strings.Split(string(q.table.dataKey([]byte("dummy"))), "dummy")[0])
 
 	opts := store.IteratorOptions{
@@ -278,7 +279,7 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]*crdt.MapCRDT, error) {
 		iter.Seek(prefix)
 	}
 
-	results := make([]*crdt.MapCRDT, 0)
+	results := make([]crdt.ReadOnlyMap, 0)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
@@ -332,7 +333,16 @@ func (q *Query) matches(row map[string]any) bool {
 			return false
 		}
 
-		cmp := compare(val, cond.Value)
+		// Find column type from schema
+		colType := meta.ColTypeString // Default fallback
+		for _, col := range q.table.schema.Columns {
+			if col.Name == cond.Field {
+				colType = col.Type
+				break
+			}
+		}
+
+		cmp := compare(val, cond.Value, colType)
 
 		switch cond.Op {
 		case OpEq:
@@ -363,7 +373,7 @@ func (q *Query) matches(row map[string]any) bool {
 			found := false
 			if list, ok := cond.Value.([]any); ok {
 				for _, item := range list {
-					if compare(val, item) == 0 {
+					if compare(val, item, colType) == 0 {
 						found = true
 						break
 					}
@@ -377,32 +387,26 @@ func (q *Query) matches(row map[string]any) bool {
 	return true
 }
 
-func compare(a, b any) int {
-	// Robust comparison handling []byte and string
-	strA := toString(a)
-	strB := toString(b)
+func compare(a, b any, t meta.ColumnType) int {
+	// Robust comparison based on Schema Type
 
-	// Try numeric comparison if both look like numbers?
-	// For MVP, strictly string comparison unless we implement type-aware schema logic.
-	// But in test: Age is int.
-	// We should try to cast to int if possible for numeric fields in schema.
-	// But here we don't have schema type info handy in `compare`.
-	// Let's rely on `toString` doing the right thing for now.
-	// EXCEPT: "30" > "20" works. "100" < "20" fails.
-	// Hack: if both are int/int64/float, compare numerically.
-
-	// Try numeric comparison
-	numA, okA := toFloat(a)
-	numB, okB := toFloat(b)
-	if okA && okB {
-		if numA < numB {
-			return -1
-		} else if numA > numB {
-			return 1
+	if t == meta.ColTypeInt {
+		// Attempt numeric comparison
+		numA, okA := toFloat(a)
+		numB, okB := toFloat(b)
+		if okA && okB {
+			if numA < numB {
+				return -1
+			} else if numA > numB {
+				return 1
+			}
+			return 0
 		}
-		return 0
 	}
 
+	// Default / String comparison for other types or if numeric conversion failed
+	strA := toString(a)
+	strB := toString(b)
 	return strings.Compare(strA, strB)
 }
 
@@ -442,6 +446,10 @@ func toFloat(v any) (float64, bool) {
 		// if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
 		// 	return f, true
 		// }
+		var f float64
+		if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
+			return f, true
+		}
 		return 0, false
 	default:
 		return 0, false
