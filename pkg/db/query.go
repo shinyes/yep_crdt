@@ -212,35 +212,17 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 		_, pkBytes, _ := iter.Item()
 
 		// Fetch CRDT
-		// pkBytes is 16-byte UUID from index
 		pk, err := uuid.FromBytes(pkBytes)
 		if err != nil {
-			continue // Should not happen if index integrity is maintained
+			continue
 		}
 		m, err := q.fetchCRDT(txn, pk)
 		if err != nil {
 			continue
 		}
 
-		// To check conditions, we might need Values.
-		// Performance trade-off: We MUST load values to filter.
-		// But if we return MapCRDT, the user might NOT access the heavy RGA fields.
-		// matches() checks row map[string]any.
-		// For filtering, we can call Value().
-		// If the query is *only* on indexed fields, we assume index covered it?
-		// No, we still need to check other conditions.
-		// So we have to materialize the row for filtering.
-		// The optimization of FindCRDTs comes when we select HUGE documents
-		// but check conditions on small fields.
-		// Note: MapCRDT.Value() deserializes everything.
-		// To truly optimize, MapCRDT should support partial Value(), or matches() should check CRDT directly.
-		// For now, we rely on MapCRDT caching.
-		// If valid, append `m`.
-
-		// Optimization: matches() takes map[string]any.
-		row := m.Value().(map[string]any)
-
-		if q.matches(row) {
+		// Optimization: matches() takes ReadOnlyMap and checks fields lazily
+		if q.matches(m) {
 			if skipped < q.offset {
 				skipped++
 				continue
@@ -291,27 +273,13 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
 		_, val, _ := iter.Item()
 
-		// Key is /d/<table>/<uuid>
-		// We can extract UUID from key if needed, or just parse value.
-		// fetchCRDT expects UUID, but here we already have value.
-		// But wait, we might need PK for something?
-		// scanIndexCRDT passes PK to fetchCRDT.
-		// Here we act like we fetched it.
-
-		// If we need the PK for result construction (e.g. if we returned it), we should extract it.
-		// But ReadOnlyMap doesn't strictly require PK unless we augment it.
-		// For consistency, let's proceed.
-
 		m, err := crdt.FromBytesMap(val)
 		if err != nil {
 			continue
 		}
 
-		// For checking non-indexed conditions, we currently need full Value.
-		// Improving this is a future task (Partial Deserialization).
-		row := m.Value().(map[string]any)
-
-		if q.matches(row) {
+		// Optimization: matches() takes ReadOnlyMap
+		if q.matches(m) {
 			if skipped < q.offset {
 				skipped++
 				continue
@@ -343,9 +311,10 @@ func (q *Query) fetchCRDT(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, error) {
 	return crdt.FromBytesMap(val)
 }
 
-func (q *Query) matches(row map[string]any) bool {
+func (q *Query) matches(row crdt.ReadOnlyMap) bool {
 	for _, cond := range q.conditions {
-		val, ok := row[cond.Field]
+		// Lazy load optimization: Only fetch the specific field needed for this condition
+		val, ok := row.Get(cond.Field)
 		if !ok {
 			return false
 		}
@@ -405,26 +374,55 @@ func (q *Query) matches(row map[string]any) bool {
 }
 
 func compare(a, b any, t meta.ColumnType) int {
-	// Robust comparison based on Schema Type
-
-	if t == meta.ColTypeInt {
-		// Attempt numeric comparison
-		numA, okA := toFloat(a)
+	switch t {
+	case meta.ColTypeInt:
+		// Strict numeric comparison
+		numA, okA := toFloat(a) // Helper handles int/int64/float variants
 		numB, okB := toFloat(b)
-		if okA && okB {
-			if numA < numB {
-				return -1
-			} else if numA > numB {
-				return 1
-			}
-			return 0
+		if !okA || !okB {
+			// Type mismatch for schema type Int -> treat as not equal (or handled upstream?)
+			// Returning -2 to indicate error? simpler: fallback to string or inequalities fail.
+			// Let's fallback to string comparison if types are wildly different,
+			// to maintain legacy "try best effort" but safer.
+			// Actually, for strict safety, if schema says Int and we can't parse, it's invalid.
+			// However `matches` expects -1, 0, 1.
+			// If type mismatch, they are definitely not equal.
+			// For ordering (>, <), undefined behavior if types mismatch.
+			// Let's return a stable non-zero.
+			return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 		}
-	}
+		if numA < numB {
+			return -1
+		} else if numA > numB {
+			return 1
+		}
+		return 0
 
-	// Default / String comparison for other types or if numeric conversion failed
-	strA := toString(a)
-	strB := toString(b)
-	return strings.Compare(strA, strB)
+	case meta.ColTypeString:
+		// Strict string comparison
+		strA, okA := a.(string)
+		if !okA {
+			// If source is []byte (common in our storage), convert.
+			if bBytes, ok := a.([]byte); ok {
+				strA = string(bBytes)
+			} else {
+				strA = fmt.Sprintf("%v", a)
+			}
+		}
+		strB, okB := b.(string)
+		if !okB {
+			if bBytes, ok := b.([]byte); ok {
+				strB = string(bBytes)
+			} else {
+				strB = fmt.Sprintf("%v", b)
+			}
+		}
+		return strings.Compare(strA, strB)
+
+	default:
+		// Fallback for unknown types
+		return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+	}
 }
 
 func toFloat(v any) (float64, bool) {
@@ -454,32 +452,15 @@ func toFloat(v any) (float64, bool) {
 	case float64:
 		return val, true
 	case []byte:
-		// Attempt to convert bytes to string then parse?
-		// For now, treat bytes as non-numeric unless we implement strict schema typing
-		return 0, false
-	case string:
-		// Attempt to parse string as float?
-		// var f float64
-		// if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
-		// 	return f, true
-		// }
+		// Attempt to parse string/bytes as float since storage is LWWRegister (bytes)
+		strVal := string(val)
 		var f float64
-		if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
+		// create a temporary variable standardizing to float64 for comparison
+		if _, err := fmt.Sscanf(strVal, "%f", &f); err == nil {
 			return f, true
 		}
 		return 0, false
 	default:
 		return 0, false
-	}
-}
-
-func toString(v any) string {
-	switch val := v.(type) {
-	case []byte:
-		return string(val)
-	case string:
-		return val
-	default:
-		return fmt.Sprintf("%v", val)
 	}
 }
