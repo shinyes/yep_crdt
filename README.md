@@ -210,6 +210,14 @@ func main() {
 	u1, _ := table.Get(u1ID)
 	fmt.Println(u1)
 
+	// 获取原始 CRDT (只读) - 用于访问 RGA/ORSet 等复杂结构
+	crdtU1, _ := table.GetCRDT(u1ID)
+	if crdtU1 != nil {
+		if rSet, _ := crdtU1.GetSetString("tags"); rSet != nil {
+			fmt.Println("Tags:", rSet.Elements())
+		}
+	}
+
 	// 复杂条件查询
 	// 自动使用 idx_name_age 索引
 	results, err := table.Where("name", db.OpEq, "Alice").

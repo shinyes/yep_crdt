@@ -179,3 +179,66 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 		t.Errorf("Expected ABC, got %s", resultStr)
 	}
 }
+
+func TestGetCRDT(t *testing.T) {
+	// Setup
+	dbPath := "./tmp/test_get_crdt"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+
+	s, _ := store.NewBadgerStore(dbPath)
+	defer s.Close()
+	defer os.RemoveAll(dbPath)
+
+	myDB := Open(s, "test-get-crdt")
+
+	// Define Table
+	err := myDB.DefineTable(&meta.TableSchema{
+		ID:   3,
+		Name: "items",
+		Columns: []meta.ColumnSchema{
+			{Name: "id", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+			{Name: "tags", Type: meta.ColTypeString, CrdtType: meta.CrdtORSet},
+		},
+		Indexes: []meta.IndexSchema{
+			{ID: 1, Name: "idx_id", Columns: []string{"id"}, Unique: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	table := myDB.Table("items")
+
+	// Insert Data
+	u1, _ := uuid.NewV7()
+	table.Set(u1, map[string]any{"id": "item1"})
+	table.Add(u1, "tags", "tag1")
+	table.Add(u1, "tags", "tag2")
+
+	// Test GetCRDT
+	crdtRow, err := table.GetCRDT(u1)
+	if err != nil {
+		t.Fatalf("GetCRDT failed: %v", err)
+	}
+
+	if crdtRow == nil {
+		t.Fatal("Expected CRDT row, got nil")
+	}
+
+	// Access ORSet
+	rSet, err := crdtRow.GetSetString("tags")
+	if err != nil {
+		t.Fatalf("GetSetString failed: %v", err)
+	}
+	if rSet == nil {
+		t.Fatal("Expected 'tags' field to be a Set")
+	}
+
+	if !rSet.Contains("tag1") {
+		t.Error("Expected tag1")
+	}
+	if !rSet.Contains("tag2") {
+		t.Error("Expected tag2")
+	}
+}

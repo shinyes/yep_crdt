@@ -260,6 +260,21 @@ if row != nil {
 }
 ```
 
+### 5.1.1 获取单行原始 CRDT (GetCRDT)
+
+如果你需要访问单行的原始 CRDT 结构（例如为了获取 RGA 的迭代器），即可以使用 `GetCRDT`。它返回 `crdt.ReadOnlyMap` 接口。
+
+```go
+// 返回 crdt.ReadOnlyMap
+crdtRow, err := table.GetCRDT(id)
+if err == nil && crdtRow != nil {
+    // 使用只读接口安全访问嵌套 CRDT
+    if rSet, _ := crdtRow.GetSetString("tags"); rSet != nil {
+        fmt.Println("Tags:", rSet.Elements())
+    }
+}
+```
+
 ### 5.2 条件查询 (Where/And)
 
 支持的运算符：

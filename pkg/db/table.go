@@ -183,6 +183,21 @@ func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
 	return res, err
 }
 
+// GetCRDT returns the raw ReadOnlyMap CRDT for a given key.
+// This is useful for accessing nested CRDTs (like RGA) without loading the entire map value.
+func (t *Table) GetCRDT(key uuid.UUID) (crdt.ReadOnlyMap, error) {
+	var res crdt.ReadOnlyMap
+	err := t.inTx(false, func(txn store.Tx) error {
+		m, _, err := t.loadRow(txn, key)
+		if err != nil {
+			return err
+		}
+		res = m
+		return nil
+	})
+	return res, err
+}
+
 func (t *Table) dataKey(u uuid.UUID) []byte {
 	// 格式：/d/<table>/<16-byte-uuid>
 	prefix := t.tablePrefix()
