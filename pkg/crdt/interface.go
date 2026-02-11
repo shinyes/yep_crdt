@@ -1,6 +1,9 @@
 package crdt
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Type 标识 CRDT 的类型。
 type Type byte
@@ -14,9 +17,89 @@ const (
 	TypeLocalFile Type = 0x06
 )
 
+// 错误定义
 var (
-	ErrInvalidOp = errors.New("此 CRDT 类型的操作无效")
+	ErrInvalidOp     = errors.New("此 CRDT 类型的操作无效")
+	ErrInvalidData   = errors.New("无效的 CRDT 数据")
+	ErrKeyNotFound   = errors.New("键不存在")
+	ErrTypeMismatch  = errors.New("类型不匹配")
+	ErrNilCRDT       = errors.New("CRDT 对象为 nil")
+	ErrSerialization = errors.New("序列化失败")
+	ErrDeserialization = errors.New("反序列化失败")
 )
+
+// InvalidOpError 表示操作类型不匹配的错误
+type InvalidOpError struct {
+	ExpectedOp string
+	GotOp      string
+	CRDTType   Type
+}
+
+func (e *InvalidOpError) Error() string {
+	return fmt.Sprintf("操作类型不匹配: CRDT 类型 %d 期望 %s, 得到 %s", e.CRDTType, e.ExpectedOp, e.GotOp)
+}
+
+func (e *InvalidOpError) Unwrap() error {
+	return ErrInvalidOp
+}
+
+// InvalidDataError 表示数据无效的错误
+type InvalidDataError struct {
+	CRDTType   Type
+	Reason     string
+	DataLength int
+}
+
+func (e *InvalidDataError) Error() string {
+	msg := fmt.Sprintf("无效的 CRDT 数据: 类型 %d", e.CRDTType)
+	if e.Reason != "" {
+		msg += ", 原因: " + e.Reason
+	}
+	if e.DataLength >= 0 {
+		msg += fmt.Sprintf(", 数据长度: %d", e.DataLength)
+	}
+	return msg
+}
+
+func (e *InvalidDataError) Unwrap() error {
+	return ErrInvalidData
+}
+
+func NewInvalidDataError(t Type, reason string) *InvalidDataError {
+	return &InvalidDataError{
+		CRDTType:   t,
+		Reason:     reason,
+		DataLength: -1,
+	}
+}
+
+// KeyErrorKeyNotFound 表示键不存在的错误
+type KeyNotFoundError struct {
+	Key string
+}
+
+func (e *KeyNotFoundError) Error() string {
+	return fmt.Sprintf("键 '%s' 不存在", e.Key)
+}
+
+func (e *KeyNotFoundError) Unwrap() error {
+	return ErrKeyNotFound
+}
+
+// TypeMismatchError 表示类型不匹配的错误
+type TypeMismatchError struct {
+	Key         string
+	ExpectedType Type
+	GotType     Type
+}
+
+func (e *TypeMismatchError) Error() string {
+	return fmt.Sprintf("类型不匹配: 键 '%s' 期望类型 %d, 得到类型 %d", e.Key, e.ExpectedType, e.GotType)
+}
+
+func (e *TypeMismatchError) Unwrap() error {
+	return ErrTypeMismatch
+}
 
 // CRDT 是所有 CRDT 实现的通用接口。
 type CRDT interface {

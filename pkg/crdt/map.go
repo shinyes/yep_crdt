@@ -28,8 +28,8 @@ func NewMapCRDT() *MapCRDT {
 	}
 }
 
-// SetBaseDir 设置用于 LocalFileCRDT 的基础目录。
-// 会递归设置缓存中的 LocalFileCRDT 和嵌套的 MapCRDT。
+// SetBaseDir 设置用于 LocalFile CRDT 的基础目录。
+// 会递归设置缓存中的 LocalFile CRDT 和嵌套的 MapCRDT。
 func (m *MapCRDT) SetBaseDir(dir string) {
 	m.baseDir = dir
 	for _, c := range m.cache {
@@ -60,33 +60,65 @@ func (m *MapCRDT) Value() any {
 			// 如果真的需要读取内容，应该使用 GetLocalFile。
 			// 不过为了一致性，如果我们临时反序列化了，也许应该设置？
 			// 但这里没有把 c 放入 cache，所以它是临时的。
-			// 如果 c 是 LocalFileCRDT，Value() 返回 Metadata，不需要 BaseDir。
+			// 如果 c 是 LocalFile CRDT，Value() 返回 Metadata，不需要 BaseDir。
 			res[k] = c.Value()
 		}
 	}
 	return res
 }
 
-// 根据类型反序列化的助手
+// Deserialize 根据类型反序列化 CRDT。
 // 注意：对于泛型类型，这里只能使用默认类型（例如 string）。
 // 如果需要特定类型，请使用 GetORSet[T] 等方法。
 func Deserialize(t Type, data []byte) (CRDT, error) {
+	if data == nil {
+		return nil, &InvalidDataError{CRDTType: t, Reason: "输入数据为 nil", DataLength: 0}
+	}
+	
+	if len(data) == 0 {
+		return nil, &InvalidDataError{CRDTType: t, Reason: "输入数据为空", DataLength: 0}
+	}
+	
 	switch t {
 	case TypeLWW:
-		return FromBytesLWW(data)
+		c, err := FromBytesLWW(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: LWW: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	case TypeORSet:
 		// 默认反序列化为 ORSet[string] 以保持兼容性
-		return FromBytesORSet[string](data)
+		c, err := FromBytesORSet[string](data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: ORSet[string]: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	case TypePNCounter:
-		return FromBytesPNCounter(data)
+		c, err := FromBytesPNCounter(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: PNCounter: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	case TypeRGA:
-		return FromBytesRGA[[]byte](data)
+		c, err := FromBytesRGA[[]byte](data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: RGA[[]byte]: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	case TypeMap:
-		return FromBytesMap(data)
+		c, err := FromBytesMap(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: MapCRDT: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	case TypeLocalFile:
-		return FromBytesLocalFile(data)
+		c, err := FromBytesLocalFile(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: LocalFile CRDT: %v", ErrDeserialization, err)
+		}
+		return c, nil
 	default:
-		return nil, fmt.Errorf("unknown type %v", t)
+		return nil, &InvalidDataError{CRDTType: t, Reason: "未知的 CRDT 类型", DataLength: len(data)}
 	}
 }
 
@@ -107,9 +139,20 @@ type OpMapUpdate struct {
 func (op OpMapUpdate) Type() Type { return TypeMap }
 
 func (m *MapCRDT) Apply(op Op) error {
+	if op == nil {
+		return fmt.Errorf("%w: 操作不能为 nil", ErrInvalidOp)
+	}
+	
 	switch o := op.(type) {
 	case OpMapSet:
-		// 如果是 LocalFileCRDT，注入 BaseDir
+		if o.Key == "" {
+			return fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+		}
+		if o.Value == nil {
+			return fmt.Errorf("%w: 值不能为 nil (键: %s)", ErrInvalidOp, o.Key)
+		}
+		
+		// 如果是 LocalFile CRDT，注入 BaseDir
 		if lf, ok := o.Value.(*LocalFileCRDT); ok && m.baseDir != "" {
 			lf.SetBaseDir(m.baseDir)
 		} else if subMap, ok := o.Value.(*MapCRDT); ok && m.baseDir != "" {
@@ -121,7 +164,7 @@ func (m *MapCRDT) Apply(op Op) error {
 		// 同步更新 Entry，保证 Data 也是最新的（虽然有 Flush 机制，但 Set 较少见，稳妥起见）
 		b, err := o.Value.Bytes()
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: 键 '%s': %v", ErrSerialization, o.Key, err)
 		}
 		m.Entries[o.Key] = &Entry{
 			Type: o.Value.Type(),
@@ -129,6 +172,13 @@ func (m *MapCRDT) Apply(op Op) error {
 		}
 
 	case OpMapUpdate:
+		if o.Key == "" {
+			return fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+		}
+		if o.Op == nil {
+			return fmt.Errorf("%w: 操作不能为 nil (键: %s)", ErrInvalidOp, o.Key)
+		}
+		
 		// 1. 尝试从缓存获取
 		c, inCache := m.cache[o.Key]
 
@@ -136,12 +186,12 @@ func (m *MapCRDT) Apply(op Op) error {
 			// 2. 缓存未命中，从 Entry 加载
 			e, ok := m.Entries[o.Key]
 			if !ok {
-				return fmt.Errorf("key %s not found", o.Key)
+				return &KeyNotFoundError{Key: o.Key}
 			}
 			var err error
 			c, err = Deserialize(e.Type, e.Data)
 			if err != nil {
-				return err
+				return fmt.Errorf("反序列化键 '%s' 失败: %w", o.Key, err)
 			}
 			// 注入 BaseDir
 			if lf, ok := c.(*LocalFileCRDT); ok && m.baseDir != "" {
@@ -155,7 +205,7 @@ func (m *MapCRDT) Apply(op Op) error {
 
 		// 3. 应用操作到对象（内存中）
 		if err := c.Apply(o.Op); err != nil {
-			return err
+			return fmt.Errorf("应用操作到键 '%s' 失败: %w", o.Key, err)
 		}
 
 		// 4. 不再立即序列化回 Entry.Data。
@@ -163,22 +213,26 @@ func (m *MapCRDT) Apply(op Op) error {
 		// 这将 O(N) 的序列化操作平摊到了 Save 时刻。
 
 	default:
-		return ErrInvalidOp
+		return fmt.Errorf("%w: 未知操作类型 %T", ErrInvalidOp, op)
 	}
 	return nil
 }
 
 func (m *MapCRDT) Merge(other CRDT) error {
+	if other == nil {
+		return fmt.Errorf("%w: 合并的 CRDT 不能为 nil", ErrInvalidData)
+	}
+	
 	o, ok := other.(*MapCRDT)
 	if !ok {
-		return fmt.Errorf("cannot merge %T into MapCRDT", other)
+		return fmt.Errorf("%w: 期望 *MapCRDT, 得到 %T", ErrTypeMismatch, other)
 	}
 
 	// 合并前，我们需要确保本地 cache 中的脏数据已经持久化到 Entries 吗？
 	// 或者 Merge 直接操作 Entries？
 	// 远程过来的数据在 Entries 中。
 	// 本地的数据可能在 cache 中较新。
-	// 策略：
+	// 筀略：
 	// 1. 遍历远程 Entries。
 	// 2. 如果本地 cache 中有对应项，直接 Merge 到 cache 中。并标记为脏（虽然已经是脏的）。
 	// 3. 如果本地 cache 没有，但 Entries 有，反序列化到 cache，然后 Merge。
@@ -195,12 +249,12 @@ func (m *MapCRDT) Merge(other CRDT) error {
 			// 本地有活跃对象，必须反序列化远程对象并 Merge 进去
 			remoteC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
 			if err != nil {
-				return err // 或者 log error continue
+				return fmt.Errorf("反序列化远程键 '%s' 失败: %w", k, err)
 			}
 			// 注入 BaseDir 到远程对象 (虽然它只是用来读取数据的，但为了 Merge 安全?)
 			// Merge 通常只比较元数据，不需要 ReadAll。
 			if err := localC.Merge(remoteC); err != nil {
-				return err
+				return fmt.Errorf("合并键 '%s' 失败: %w", k, err)
 			}
 			// Merge 完成，localC 更新了。Entry.Data 仍是陈旧的。
 			continue
@@ -227,7 +281,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 
 			lC, err := Deserialize(localEntry.Type, localEntry.Data)
 			if err != nil {
-				return err
+				return fmt.Errorf("反序列化本地键 '%s' 失败: %w", k, err)
 			}
 			if lf, ok := lC.(*LocalFileCRDT); ok && m.baseDir != "" {
 				lf.SetBaseDir(m.baseDir)
@@ -237,11 +291,11 @@ func (m *MapCRDT) Merge(other CRDT) error {
 
 			rC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
 			if err != nil {
-				return err
+				return fmt.Errorf("反序列化远程键 '%s' (第二次) 失败: %w", k, err)
 			}
 
 			if err := lC.Merge(rC); err != nil {
-				return err
+				return fmt.Errorf("合并键 '%s' 失败: %w", k, err)
 			}
 
 			// 放入 Cache，标记为活跃/脏
@@ -256,7 +310,7 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 	for k, c := range m.cache {
 		b, err := c.Bytes()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: 序列化键 '%s' 失败: %v", ErrSerialization, k, err)
 		}
 		// Update Entry
 		// 如果 Entry 不存在（新建的），创建它
@@ -266,7 +320,11 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 		m.Entries[k].Data = b
 	}
 
-	return json.Marshal(m)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("%w: JSON 序列化失败: %v", ErrSerialization, err)
+	}
+	return data, nil
 }
 
 func (m *MapCRDT) GC(safeTimestamp int64) int {
@@ -287,7 +345,8 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 			var err error
 			c, err = Deserialize(e.Type, e.Data)
 			if err != nil {
-				continue // Skip bad data
+				// Skip bad data
+				continue
 			}
 			// 不一定非要放入 Cache，除非 GC 发生了修改。
 			// 但为了简化，如果反序列化了，不妨放入 Cache？
@@ -311,15 +370,26 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 }
 
 func FromBytesMap(data []byte) (*MapCRDT, error) {
+	if data == nil {
+		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "输入数据为 nil", DataLength: 0}
+	}
+	if len(data) == 0 {
+		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "输入数据为空", DataLength: 0}
+	}
+	
 	m := NewMapCRDT()
 	if err := json.Unmarshal(data, m); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: JSON 反序列化失败: %v", ErrDeserialization, err)
 	}
 	// Entries 已加载。Cache 为空。
 	return m, nil
 }
 
 func (m *MapCRDT) GetCRDT(key string) CRDT {
+	if key == "" {
+		return nil
+	}
+	
 	// Try cache first
 	if c, ok := m.cache[key]; ok {
 		return c
@@ -345,30 +415,40 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 
 // GetORSet 获取指定类型的 ORSet。
 func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
+	if m == nil {
+		return nil, ErrNilCRDT
+	}
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	// Try cache
 	if c, ok := m.cache[key]; ok {
 		if val, castOk := c.(*ORSet[T]); castOk {
 			return val, nil
 		}
-		return nil, fmt.Errorf("type mismatch in cache")
+		return nil, &TypeMismatchError{Key: key, ExpectedType: TypeORSet, GotType: c.Type()}
 	}
 
 	if e, ok := m.Entries[key]; ok {
 		if e.Type != TypeORSet {
-			return nil, fmt.Errorf("type mismatch: expected ORSet, got %v", e.Type)
+			return nil, &TypeMismatchError{Key: key, ExpectedType: TypeORSet, GotType: e.Type}
 		}
 		c, err := FromBytesORSet[T](e.Data)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("反序列化 ORSet 键 '%s' 失败: %w", key, err)
 		}
 		m.cache[key] = c
 		return c, nil
 	}
-	return nil, nil // Not found
+	return nil, &KeyNotFoundError{Key: key}
 }
 
 // Has 检查键是否存在。
 func (m *MapCRDT) Has(key string) bool {
+	if key == "" {
+		return false
+	}
 	if _, ok := m.cache[key]; ok {
 		return true
 	}
@@ -414,101 +494,132 @@ func (m *MapCRDT) GetInt(key string) (int, bool) {
 
 // GetRGA 获取通用的 RGA 只读接口。
 func (m *MapCRDT) GetRGA(key string) (ReadOnlyRGA[any], error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	// 注意：底层 RGA 必须实际上是 RGA[any]，否则会类型转换失败。
 	// 如果底层是 RGA[string]，这里会报错。
-	r, err := GetRGA[any](m, key)
+r, err := GetRGA[any](m, key)
 	if err != nil {
 		return nil, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 	return &readOnlyRGA[any]{r: r}, nil
 }
 
 // GetRGAString 获取字符串类型的 RGA 只读接口。
 func (m *MapCRDT) GetRGAString(key string) (ReadOnlyRGA[string], error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	r, err := GetRGA[string](m, key)
 	if err != nil {
 		return nil, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 	return &readOnlyRGA[string]{r: r}, nil
 }
 
 // GetRGABytes 获取字节数组类型的 RGA 只读接口。
 func (m *MapCRDT) GetRGABytes(key string) (ReadOnlyRGA[[]byte], error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	r, err := GetRGA[[]byte](m, key)
 	if err != nil {
 		return nil, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 	return &readOnlyRGA[[]byte]{r: r}, nil
 }
 
 // GetSetString 获取字符串类型的 ORSet 只读接口。
 func (m *MapCRDT) GetSetString(key string) (ReadOnlySet[string], error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	s, err := GetORSet[string](m, key)
 	if err != nil {
 		return nil, err
 	}
 	if s == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 	return &readOnlySet[string]{s: s}, nil
 }
 
 // GetSetInt 获取 int 类型的 ORSet 只读接口。
 func (m *MapCRDT) GetSetInt(key string) (ReadOnlySet[int], error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	s, err := GetORSet[int](m, key)
 	if err != nil {
 		return nil, err
 	}
 	if s == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 	return &readOnlySet[int]{s: s}, nil
 }
 
-// GetLocalFile 获取 LocalFileCRDT 只读接口。
+// GetLocalFile 获取 LocalFile CRDT 只读接口。
 func (m *MapCRDT) GetLocalFile(key string) (ReadOnlyLocalFile, error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	// Try cache via GetCRDT (which handles lazy loading and baseDir injection)
 	c := m.GetCRDT(key)
 	if c == nil {
-		return nil, nil
+		return nil, &KeyNotFoundError{Key: key}
 	}
 
 	lf, ok := c.(*LocalFileCRDT)
 	if !ok {
-		return nil, fmt.Errorf("type mismatch: expected LocalFileCRDT, got %v", c.Type())
+		return nil, &TypeMismatchError{Key: key, ExpectedType: TypeLocalFile, GotType: c.Type()}
 	}
 	return lf, nil
 }
 
 // GetRGA 获取指定类型的 RGA。
 func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
+	if m == nil {
+		return nil, ErrNilCRDT
+	}
+	if key == "" {
+		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
+	}
+	
 	// Try cache
 	if c, ok := m.cache[key]; ok {
 		if val, castOk := c.(*RGA[T]); castOk {
 			return val, nil
 		}
-		return nil, fmt.Errorf("type mismatch in cache")
+		return nil, &TypeMismatchError{Key: key, ExpectedType: TypeRGA, GotType: c.Type()}
 	}
 
 	if e, ok := m.Entries[key]; ok {
 		if e.Type != TypeRGA {
-			return nil, fmt.Errorf("type mismatch: expected RGA, got %v", e.Type)
+			return nil, &TypeMismatchError{Key: key, ExpectedType: TypeRGA, GotType: e.Type}
 		}
 		c, err := FromBytesRGA[T](e.Data)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("反序列化 RGA 键 '%s' 失败: %w", key, err)
 		}
 		m.cache[key] = c
 		return c, nil
 	}
-	return nil, nil
+	return nil, &KeyNotFoundError{Key: key}
 }
