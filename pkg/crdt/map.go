@@ -3,17 +3,24 @@ package crdt
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 // MapCRDT 实现列 -> CRDT 的映射。
 // 这是 "行" 容器。
 type MapCRDT struct {
+	mu      sync.RWMutex
 	Entries map[string]*Entry
 	// cache 存储已反序列化的 CRDT 对象。
-	// 这是一个回写缓存 (Write-Back Cache)：产生的变更首先在 cache 中更新，
+	// 这是一个回写缓存 (Write) : 产生的变更首先在 cache 中更新，
 	// 只有在调用 Bytes() 时才序列化回 Entries。
 	cache   map[string]CRDT
 	baseDir string // 文件存储的基础目录
+
+	// 内存泄漏防护：最大缓存大小
+	maxCacheSize int
+	lruKeys     []string        // 简单的 LRU 键跟踪
+	lruIndex    map[string]int  // 键到索引的映射，用于 O(1) 查找
 }
 
 type Entry struct {
@@ -23,14 +30,20 @@ type Entry struct {
 
 func NewMapCRDT() *MapCRDT {
 	return &MapCRDT{
-		Entries: make(map[string]*Entry),
-		cache:   make(map[string]CRDT),
+		Entries:      make(map[string]*Entry),
+		cache:        make(map[string]CRDT),
+		maxCacheSize: 1000, // 默认最大缓存大小
+		lruKeys:      make([]string, 0, 1000),
+		lruIndex:     make(map[string]int),
 	}
 }
 
 // SetBaseDir 设置用于 LocalFile CRDT 的基础目录。
 // 会递归设置缓存中的 LocalFile CRDT 和嵌套的 MapCRDT。
 func (m *MapCRDT) SetBaseDir(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.baseDir = dir
 	for _, c := range m.cache {
 		if lf, ok := c.(*LocalFileCRDT); ok {
@@ -43,7 +56,38 @@ func (m *MapCRDT) SetBaseDir(dir string) {
 
 func (m *MapCRDT) Type() Type { return TypeMap }
 
+// updateLRU 更新 LRU 缓存跟踪
+func (m *MapCRDT) updateLRU(key string) {
+	// 从 lruKeys 中移除 key（如果存在）
+	for i, k := range m.lruKeys {
+		if k == key {
+			m.lruKeys = append(m.lruKeys[:i], m.lruKeys[i+1:]...)
+			break
+		}
+	}
+	
+	// 添加到末尾
+	m.lruKeys = append(m.lruKeys, key)
+
+	// 如果超过最大缓存大小，移除最旧的
+	if m.maxCacheSize > 0 && len(m.lruKeys) > m.maxCacheSize {
+		oldest := m.lruKeys[0]
+		m.lruKeys = m.lruKeys[1:]
+		delete(m.cache, oldest)
+		delete(m.lruIndex, oldest)
+	}
+	
+	// 更新所有索引
+	m.lruIndex = make(map[string]int, len(m.lruKeys))
+	for i, k := range m.lruKeys {
+		m.lruIndex[k] = i
+	}
+}
+
 func (m *MapCRDT) Value() any {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	// 返回 map[string]any
 	// 仅返回反序列化的值用于演示。
 	// 调用者可能需要原始 CRDT。
@@ -139,6 +183,9 @@ type OpMapUpdate struct {
 func (op OpMapUpdate) Type() Type { return TypeMap }
 
 func (m *MapCRDT) Apply(op Op) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
 	if op == nil {
 		return fmt.Errorf("%w: 操作不能为 nil", ErrInvalidOp)
 	}
@@ -306,28 +353,56 @@ func (m *MapCRDT) Merge(other CRDT) error {
 }
 
 func (m *MapCRDT) Bytes() ([]byte, error) {
-	// Flush Cache to Entries
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 使用临时 map 先序列化，确保原子性
+	tempEntries := make(map[string]*Entry, len(m.Entries))
+
+	// 先复制现有的 Entries
+	for k, e := range m.Entries {
+		tempEntries[k] = &Entry{
+			Type: e.Type,
+			Data: make([]byte, len(e.Data)),
+		}
+		copy(tempEntries[k].Data, e.Data)
+	}
+
+	// Flush Cache to tempEntries
 	for k, c := range m.cache {
 		b, err := c.Bytes()
 		if err != nil {
 			return nil, fmt.Errorf("%w: 序列化键 '%s' 失败: %v", ErrSerialization, k, err)
 		}
-		// Update Entry
-		// 如果 Entry 不存在（新建的），创建它
-		if _, ok := m.Entries[k]; !ok {
-			m.Entries[k] = &Entry{Type: c.Type()}
+		// Update Entry in tempEntries
+		if _, ok := tempEntries[k]; !ok {
+			tempEntries[k] = &Entry{Type: c.Type(), Data: b}
+		} else {
+			tempEntries[k].Data = b
 		}
-		m.Entries[k].Data = b
 	}
 
-	data, err := json.Marshal(m)
+	// 创建临时结构体用于序列化（避免序列化锁和 lruKeys）
+	temp := &struct {
+		Entries map[string]*Entry
+	}{
+		Entries: tempEntries,
+	}
+
+	data, err := json.Marshal(temp)
 	if err != nil {
 		return nil, fmt.Errorf("%w: JSON 序列化失败: %v", ErrSerialization, err)
 	}
+
+	// 成功后更新真实的 Entries
+	m.Entries = tempEntries
 	return data, nil
 }
 
 func (m *MapCRDT) GC(safeTimestamp int64) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	count := 0
 	// 遍历所有数据。优先遍历 Cache，再遍历 Entries 中不在 Cache 的。
 	// 或者：先 Flush？
@@ -389,28 +464,46 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 	if key == "" {
 		return nil
 	}
-	
+
+	m.mu.RLock()
 	// Try cache first
 	if c, ok := m.cache[key]; ok {
+		m.mu.RUnlock()
 		return c
 	}
 
-	if e, ok := m.Entries[key]; ok {
-		c, err := Deserialize(e.Type, e.Data)
-		if err == nil {
-			// Read-only access usually doesn't need caching, but for consistency?
-			// Let's cache it on read to speed up subsequent reads/writes.
-			// 注入 BaseDir
-			if lf, ok := c.(*LocalFileCRDT); ok && m.baseDir != "" {
-				lf.SetBaseDir(m.baseDir)
-			} else if subMap, ok := c.(*MapCRDT); ok && m.baseDir != "" {
-				subMap.SetBaseDir(m.baseDir)
-			}
-			m.cache[key] = c
-			return c
+	e, exists := m.Entries[key]
+	m.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	c, err := Deserialize(e.Type, e.Data)
+	if err != nil {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 检查在反序列化期间是否已被其他goroutine添加到缓存
+	if existing, ok := m.cache[key]; ok {
+		return existing
+	}
+
+	// 在持有锁的情况下注入 BaseDir
+	if baseDir := m.baseDir; baseDir != "" {
+		if lf, ok := c.(*LocalFileCRDT); ok {
+			lf.SetBaseDir(baseDir)
+		} else if subMap, ok := c.(*MapCRDT); ok {
+			subMap.SetBaseDir(baseDir)
 		}
 	}
-	return nil
+
+	m.cache[key] = c
+	m.updateLRU(key)
+	return c
 }
 
 // GetORSet 获取指定类型的 ORSet。
@@ -421,16 +514,21 @@ func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
+	m.mu.RLock()
 	// Try cache
 	if c, ok := m.cache[key]; ok {
+		m.mu.RUnlock()
 		if val, castOk := c.(*ORSet[T]); castOk {
 			return val, nil
 		}
 		return nil, &TypeMismatchError{Key: key, ExpectedType: TypeORSet, GotType: c.Type()}
 	}
 
-	if e, ok := m.Entries[key]; ok {
+	e, ok := m.Entries[key]
+	m.mu.RUnlock()
+
+	if ok {
 		if e.Type != TypeORSet {
 			return nil, &TypeMismatchError{Key: key, ExpectedType: TypeORSet, GotType: e.Type}
 		}
@@ -438,7 +536,10 @@ func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
 		if err != nil {
 			return nil, fmt.Errorf("反序列化 ORSet 键 '%s' 失败: %w", key, err)
 		}
+		m.mu.Lock()
 		m.cache[key] = c
+		m.updateLRU(key)
+		m.mu.Unlock()
 		return c, nil
 	}
 	return nil, &KeyNotFoundError{Key: key}
@@ -449,6 +550,9 @@ func (m *MapCRDT) Has(key string) bool {
 	if key == "" {
 		return false
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	if _, ok := m.cache[key]; ok {
 		return true
 	}
@@ -602,15 +706,20 @@ func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
 	
+	m.mu.RLock()
 	// Try cache
 	if c, ok := m.cache[key]; ok {
+		m.mu.RUnlock()
 		if val, castOk := c.(*RGA[T]); castOk {
 			return val, nil
 		}
 		return nil, &TypeMismatchError{Key: key, ExpectedType: TypeRGA, GotType: c.Type()}
 	}
 
-	if e, ok := m.Entries[key]; ok {
+	e, ok := m.Entries[key]
+	m.mu.RUnlock()
+
+	if ok {
 		if e.Type != TypeRGA {
 			return nil, &TypeMismatchError{Key: key, ExpectedType: TypeRGA, GotType: e.Type}
 		}
@@ -618,7 +727,10 @@ func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
 		if err != nil {
 			return nil, fmt.Errorf("反序列化 RGA 键 '%s' 失败: %w", key, err)
 		}
+		m.mu.Lock()
 		m.cache[key] = c
+		m.updateLRU(key)
+		m.mu.Unlock()
 		return c, nil
 	}
 	return nil, &KeyNotFoundError{Key: key}

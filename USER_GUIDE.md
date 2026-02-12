@@ -343,7 +343,163 @@ for _, doc := range docs {
 
 ---
 
-## 6. 事务 (Transactions)
+## 6. 垃圾回收 (Garbage Collection)
+
+Yep CRDT 提供了强大的垃圾回收机制，用于清理 CRDT 操作产生的墓碑数据（TMD），防止元数据无限膨胀。垃圾回收器基于混合逻辑时钟（HLC）和 Safe Timestamp 机制。
+
+### 6.1 核心概念
+
+#### Safe Timestamp
+**Safe Timestamp** 是一个时间点，系统保证在该时间点之前的所有操作都已同步到所有节点。它通常通过以下方式计算：
+- **最小时钟值**：所有节点当前时钟值的最小值（需要全局同步）
+- **保守估计**：当前时间减去网络延迟容差（如 `currentTime - 5s`）
+- **确认协议**：使用一致性协议（如 Raft）记录的确认时间戳
+
+#### 为什么需要 GC？
+在 CRDT 系统中，删除操作不会立即删除数据，而是标记为已删除（Tombstone）。这确保了：
+- **分布式一致性**：即使网络延迟或分区，所有节点都能正确处理删除
+- **无冲突合并**：延迟删除的元素不会被错误地恢复
+
+但这也导致：
+- **内存增长**：Tombstones 持续积累，占用内存
+- **存储膨胀**：序列化数据包含所有墓碑，增加存储成本
+
+因此需要定期执行 GC 来清理过期的墓碑。
+
+### 6.2 数据库级别的 GC API
+
+Yep CRDT 提供了数据库级别的统一 GC 接口，可以一次性清理所有表的墓碑数据。
+
+```go
+import "time"
+
+// 获取当前时间戳
+currentTime := myDB.Now()
+
+// 计算 safeTimestamp（例如：5 秒前的数据可以安全清理）
+safeTimestamp := currentTime - 5000 // 5000 毫秒 = 5 秒
+
+// 执行 GC
+result := myDB.GC(safeTimestamp)
+
+// 检查结果
+fmt.Printf("扫描表数量: %d\n", result.TablesScanned)
+fmt.Printf("扫描行数量: %d\n", result.RowsScanned)
+fmt.Printf("清理的墓碑数量: %d\n", result.TombstonesRemoved)
+
+if len(result.Errors) > 0 {
+    for _, err := range result.Errors {
+        log.Printf("GC 错误: %v\n", err)
+    }
+}
+```
+
+#### GCByTimeOffset（推荐）
+
+更方便的方法是使用 `GCByTimeOffset`，它会自动计算 `safeTimestamp`。
+
+```go
+// 清理 1 分钟前的数据
+result := myDB.GCByTimeOffset(1 * time.Minute)
+
+fmt.Printf("清理了 %d 个墓碑\n", result.TombstonesRemoved)
+```
+
+### 6.3 表级别的 GC API
+
+如果只需要清理特定表的墓碑，可以使用表级别的 GC。
+
+```go
+table := myDB.Table("users")
+
+// 执行表级 GC
+result := table.GC(safeTimestamp)
+
+fmt.Printf("扫描行: %d\n", result.RowsScanned)
+fmt.Printf("清理墓碑: %d\n", result.TombstonesRemoved)
+```
+
+### 6.4 定期 GC 策略（推荐）
+
+在生产环境中，建议启动定期 GC 的后台 goroutine。
+
+```go
+// 策略 1: 固定间隔 GC
+func startPeriodicGC(database *db.DB, interval time.Duration, offset time.Duration) {
+    ticker := time.NewTicker(interval)
+    go func() {
+        for range ticker.C {
+            result := database.GCByTimeOffset(offset)
+            if result.TombstonesRemoved > 0 {
+                log.Printf("GC: 清理了 %d 个墓碑", result.TombstonesRemoved)
+            }
+        }
+    }()
+}
+
+// 使用
+startPeriodicGC(myDB, 1 * time.Minute, 30 * time.Second)
+```
+
+```go
+// 策略 2: 基于数量的自适应 GC
+func startAdaptiveGC(database *db.DB, interval time.Duration, threshold int) {
+    ticker := time.NewTicker(interval)
+    go func() {
+        for range ticker.C {
+            // 检查最近的操作数量或内存使用
+            // 如果超过阈值，使用更保守的 offset
+            offset := 30 * time.Second
+            if shouldPerformAggressiveGC() {
+                offset = 5 * time.Second
+            }
+            
+            result := database.GCByTimeOffset(offset)
+            log.Printf("Adaptive GC: 清理 %d, 扫描 %d 行", 
+                result.TombstonesRemoved, result.RowsScanned)
+        }
+    }()
+}
+```
+
+### 6.5 GC 结果统计
+
+GC 操作返回详细的结果统计，便于监控和调试。
+
+```go
+type GCResult struct {
+    TablesScanned     int      // 扫描的表数量
+    RowsScanned       int      // 扫描的行数量
+    TombstonesRemoved int      // 移除的墓碑数量
+    Errors           []error  // 遇到的错误列表
+}
+
+type TableGCResult struct {
+    RowsScanned       int      // 扫描的行数量
+    TombstonesRemoved int      // 移除的墓碑数量
+    Errors           []error  // 遇到的错误列表
+}
+```
+
+### 6.6 注意事项
+
+#### Safe Timestamp 的计算
+- **保守为上**：宁可保留更多墓碑，也不要过早清理
+- **网络分区**：考虑节点长期离线的情况，`safeTimestamp` 可能被拖慢
+- **全量同步**：离线节点重新上线时，应强制全量同步，避免"僵尸数据"复活
+
+#### 性能影响
+- **扫描开销**：GC 会扫描所有行，可能影响性能
+- **低峰期执行**：建议在系统负载低时执行 GC
+- **批量处理**：GC 使用事务批量更新，减少 I/O 开销
+
+#### 错误处理
+- **不中断执行**：单个行的错误不会中断整个 GC 操作
+- **收集错误**：所有错误都被收集在结果中，便于后续分析
+
+---
+
+## 7. 事务 (Transactions)
 
 Yep CRDT 支持 ACID 事务。你可以将多个操作打包在一个事务中原子执行。这在需要同时更新多个表或多行数据时非常重要。
 

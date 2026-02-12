@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
@@ -11,6 +12,7 @@ import (
 
 // RGA 实现复制可增长数组 (Replicated Growable Array)。
 type RGA[T any] struct {
+	mu       sync.RWMutex
 	Vertices map[string]*RGAVertex[T]
 	Head     string     // 虚拟头节点的 ID
 	Clock    *hlc.Clock // 混合逻辑时钟
@@ -49,10 +51,24 @@ func NewRGA[T any](clock *hlc.Clock) *RGA[T] {
 
 func (r *RGA[T]) Type() Type { return TypeRGA }
 
-// Value 按顺序返回值的列表。
+// deepCopyValue 尝试对值进行深拷贝，主要处理 []byte 类型
+func deepCopyValue[T any](value T) T {
+	// 尝试处理 []byte 类型
+	if bytesVal, ok := any(value).([]byte); ok {
+		copied := make([]byte, len(bytesVal))
+		copy(copied, bytesVal)
+		return any(copied).(T)
+	}
+	// 其他类型假设是不可变的或可以浅拷贝的
+	return value
+}
+
 // Value 按顺序返回值的列表。
 // 注意：对于大数据量，建议使用 Iterator() 以避免切片分配。
 func (r *RGA[T]) Value() any {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var res []T
 	curr := r.Head
 	for curr != "" {
@@ -69,18 +85,28 @@ func (r *RGA[T]) Value() any {
 // 每次调用该函数，返回 (下一个值, true)。
 // 如果遍历结束，返回 (零值, false)。
 // 这种模式避免了在这里分配整个切片。
+// 注意：迭代器创建时会创建快照，迭代期间不需要持有锁。
 func (r *RGA[T]) Iterator() func() (T, bool) {
-	currID := r.Vertices[r.Head].Next
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
+	// 创建快照以避免在迭代期间持有锁
+	currID := r.Head
+	snapshot := make([]T, 0)
+	for currID != "" {
+		v := r.Vertices[currID]
+		currID = v.Next
+		if !v.Deleted && v.ID != r.Head {
+			snapshot = append(snapshot, v.Value)
+		}
+	}
+
+	index := 0
 	return func() (T, bool) {
-		for currID != "" {
-			v := r.Vertices[currID]
-			currID = v.Next // 准备下一次迭代
-
-			if !v.Deleted {
-				return v.Value, true
-			}
-			// 如果已删除，继续循环寻找下一个
+		if index < len(snapshot) {
+			val := snapshot[index]
+			index++
+			return val, true
 		}
 		var zero T
 		return zero, false
@@ -122,6 +148,9 @@ func (r *RGA[T]) ensureEdges() {
 }
 
 func (r *RGA[T]) Apply(op Op) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.ensureEdges()
 
 	switch o := op.(type) {
@@ -196,6 +225,12 @@ func (r *RGA[T]) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into RGA", other)
 	}
 
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.ensureEdges()
 
 	var newVertices []*RGAVertex[T]
@@ -213,15 +248,10 @@ func (r *RGA[T]) Merge(other CRDT) error {
 				}
 			}
 		} else {
-			// Deep copy value? T might be slice/pointer.
-			// Currently we assume immutable or simple types.
-			// But for T=[]byte, we should copy.
-			// Hard to do deep copy generically in Go without reflection.
-			// We trust caller or use JSON roundtrip if desperate.
-			// Here we just copy T.
+			// Deep copy value for slice types like []byte
 			vNew := &RGAVertex[T]{
 				ID:        vRemote.ID,
-				Value:     vRemote.Value, // Shallow copy of struct/pointer
+				Value:     deepCopyValue(vRemote.Value),
 				Origin:    vRemote.Origin,
 				Timestamp: vRemote.Timestamp,
 				Deleted:   vRemote.Deleted,
@@ -317,6 +347,9 @@ func (r *RGA[T]) Merge(other CRDT) error {
 }
 
 func (r *RGA[T]) GC(safeTimestamp int64) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	count := 0
 	prevID := r.Head
 	currID := r.Vertices[r.Head].Next
@@ -365,7 +398,32 @@ func (r *RGA[T]) GC(safeTimestamp int64) int {
 }
 
 func (r *RGA[T]) Bytes() ([]byte, error) {
-	return json.Marshal(r)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// 创建临时结构体用于序列化，避免锁被 JSON 序列化期间持有
+	tempVertices := make(map[string]*RGAVertex[T], len(r.Vertices))
+	for k, v := range r.Vertices {
+		tempVertices[k] = &RGAVertex[T]{
+			ID:        v.ID,
+			Value:     v.Value,
+			Origin:    v.Origin,
+			Next:      v.Next,
+			Timestamp: v.Timestamp,
+			Deleted:   v.Deleted,
+			DeletedAt: v.DeletedAt,
+		}
+	}
+
+	temp := &struct {
+		Vertices map[string]*RGAVertex[T]
+		Head     string
+	}{
+		Vertices: tempVertices,
+		Head:     r.Head,
+	}
+
+	return json.Marshal(temp)
 }
 
 func FromBytesRGA[T any](data []byte) (*RGA[T], error) {

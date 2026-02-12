@@ -3,10 +3,12 @@ package crdt
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 // LWWRegister 实现最后写入胜出 (Last-Write-Wins) 寄存器。
 type LWWRegister struct {
+	mu        sync.RWMutex
 	value     []byte
 	timestamp int64
 }
@@ -24,6 +26,8 @@ func (r *LWWRegister) Type() Type {
 }
 
 func (r *LWWRegister) Value() any {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.value
 }
 
@@ -43,6 +47,9 @@ func (r *LWWRegister) Apply(op Op) error {
 		return ErrInvalidOp
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	// LWW 逻辑：如果时间戳更大则更新
 	if setOp.Timestamp > r.timestamp {
 		r.value = setOp.Value
@@ -57,8 +64,16 @@ func (r *LWWRegister) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into LWWRegister", other)
 	}
 
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if o.timestamp > r.timestamp {
-		r.value = o.value
+		// 深度拷贝以避免引用共享
+		r.value = make([]byte, len(o.value))
+		copy(r.value, o.value)
 		r.timestamp = o.timestamp
 	}
 	return nil
@@ -71,6 +86,9 @@ func (r *LWWRegister) GC(safeTimestamp int64) int {
 // Bytes 序列化 LWWRegister。
 // 格式：时间戳 (8 字节) + 值
 func (r *LWWRegister) Bytes() ([]byte, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	buf := make([]byte, 8+len(r.value))
 	binary.BigEndian.PutUint64(buf[0:8], uint64(r.timestamp))
 	copy(buf[8:], r.value)

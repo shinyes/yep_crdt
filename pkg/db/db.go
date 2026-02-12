@@ -1,7 +1,9 @@
 package db
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
@@ -42,7 +44,10 @@ func WithFileStorageDir(dir string) Option {
 func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	c := meta.NewCatalog(s)
 	// Try loading existing catalog
-	_ = c.Load()
+	if err := c.Load(); err != nil {
+		// 记录错误但继续执行，可能是首次运行
+		fmt.Printf("警告: 加载 catalog 失败: %v\n", err)
+	}
 
 	// 1. Check Database ID
 	var storedDBID string
@@ -54,6 +59,9 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		}
 		return err
 	})
+	if err != nil && err != store.ErrKeyNotFound {
+		panic(fmt.Sprintf("读取 Database ID 失败: %v", err))
+	}
 
 	if storedDBID != "" {
 		if storedDBID != databaseID {
@@ -61,9 +69,11 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		}
 	} else {
 		// First time, store it
-		_ = s.Update(func(txn store.Tx) error {
+		if err := s.Update(func(txn store.Tx) error {
 			return txn.Set([]byte("_sys/database_id"), []byte(databaseID), 0)
-		})
+		}); err != nil {
+			panic(fmt.Sprintf("存储 Database ID 失败: %v", err))
+		}
 	}
 
 	// 2. Load or generate NodeID
@@ -76,12 +86,17 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		}
 		return err
 	})
+	if err != nil && err != store.ErrKeyNotFound {
+		panic(fmt.Sprintf("读取 Node ID 失败: %v", err))
+	}
 
 	if nodeID == "" || err == store.ErrKeyNotFound {
 		nodeID = "node-" + uuid.NewString()
-		_ = s.Update(func(txn store.Tx) error {
+		if err := s.Update(func(txn store.Tx) error {
 			return txn.Set([]byte("_sys/node_id"), []byte(nodeID), 0)
-		})
+		}); err != nil {
+			panic(fmt.Sprintf("存储 Node ID 失败: %v", err))
+		}
 	}
 
 	db := &DB{
@@ -187,3 +202,52 @@ func (db *DB) View(fn func(*Tx) error) error {
 		return fn(&Tx{db: db, txn: txn})
 	})
 }
+
+// GCResult 包含 GC 操作的结果统计。
+type GCResult struct {
+	TablesScanned     int   // 扫描的表数量
+	RowsScanned       int   // 扫描的行数量
+	TombstonesRemoved int   // 移除的墓碑数量
+	Errors           []error // 遇到的错误
+}
+
+// GC 对数据库中所有 CRDT 执行垃圾回收。
+// safeTimestamp 是安全的时间戳，所有在此时间戳之前被删除的数据都可以安全清理。
+// 例如：safeTimestamp = db.Now() - 60000 (60 秒前)
+func (db *DB) GC(safeTimestamp int64) *GCResult {
+	result := &GCResult{}
+	
+	db.mu.Lock()
+	tableNames := make([]string, 0, len(db.tables))
+	for name := range db.tables {
+		tableNames = append(tableNames, name)
+	}
+	db.mu.Unlock()
+	
+	result.TablesScanned = len(tableNames)
+	
+	for _, tableName := range tableNames {
+		table := db.Table(tableName)
+		if table == nil {
+			continue
+		}
+		
+		// 获取该表的所有行
+		tableResult := table.GC(safeTimestamp)
+		result.RowsScanned += tableResult.RowsScanned
+		result.TombstonesRemoved += tableResult.TombstonesRemoved
+		if len(tableResult.Errors) > 0 {
+			result.Errors = append(result.Errors, tableResult.Errors...)
+		}
+	}
+	
+	return result
+}
+
+// GCByTimeOffset 根据时间偏移量执行 GC。
+// offset 是从当前时间向后的偏移量，例如 60 * time.Second 表示清理 60 秒前的数据。
+func (db *DB) GCByTimeOffset(offset time.Duration) *GCResult {
+	safeTimestamp := db.clock.Now() - offset.Milliseconds()
+	return db.GC(safeTimestamp)
+}
+

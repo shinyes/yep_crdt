@@ -3,10 +3,12 @@ package crdt
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 // PNCounter 实现正负计数器。
 type PNCounter struct {
+	mu  sync.RWMutex
 	ID  string           // 本地节点 (副本) 的 ID
 	Inc map[string]int64 // 每个节点的增量映射
 	Dec map[string]int64 // 每个节点的减量映射
@@ -26,6 +28,9 @@ func (c *PNCounter) Type() Type {
 }
 
 func (c *PNCounter) Value() any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var total int64
 	for _, v := range c.Inc {
 		total += v
@@ -44,6 +49,9 @@ type OpPNCounterInc struct {
 func (op OpPNCounterInc) Type() Type { return TypePNCounter }
 
 func (c *PNCounter) Apply(op Op) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	switch o := op.(type) {
 	case OpPNCounterInc:
 		if o.Val >= 0 {
@@ -63,6 +71,12 @@ func (c *PNCounter) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into PNCounter", other)
 	}
 
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	mergeMap(c.Inc, o.Inc)
 	mergeMap(c.Dec, o.Dec)
 	return nil
@@ -77,6 +91,9 @@ func mergeMap(dest, src map[string]int64) {
 }
 
 func (c *PNCounter) Bytes() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	return json.Marshal(c)
 }
 

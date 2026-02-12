@@ -91,11 +91,19 @@ func (lf *LocalFileCRDT) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into LocalFileCRDT", other)
 	}
 
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
 	lf.mu.Lock()
 	defer lf.mu.Unlock()
 
 	if o.timestamp > lf.timestamp {
-		lf.metadata = o.metadata
+		// 深度拷贝 metadata 以避免引用共享
+		lf.metadata = FileMetadata{
+			Path: o.metadata.Path,
+			Hash: o.metadata.Hash,
+			Size: o.metadata.Size,
+		}
 		lf.timestamp = o.timestamp
 	}
 	return nil
@@ -110,8 +118,10 @@ func (lf *LocalFileCRDT) GC(safeTimestamp int64) int {
 // 格式：Timestamp (8 字节) + JSON(Metadata)
 func (lf *LocalFileCRDT) Bytes() ([]byte, error) {
 	lf.mu.RLock()
+	defer lf.mu.RUnlock()
+
+	// 在持有锁时序列化 metadata
 	metaBytes, err := json.Marshal(lf.metadata)
-	lf.mu.RUnlock() // 尽早释放锁
 	if err != nil {
 		return nil, err
 	}
@@ -155,14 +165,29 @@ func (lf *LocalFileCRDT) ReadAll() ([]byte, error) {
 
 // ReadAt 从指定位置读取指定长度的文件内容。
 func (lf *LocalFileCRDT) ReadAt(offset int64, length int) ([]byte, error) {
+	// 参数有效性检查
+	if offset < 0 {
+		return nil, fmt.Errorf("invalid offset: %d (must be non-negative)", offset)
+	}
+	if length <= 0 {
+		return nil, fmt.Errorf("invalid length: %d (must be positive)", length)
+	}
+
 	lf.mu.RLock()
 	baseDir := lf.baseDir
 	path := lf.metadata.Path
+	fileSize := lf.metadata.Size
 	lf.mu.RUnlock()
 
 	if baseDir == "" {
 		return nil, fmt.Errorf("baseDir not set for LocalFileCRDT")
 	}
+
+	// 检查 offset 是否超出文件范围
+	if offset >= fileSize {
+		return nil, fmt.Errorf("offset %d exceeds file size %d", offset, fileSize)
+	}
+
 	fullPath := filepath.Join(baseDir, path)
 
 	f, err := os.Open(fullPath)
@@ -170,6 +195,12 @@ func (lf *LocalFileCRDT) ReadAt(offset int64, length int) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+
+	// 调整请求的长度以避免超出文件末尾
+	remaining := fileSize - offset
+	if int64(length) > remaining {
+		length = int(remaining)
+	}
 
 	buf := make([]byte, length)
 	n, err := f.ReadAt(buf, offset)

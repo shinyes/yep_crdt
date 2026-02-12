@@ -235,7 +235,131 @@ func main() {
 	}
 ```
 
-#### 6. 事务支持
+#### 6. 数据库级别的垃圾回收 (Database-Level GC)
+
+Yep CRDT 提供了统一的数据库级别 GC API，用于清理所有 CRDT 类型的墓碑数据。
+
+```go
+import "time"
+
+// 获取当前时间戳
+currentTime := myDB.Now()
+
+// 计算 safeTimestamp（例如：5 秒前的数据可以安全清理）
+safeTimestamp := currentTime - 5000 // 5000 毫秒 = 5 秒
+
+// 执行 GC
+result := myDB.GC(safeTimestamp)
+
+fmt.Printf("扫描表数量: %d\n", result.TablesScanned)
+fmt.Printf("扫描行数量: %d\n", result.RowsScanned)
+fmt.Printf("清理的墓碑数量: %d\n", result.TombstonesRemoved)
+
+if len(result.Errors) > 0 {
+    for _, err := range result.Errors {
+        log.Printf("GC 错误倒: %v\n", err)
+    }
+}
+```
+
+或者使用更方便的 `GCByTimeOffset` 方法：
+
+```go
+// 清理 1 分钟前的数据
+result := myDB.GCByTimeOffset(1 * time.Minute)
+
+fmt.Printf("清理了 %d 个墓碑\n", result.TombstonesRemoved)
+```
+
+##### 表级别 GC
+
+如果只需要清理特定表：
+
+```go
+table := myDB.Table("users")
+
+// 执行表级 GC
+result := table.GC(safeTimestamp)
+
+fmt.Printf("扫描行: %d\n", result.RowsScanned)
+fmt.Printf("清理墓碑: %d\n", result.TombstonesRemoved)
+```
+
+##### 定期 GC 策略（推荐）
+
+```go
+// 启动定期 GC goroutine
+func startPeriodicGC(db *db.DB, interval time.Duration, offset time.Duration) {
+    ticker := time.NewTicker(interval)
+    go func() {
+        for range ticker.C {
+            result := db.GCByTimeOffset(offset)
+            if result.TombstonesRemoved > 0 {
+                log.Printf("GC: 清理了 %d 个墓碑", result.TombstonesRemoved)
+            }
+        }
+    }()
+}
+
+// 使用：每分钟清理 30 秒前的数据
+startPeriodicGC(myDB, 1*time.Minute, 30*time.Second)
+```
+
+##### 分布式同步中的 GC 管理（推荐用于多节点场景）
+
+对于多节点 CRDT 系统，使用 `pkg/sync` 中的 `GCManager` 以获得更强大的错误恢复和监控能力：
+
+```go
+import "github.com/shinyes/yep_crdt/pkg/sync"
+
+// 初始化节点管理器和 GC 管理器
+nodeManager := sync.NewNodeManager(myDB, "node-1")
+nodeManager.Start(ctx)
+
+// GC 会自动启动，默认参数：
+// - 运行间隔: 1 分钟
+// - 时间偏移: 30 秒
+// - 超时控制: 30 秒
+// - 最大重试: 3 次
+
+// 可选：在运行时调整参数
+gcManager := nodeManager.gcManager
+gcManager.SetTimeout(45 * time.Second)  // 超时改为 45 秒
+gcManager.SetMaxRetry(5)                // 最多重试 5 次
+
+// 获取 GC 统计信息用于监控
+stats := gcManager.GetStats()
+fmt.Printf("GC 成功率: %.2f%%\n", 100.0 - stats["failure_rate_pct"].(float64))
+fmt.Printf("已清理墓碑数: %d/%d\n", stats["total_removed"], stats["total_tombstones"])
+fmt.Printf("最后一次运行耗时: %s\n", stats["last_run_duration"])
+
+// 关闭时 GC 会自动停止
+nodeManager.Stop()
+```
+
+**GC Manager 高级功能** (v1.1.0+):
+- ✅ **自动错误恢复**: 3 次指数退避重试（1秒 → 4秒 → 9秒）
+- ✅ **超时控制**: 防止 GC 无限期阻塞调度器
+- ✅ **完整的统计信息**: 包括成功率、失败率、清理数等
+- ✅ **线程安全**: 所有统计操作都是原子性的
+
+##### GC 原理
+
+- **Safe Timestamp**: 系统保证在该时间点之前的所有操作都已同步到所有节点
+- **ORSet**: 清理删除时间早于 safeTimestamp 的 tombstones
+- **RGA**: 清理已删除且删除时间早于 safeTimestamp 的节点
+- **MapCRDT**: 递归清理所有嵌套 CRDT 的墓碑
+- **LWW Register & PN Counter**: 无墓碑，不执行清理
+
+##### 注意事项
+
+- **保守计算 safeTimestamp**: 宁可保留更多墓碑，也不要过早清理
+- **网络分区**: 考虑节点长期离线的情况
+- **性能影响**: GC 会扫描所有行，建议在低峰期执行
+- **错误处理**: GC 操作收集所有错误，不会因为单个失败而中断
+- **分布式环保**: 在多节点场景中，使用 GCManager 获得自动重试和监控能力
+
+#### 7. 事务支持
 
 使用 `Update` 或 `View` 方法执行原子性操作。
 

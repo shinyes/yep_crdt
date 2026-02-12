@@ -3,6 +3,7 @@ package crdt
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
@@ -12,6 +13,7 @@ import (
 // 它使用每个元素的活动 ID 集合和已删除 ID 的墓碑集合。
 // T 必须是 comparable，以便用作 map 的键。
 type ORSet[T comparable] struct {
+	mu         sync.RWMutex
 	AddSet     map[T]map[string]struct{} // 元素 -> ID 集合
 	Tombstones map[string]int64          // 已删除 ID -> 删除时间戳
 	Clock      *hlc.Clock                // 混合逻辑时钟 (可选，用于 Apply)
@@ -32,6 +34,9 @@ func (s *ORSet[T]) Type() Type {
 
 // Elements 返回集合中的所有元素。
 func (s *ORSet[T]) Elements() []T {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	elements := make([]T, 0, len(s.AddSet))
 	for e, ids := range s.AddSet {
 		// 过滤掉在 Tombstones 中的 ID
@@ -55,6 +60,9 @@ func (s *ORSet[T]) Value() any {
 
 // Contains 检查集合中是否包含某个元素。
 func (s *ORSet[T]) Contains(element T) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ids, ok := s.AddSet[element]
 	if !ok {
 		return false
@@ -82,6 +90,9 @@ type OpORSetRemove[T comparable] struct {
 func (op OpORSetRemove[T]) Type() Type { return TypeORSet }
 
 func (s *ORSet[T]) Apply(op Op) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	switch o := op.(type) {
 	case OpORSetAdd[T]:
 		// 生成唯一 ID
@@ -100,11 +111,11 @@ func (s *ORSet[T]) Apply(op Op) error {
 		if s.Clock != nil {
 			ts = s.Clock.Now()
 		}
+		// 延迟删除策略：只标记为已删除，不从 AddSet 中移除
+		// 在 GC 时才真正清理 AddSet 中的已删除 ID
 		for id := range ids {
 			s.Tombstones[id] = ts
 		}
-		// 立即从 AddSet 中删除，以节省空间和后续遍历时间
-		delete(s.AddSet, o.Element)
 
 	default:
 		return ErrInvalidOp
@@ -118,14 +129,20 @@ func (s *ORSet[T]) Merge(other CRDT) error {
 		return fmt.Errorf("cannot merge %T into ORSet", other)
 	}
 
-	// 1. 合并 Tombstones
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 1. 合并 Tombstones (深度拷贝)
 	for id, ts := range o.Tombstones {
 		if localTs, exists := s.Tombstones[id]; !exists || ts > localTs {
 			s.Tombstones[id] = ts
 		}
 	}
 
-	// 2. 合并 AddSets
+	// 2. 合并 AddSets (深度拷贝)
 	for elem, ids := range o.AddSet {
 		if s.AddSet[elem] == nil {
 			s.AddSet[elem] = make(map[string]struct{})
@@ -150,18 +167,53 @@ func (s *ORSet[T]) Merge(other CRDT) error {
 }
 
 func (s *ORSet[T]) GC(safeTimestamp int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	count := 0
+	
+	// 1. 清理过期的 Tombstones 和对应的 AddSet 元素
 	for id, ts := range s.Tombstones {
 		if ts < safeTimestamp {
+			// 找到并删除 AddSet 中对应的元素
+			for elem, ids := range s.AddSet {
+				if _, exists := ids[id]; exists {
+					delete(s.AddSet[elem], id)
+					count++
+					// 如果元素的所有 ID 都被删除了，从 AddSet 中移除该元素
+					if len(s.AddSet[elem]) == 0 {
+						delete(s.AddSet, elem)
+					}
+					break // 每个 ID 只在一个元素中
+				}
+			}
+			// 删除 Tombstone
 			delete(s.Tombstones, id)
-			count++
 		}
 	}
+	
 	return count
 }
 
 func (s *ORSet[T]) Bytes() ([]byte, error) {
-	return json.Marshal(s)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 需要创建深拷贝以避免锁被 JSON 序列化期间持有
+	tempSet := &ORSet[T]{
+		AddSet:     make(map[T]map[string]struct{}, len(s.AddSet)),
+		Tombstones: make(map[string]int64, len(s.Tombstones)),
+	}
+	for k, v := range s.AddSet {
+		tempSet.AddSet[k] = make(map[string]struct{}, len(v))
+		for id := range v {
+			tempSet.AddSet[k][id] = struct{}{}
+		}
+	}
+	for k, v := range s.Tombstones {
+		tempSet.Tombstones[k] = v
+	}
+	return json.Marshal(tempSet)
 }
 
 // FromBytesORSet 反序列化 ORSet。需要指定 T。
