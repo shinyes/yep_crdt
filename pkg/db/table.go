@@ -77,9 +77,16 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		// 我们需要模式来知道类型。
 
 		for col, val := range data {
-			// 查找列模式
-			// colType := t.findColType(col)
-			// 目前，默认为 LWW。
+			// 查找列模式，根据 schema 决定 CRDT 类型
+			colCrdtType := meta.CrdtLWW // 默认类型
+			for _, schemaCol := range t.schema.Columns {
+				if schemaCol.Name == col {
+					if schemaCol.CrdtType != "" {
+						colCrdtType = schemaCol.CrdtType
+					}
+					break
+				}
+			}
 
 			// 检查是否已经是 CRDT
 			if c, ok := val.(crdt.CRDT); ok {
@@ -137,14 +144,46 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 				continue
 			}
 
-			// 构造 LWW 寄存器
+			// 根据 schema 定义的 CRDT 类型创建对应的 CRDT
 			ts := t.db.clock.Now()
-			lww := crdt.NewLWWRegister(encodeValue(val), ts)
+			var crdtVal crdt.CRDT
+
+			switch colCrdtType {
+			case meta.CrdtCounter:
+				// PN-Counter
+				crdtVal = crdt.NewPNCounter(t.db.NodeID)
+				intVal, err := extractInt64(val)
+				if err != nil {
+					return fmt.Errorf("failed to extract int64 value for counter: %w", err)
+				}
+				if err := crdtVal.Apply(crdt.OpPNCounterInc{Val: intVal}); err != nil {
+					return fmt.Errorf("failed to initialize counter: %w", err)
+				}
+			case meta.CrdtORSet:
+				// OR-Set
+				crdtVal = crdt.NewORSet[string]()
+				// 添加初始元素
+				if strVal, ok := val.(string); ok {
+					crdtVal.Apply(crdt.OpORSetAdd[string]{Element: strVal})
+				}
+			case meta.CrdtRGA:
+				// RGA
+				crdtVal = crdt.NewRGA[[]byte](t.db.clock)
+				// 添加初始元素
+				if strVal, ok := val.(string); ok {
+					crdtVal.Apply(crdt.OpRGAInsert[[]byte]{AnchorID: crdtVal.(*crdt.RGA[[]byte]).Head, Value: []byte(strVal)})
+				}
+			case meta.CrdtLocalFile:
+				return fmt.Errorf("LocalFile requires FileImport type, got %T", val)
+			default:
+				// LWW (默认)
+				crdtVal = crdt.NewLWWRegister(encodeValue(val), ts)
+			}
 
 			// 应用到 Map
 			op := crdt.OpMapSet{
 				Key:   col,
-				Value: lww,
+				Value: crdtVal,
 			}
 			if err := currentMap.Apply(op); err != nil {
 				return err
@@ -674,6 +713,38 @@ func encodeValue(v any) []byte {
 		return []byte(s)
 	}
 	return []byte(fmt.Sprintf("%v", v))
+}
+
+// extractInt64 从任意数值类型提取 int64 值
+func extractInt64(v any) (int64, error) {
+	switch val := v.(type) {
+	case int:
+		return int64(val), nil
+	case int8:
+		return int64(val), nil
+	case int16:
+		return int64(val), nil
+	case int32:
+		return int64(val), nil
+	case int64:
+		return val, nil
+	case uint:
+		return int64(val), nil
+	case uint8:
+		return int64(val), nil
+	case uint16:
+		return int64(val), nil
+	case uint32:
+		return int64(val), nil
+	case uint64:
+		return int64(val), nil
+	case float32:
+		return int64(val), nil
+	case float64:
+		return int64(val), nil
+	default:
+		return 0, fmt.Errorf("cannot extract int64 from %T", v)
+	}
 }
 
 func copyFile(src, dst string) error {

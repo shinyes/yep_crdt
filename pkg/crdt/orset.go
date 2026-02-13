@@ -95,8 +95,13 @@ func (s *ORSet[T]) Apply(op Op) error {
 
 	switch o := op.(type) {
 	case OpORSetAdd[T]:
-		// 生成唯一 ID
-		id := uuid.NewString() // 在生产环境中，依赖混合逻辑时钟或类似机制
+		// 生成唯一 ID：使用 HLC 时间戳 + UUID 确保唯一性和因果序
+		var ts int64
+		if s.Clock != nil {
+			ts = s.Clock.Now()
+		}
+		// 格式: "timestamp-uuid"，确保全局唯一且因果有序
+		id := fmt.Sprintf("%d-%s", ts, uuid.NewString())
 		if s.AddSet[o.Element] == nil {
 			s.AddSet[o.Element] = make(map[string]struct{})
 		}

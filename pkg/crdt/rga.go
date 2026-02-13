@@ -188,6 +188,9 @@ func (r *RGA[T]) Apply(op Op) error {
 			if r.Clock != nil {
 				v.DeletedAt = r.Clock.Now()
 			}
+			// 注意：不要在这里清理 edges 缓存
+			// edges 缓存在 GC 时会被正确清理
+			// 提前清理会导致 GC 无法正确判断节点是否有子节点
 		}
 	default:
 		return ErrInvalidOp
@@ -241,6 +244,7 @@ func (r *RGA[T]) Merge(other CRDT) error {
 				if !vLocal.Deleted {
 					vLocal.Deleted = true
 					vLocal.DeletedAt = vRemote.DeletedAt
+					// 注意：不要在这里清理 edges，GC 时会处理
 				} else {
 					if vLocal.DeletedAt == 0 || (vRemote.DeletedAt > 0 && vRemote.DeletedAt < vLocal.DeletedAt) {
 						vLocal.DeletedAt = vRemote.DeletedAt

@@ -23,9 +23,13 @@ type MapCRDT struct {
 	lruIndex    map[string]int  // 键到索引的映射，用于 O(1) 查找
 }
 
+// Entry 表示 MapCRDT 中的一列数据。
+// TypeHint 用于在序列化/反序列化时保留泛型类型信息。
+// 格式: "pkg/crdt.ORSet[string]" 或简单的 "string" 用于基本类型
 type Entry struct {
-	Type Type
-	Data []byte
+	Type     Type
+	Data     []byte
+	TypeHint string // 可选的 Go 类型提示，如 "string", "int", "[]byte"
 }
 
 func NewMapCRDT() *MapCRDT {
@@ -57,17 +61,21 @@ func (m *MapCRDT) SetBaseDir(dir string) {
 func (m *MapCRDT) Type() Type { return TypeMap }
 
 // updateLRU 更新 LRU 缓存跟踪
+// 优化：使用 map 直接查找位置，避免 O(n) 遍历
 func (m *MapCRDT) updateLRU(key string) {
-	// 从 lruKeys 中移除 key（如果存在）
-	for i, k := range m.lruKeys {
-		if k == key {
-			m.lruKeys = append(m.lruKeys[:i], m.lruKeys[i+1:]...)
-			break
+	// 如果 key 已存在，直接移动到末尾
+	if pos, exists := m.lruIndex[key]; exists {
+		// 移除当前位置
+		m.lruKeys = append(m.lruKeys[:pos], m.lruKeys[pos+1:]...)
+		// 更新所有后续元素的位置
+		for i := pos; i < len(m.lruKeys); i++ {
+			m.lruIndex[m.lruKeys[i]] = i
 		}
 	}
-	
+
 	// 添加到末尾
 	m.lruKeys = append(m.lruKeys, key)
+	m.lruIndex[key] = len(m.lruKeys) - 1
 
 	// 如果超过最大缓存大小，移除最旧的
 	if m.maxCacheSize > 0 && len(m.lruKeys) > m.maxCacheSize {
@@ -75,12 +83,10 @@ func (m *MapCRDT) updateLRU(key string) {
 		m.lruKeys = m.lruKeys[1:]
 		delete(m.cache, oldest)
 		delete(m.lruIndex, oldest)
-	}
-	
-	// 更新所有索引
-	m.lruIndex = make(map[string]int, len(m.lruKeys))
-	for i, k := range m.lruKeys {
-		m.lruIndex[k] = i
+		// 更新所有元素的位置
+		for i, k := range m.lruKeys {
+			m.lruIndex[k] = i
+		}
 	}
 }
 
@@ -98,7 +104,8 @@ func (m *MapCRDT) Value() any {
 			res[k] = c.Value()
 			continue
 		}
-		c, err := Deserialize(e.Type, e.Data)
+		// 使用 TypeHint 进行反序列化
+		c, err := DeserializeWithHint(e.Type, e.Data, e.TypeHint)
 		if err == nil {
 			// 在 Value() 中我们不做 SetBaseDir，因为通常 Value() 只是查看元数据。
 			// 如果真的需要读取内容，应该使用 GetLocalFile。
@@ -111,18 +118,53 @@ func (m *MapCRDT) Value() any {
 	return res
 }
 
+// TypeRegistry 存储泛型类型的反序列化函数
+var TypeRegistry = struct {
+	ORSetSerializers   map[string]func([]byte) (any, error)
+	RGASerializers     map[string]func([]byte) (any, error)
+	ORSetTypeHints     map[string]string
+	RGATypeHints       map[string]string
+}{
+	ORSetSerializers: make(map[string]func([]byte) (any, error)),
+	RGASerializers:   make(map[string]func([]byte) (any, error)),
+	ORSetTypeHints:   map[string]string{},
+	RGATypeHints:     map[string]string{},
+}
+
+// RegisterORSet 注册 ORSet 的特定类型反序列化函数
+func RegisterORSet[T comparable](typeHint string, serializer func([]byte) (*ORSet[T], error)) {
+	TypeRegistry.ORSetSerializers[typeHint] = func(data []byte) (any, error) {
+		return serializer(data)
+	}
+	TypeRegistry.ORSetTypeHints[typeHint] = fmt.Sprintf("%T", *new(T))
+}
+
+// RegisterRGA 注册 RGA 的特定类型反序列化函数
+func RegisterRGA[T any](typeHint string, serializer func([]byte) (*RGA[T], error)) {
+	TypeRegistry.RGASerializers[typeHint] = func(data []byte) (any, error) {
+		return serializer(data)
+	}
+	TypeRegistry.RGATypeHints[typeHint] = fmt.Sprintf("%T", *new(T))
+}
+
 // Deserialize 根据类型反序列化 CRDT。
 // 注意：对于泛型类型，这里只能使用默认类型（例如 string）。
 // 如果需要特定类型，请使用 GetORSet[T] 等方法。
 func Deserialize(t Type, data []byte) (CRDT, error) {
+	return DeserializeWithHint(t, data, "")
+}
+
+// DeserializeWithHint 根据类型和类型提示反序列化 CRDT。
+// typeHint 可以是 "string", "int", "uint" 等基本类型，或 "pkg/path.Type" 格式
+func DeserializeWithHint(t Type, data []byte, typeHint string) (CRDT, error) {
 	if data == nil {
 		return nil, &InvalidDataError{CRDTType: t, Reason: "输入数据为 nil", DataLength: 0}
 	}
-	
+
 	if len(data) == 0 {
 		return nil, &InvalidDataError{CRDTType: t, Reason: "输入数据为空", DataLength: 0}
 	}
-	
+
 	switch t {
 	case TypeLWW:
 		c, err := FromBytesLWW(data)
@@ -131,6 +173,16 @@ func Deserialize(t Type, data []byte) (CRDT, error) {
 		}
 		return c, nil
 	case TypeORSet:
+		// 优先使用类型注册表
+		if typeHint != "" {
+			if serializer, ok := TypeRegistry.ORSetSerializers[typeHint]; ok {
+				c, err := serializer(data)
+				if err == nil {
+					return c.(CRDT), nil
+				}
+				// 回退到默认
+			}
+		}
 		// 默认反序列化为 ORSet[string] 以保持兼容性
 		c, err := FromBytesORSet[string](data)
 		if err != nil {
@@ -144,6 +196,17 @@ func Deserialize(t Type, data []byte) (CRDT, error) {
 		}
 		return c, nil
 	case TypeRGA:
+		// 优先使用类型注册表
+		if typeHint != "" {
+			if serializer, ok := TypeRegistry.RGASerializers[typeHint]; ok {
+				c, err := serializer(data)
+				if err == nil {
+					return c.(CRDT), nil
+				}
+				// 回退到默认
+			}
+		}
+		// 默认反序列化为 RGA[[]byte] 以保持兼容性
 		c, err := FromBytesRGA[[]byte](data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: RGA[[]byte]: %v", ErrDeserialization, err)
@@ -236,7 +299,7 @@ func (m *MapCRDT) Apply(op Op) error {
 				return &KeyNotFoundError{Key: o.Key}
 			}
 			var err error
-			c, err = Deserialize(e.Type, e.Data)
+			c, err = DeserializeWithHint(e.Type, e.Data, e.TypeHint)
 			if err != nil {
 				return fmt.Errorf("反序列化键 '%s' 失败: %w", o.Key, err)
 			}
@@ -294,7 +357,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 
 		if inCache {
 			// 本地有活跃对象，必须反序列化远程对象并 Merge 进去
-			remoteC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
+			remoteC, err := DeserializeWithHint(remoteEntry.Type, remoteEntry.Data, remoteEntry.TypeHint)
 			if err != nil {
 				return fmt.Errorf("反序列化远程键 '%s' 失败: %w", k, err)
 			}
@@ -326,7 +389,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 			// 反序列化 -> Merge -> 序列化 -> 存回 Entry?
 			// 还是反序列化 -> Merge -> 放入 Cache? (推荐后者，Lazy)
 
-			lC, err := Deserialize(localEntry.Type, localEntry.Data)
+			lC, err := DeserializeWithHint(localEntry.Type, localEntry.Data, localEntry.TypeHint)
 			if err != nil {
 				return fmt.Errorf("反序列化本地键 '%s' 失败: %w", k, err)
 			}
@@ -336,7 +399,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 				subMap.SetBaseDir(m.baseDir)
 			}
 
-			rC, err := Deserialize(remoteEntry.Type, remoteEntry.Data)
+			rC, err := DeserializeWithHint(remoteEntry.Type, remoteEntry.Data, remoteEntry.TypeHint)
 			if err != nil {
 				return fmt.Errorf("反序列化远程键 '%s' (第二次) 失败: %w", k, err)
 			}
@@ -362,8 +425,9 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 	// 先复制现有的 Entries
 	for k, e := range m.Entries {
 		tempEntries[k] = &Entry{
-			Type: e.Type,
-			Data: make([]byte, len(e.Data)),
+			Type:     e.Type,
+			Data:     make([]byte, len(e.Data)),
+			TypeHint: e.TypeHint,
 		}
 		copy(tempEntries[k].Data, e.Data)
 	}
@@ -375,10 +439,10 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 			return nil, fmt.Errorf("%w: 序列化键 '%s' 失败: %v", ErrSerialization, k, err)
 		}
 		// Update Entry in tempEntries
-		if _, ok := tempEntries[k]; !ok {
-			tempEntries[k] = &Entry{Type: c.Type(), Data: b}
+		if existing, ok := tempEntries[k]; ok {
+			existing.Data = b
 		} else {
-			tempEntries[k].Data = b
+			tempEntries[k] = &Entry{Type: c.Type(), Data: b}
 		}
 	}
 
@@ -418,7 +482,7 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 			inCache = true
 		} else {
 			var err error
-			c, err = Deserialize(e.Type, e.Data)
+			c, err = DeserializeWithHint(e.Type, e.Data, e.TypeHint)
 			if err != nil {
 				// Skip bad data
 				continue
@@ -479,7 +543,7 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 		return nil
 	}
 
-	c, err := Deserialize(e.Type, e.Data)
+	c, err := DeserializeWithHint(e.Type, e.Data, e.TypeHint)
 	if err != nil {
 		return nil
 	}

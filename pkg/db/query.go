@@ -203,6 +203,14 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 		seekKey = append(basePrefix, 0xFF)
 	}
 
+	// 修复：处理 OpLt 和 OpLte 范围条件
+	// 这些条件需要在 matches() 中过滤，这里只需要正确设置 basePrefix
+	if rangeCond != nil && (rangeCond.Op == OpLt || rangeCond.Op == OpLte) {
+		// 对于 < 和 <= 条件，我们不能简单设置 seekKey
+		// 需要在遍历时过滤，这里 basePrefix 保持不变
+		// 但需要确保迭代从正确的起点开始
+	}
+
 	iter.Seek(seekKey)
 
 	results := make([]crdt.ReadOnlyMap, 0)

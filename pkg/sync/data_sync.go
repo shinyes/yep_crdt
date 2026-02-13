@@ -1,26 +1,27 @@
 package sync
 
 import (
-"context"
-"fmt"
-"log"
-"sync"
+	"context"
+	"fmt"
+	"log"
+	"sync"
 
-"github.com/google/uuid"
-"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/google/uuid"
+	"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/shinyes/yep_crdt/pkg/hlc"
 )
 
 // DataSyncManager 数据同步管理器
 type DataSyncManager struct {
-nm *NodeManager
-mu sync.RWMutex
+	nm *NodeManager
+	mu sync.RWMutex
 }
 
 // NewDataSyncManager 创建数据同步管理器
 func NewDataSyncManager(nm *NodeManager) *DataSyncManager {
-return &DataSyncManager{
-nm: nm,
-}
+	return &DataSyncManager{
+		nm: nm,
+	}
 }
 
 // OnReceiveData 接收数据时的处理
@@ -31,18 +32,19 @@ func (dsm *DataSyncManager) OnReceiveData(tableID string, key string, data any, 
 	// 获取本地时钟
 	myClock := dsm.nm.db.Clock().Now()
 
-	// HLC 时钟格式：高48位是物理时间，低16位是逻辑计数
-	// 简单起见，只比较物理时间部分（忽略逻辑计数）
-	// 如果数据时间戳的物理时间 >= 本地物理时间，就接受
-	dataPhysTime := timestamp >> 16
-	localPhysTime := myClock >> 16
-
-	// 如果数据太旧（物理时间差超过1小时），拒绝
-	hourInMs := int64(3600 * 1000)
-	if dataPhysTime < localPhysTime-hourInMs {
-		log.Printf(" 拒绝过期数据: %s/%s (物理时间=%d, 本地物理时间=%d)", 
-			tableID, key, dataPhysTime, localPhysTime)
-		return fmt.Errorf("stale data: physical timestamp %d < local %d", dataPhysTime, localPhysTime)
+	// 使用完整的 HLC 比较（包括物理时间和逻辑计数器）
+	// 如果数据时间戳 <= 本地时间戳，拒绝（可能来自过去或同时）
+	// 只有当数据时间戳 > 本地时间时才接受
+	cmp := hlc.Compare(timestamp, myClock)
+	if cmp < 0 {
+		// 额外检查：是否是物理时间过于陈旧（允许1小时的物理时间差异）
+		hourInMs := int64(3600 * 1000)
+		if hlc.IsStale(timestamp, myClock, hourInMs) {
+			log.Printf(" 拒绝过期数据: %s/%s (时间戳=%d, 本地时间=%d)",
+				tableID, key, timestamp, myClock)
+			return fmt.Errorf("stale data: timestamp %d < local %d", timestamp, myClock)
+		}
+		// 时间戳<=本地但物理时间在允许范围内，可能是并发的正常情况，接受
 	}
 
 // 将key转换为UUID

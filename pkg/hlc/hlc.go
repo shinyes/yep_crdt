@@ -130,3 +130,41 @@ func Physical(ts int64) int64 {
 func Logical(ts int64) int16 {
 	return int16(ts & logicalMask)
 }
+
+// Compare 比较两个 HLC 时间戳。
+// 返回值:
+//   - 如果 a > b: 返回 1
+//   - 如果 a == b: 返回 0
+//   - 如果 a < b: 返回 -1
+func Compare(a, b int64) int {
+	aPhys := a >> 16
+	bPhys := b >> 16
+	aLog := a & logicalMask
+	bLog := b & logicalMask
+
+	// 首先比较物理时间
+	if aPhys > bPhys {
+		return 1
+	}
+	if aPhys < bPhys {
+		return -1
+	}
+
+	// 物理时间相等，比较逻辑时间
+	if aLog > bLog {
+		return 1
+	}
+	if aLog < bLog {
+		return -1
+	}
+
+	return 0
+}
+
+// IsStale 判断时间戳是否过于陈旧（基于物理时间）。
+// 如果 remote 的物理时间比本地落后超过 maxDiffMs 毫秒，返回 true。
+func IsStale(remote, local int64, maxDiffMs int64) bool {
+	remotePhys := remote >> 16
+	localPhys := local >> 16
+	return localPhys-remotePhys > maxDiffMs
+}
