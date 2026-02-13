@@ -25,19 +25,25 @@ nm: nm,
 
 // OnReceiveData 接收数据时的处理
 func (dsm *DataSyncManager) OnReceiveData(tableID string, key string, data any, timestamp int64) error {
-dsm.mu.Lock()
-defer dsm.mu.Unlock()
+	dsm.mu.Lock()
+	defer dsm.mu.Unlock()
 
-// 获取本地时钟
-myClock := dsm.nm.db.Clock().Now()
+	// 获取本地时钟
+	myClock := dsm.nm.db.Clock().Now()
 
-// 检查数据时间戳
-if timestamp < myClock {
-// 数据太陈旧，拒绝
-log.Printf(" 拒绝过期数据: %s/%s (时间戳=%d, 本地时钟=%d)", 
-tableID, key, timestamp, myClock)
-return fmt.Errorf("stale data: timestamp %d < local clock %d", timestamp, myClock)
-}
+	// HLC 时钟格式：高48位是物理时间，低16位是逻辑计数
+	// 简单起见，只比较物理时间部分（忽略逻辑计数）
+	// 如果数据时间戳的物理时间 >= 本地物理时间，就接受
+	dataPhysTime := timestamp >> 16
+	localPhysTime := myClock >> 16
+
+	// 如果数据太旧（物理时间差超过1小时），拒绝
+	hourInMs := int64(3600 * 1000)
+	if dataPhysTime < localPhysTime-hourInMs {
+		log.Printf(" 拒绝过期数据: %s/%s (物理时间=%d, 本地物理时间=%d)", 
+			tableID, key, dataPhysTime, localPhysTime)
+		return fmt.Errorf("stale data: physical timestamp %d < local %d", dataPhysTime, localPhysTime)
+	}
 
 // 将key转换为UUID
 uuidKey, err := uuid.Parse(key)

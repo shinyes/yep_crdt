@@ -109,3 +109,42 @@ type SyncResult struct {
 	RejectedCount     int   // 拒绝的数据数量
 	Errors           []error // 遇到的错误
 }
+
+// HeartbeatMessage 心跳消息
+type HeartbeatMessage struct {
+	Type      string `json:"type"`      // 消息类型
+	NodeID    string `json:"node_id"`   // 节点 ID
+	Clock     int64  `json:"clock"`     // 时钟值
+	Timestamp int64  `json:"timestamp"` // 时间戳
+}
+
+// DataMessage 数据同步消息
+type DataMessage struct {
+	Type      string      `json:"type"`      // 消息类型: data, fetch_request, fetch_response
+	NodeID    string      `json:"node_id"`   // 节点 ID
+	Table     string      `json:"table"`     // 表名
+	Key       string      `json:"key"`       // 键
+	Data      interface{} `json:"data"`      // 数据
+	Timestamp int64       `json:"timestamp"` // 时间戳
+}
+
+// 消息类型常量
+const (
+	MsgTypeHeartbeat     = "heartbeat"
+	MsgTypeData          = "data"
+	MsgTypeFetchRequest  = "fetch_request"
+	MsgTypeFetchResponse = "fetch_response"
+)
+
+// NetworkMessage 网络传输消息格式
+type NetworkMessage struct {
+	Type      string      `json:"type"`       // 消息类型
+	TenantID  string      `json:"tenant_id,omitempty"`  // 租户 ID
+	NodeID    string      `json:"node_id,omitempty"`   // 节点 ID（发送方）
+	RequestID string      `json:"request_id,omitempty"` // 请求 ID（用于响应追踪）
+	Table     string      `json:"table,omitempty"`     // 表名
+	Key       string      `json:"key,omitempty"`       // 键
+	Data      interface{} `json:"data,omitempty"`      // 数据
+	Timestamp int64       `json:"timestamp"`  // 时间戳
+	Clock     int64       `json:"clock,omitempty"`     // 时钟值（用于心跳）
+}
