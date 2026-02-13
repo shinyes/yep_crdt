@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -24,9 +23,6 @@ func main() {
 	tenantID := flag.String("t", "tenant-1", "租户 ID")
 	debug := flag.Bool("d", false, "启用调试日志")
 	flag.Parse()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	storePath := fmt.Sprintf("tmp/tenet_demo_%s_%d", *tenantID, time.Now().UnixNano())
 	os.RemoveAll(storePath)
@@ -53,47 +49,31 @@ func main() {
 		log.Fatalf("创建表失败: %v", err)
 	}
 
-	tenetConfig := &sync.TenetConfig{
-		Password:    *password,
+	// ✨ 一行启动同步
+	engine, err := sync.EnableSync(database, db.SyncConfig{
+		Password:   *password,
 		ListenPort: *listenPort,
-		EnableDebug: *debug,
-	}
-
-	mtm := sync.NewMultiTenantManager(tenetConfig)
-
-	tenant, err := mtm.StartTenant(ctx, database)
+		ConnectTo:  *connectAddr,
+		Debug:      *debug,
+	})
 	if err != nil {
-		log.Fatalf("启动租户失败: %v", err)
+		log.Fatalf("启动同步失败: %v", err)
 	}
 
-	localID := tenant.GetNetwork().LocalID()
-	localAddr := tenant.GetNetwork().LocalAddr()
-
 	fmt.Println("==============================================")
-	fmt.Printf("  租户 ID: %s\n", *tenantID)
-	fmt.Printf("  本地节点 ID: %s\n", localID[:8])
-	fmt.Printf("  本地监听地址: %s\n", localAddr)
+	fmt.Printf("  🌐 租户 ID: %s\n", *tenantID)
+	fmt.Printf("  🆔 本地节点 ID: %s\n", engine.LocalID()[:8])
+	fmt.Printf("  📡 本地监听地址: %s\n", engine.LocalAddr())
 	fmt.Println("==============================================")
-	fmt.Println("表 users 已创建，字段: name, email (LWW)")
+	fmt.Println("✅ 表 users 已创建")
+	fmt.Println("   字段: name (LWW), email (LWW)")
+	fmt.Println("✅ 同步已自动启用")
+	fmt.Println("   - 数据变更自动广播")
+	fmt.Println("   - 节点连接自动版本沟通")
 	fmt.Println("")
-
-	if *connectAddr != "" {
-		fmt.Printf("正在连接到 %s...\n", *connectAddr)
-		if err := tenant.Connect(*connectAddr); err != nil {
-			log.Printf("连接失败: %v", err)
-		} else {
-			fmt.Println("连接请求已发送")
-		}
-	}
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("\n命令帮助:")
-	fmt.Println("  add <name> <email>  - 添加用户")
-	fmt.Println("  list                - 列出所有用户")
-	fmt.Println("  sync                - 手动广播同步")
-	fmt.Println("  peers               - 查看在线节点")
-	fmt.Println("  quit                - 退出")
-	fmt.Println("")
+	printHelp()
 
 	for {
 		fmt.Print("> ")
@@ -112,108 +92,163 @@ func main() {
 
 		switch cmd {
 		case "add":
-			if len(parts) < 3 {
-				fmt.Println("用法: add <name> <email>")
-				continue
-			}
-			name := parts[1]
-			email := parts[2]
+			handleAdd(database, parts)
 
-			userKey := uuid.New()
-			localClock := database.Clock().Now()
-			fmt.Printf("🕐 本地 HLC 时钟: %d\n", localClock)
-			
-			err := database.Update(func(tx *db.Tx) error {
-				table := tx.Table("users")
-				return table.Set(userKey, map[string]any{
-					"name":  name,
-					"email": email,
-				})
-			})
-			if err != nil {
-				fmt.Printf("❌ 添加失败: %v\n", err)
-			} else {
-				fmt.Printf("✅ 添加成功: %s (%s <%s>)\n", userKey.String()[:8], name, email)
-
-				peers := tenant.GetNetwork().Peers()
-				if len(peers) > 0 {
-					data := map[string]any{
-						"name":  name,
-						"email": email,
-					}
-					// 写入后的 HLC 时钟
-					clockAfterWrite := database.Clock().Now()
-					fmt.Printf("🕐 写入后 HLC 时钟: %d\n", clockAfterWrite)
-					
-					tenant.BroadcastData("users", userKey.String(), data, clockAfterWrite)
-					fmt.Printf("📢 已广播到 %d 个节点 (HLC: %d)\n", len(peers), clockAfterWrite)
-				}
-			}
+		case "update":
+			handleUpdate(database, parts)
 
 		case "list":
-			fmt.Println("\n--- 用户列表 ---")
-			var users []map[string]any
-			database.View(func(tx *db.Tx) error {
-				table := tx.Table("users")
-				if table != nil {
-					users, _ = table.Where("name", "!=", "").Limit(1000).Find()
-				}
-				return nil
-			})
+			handleList(database)
 
-			if len(users) == 0 {
-				fmt.Println("(无数据)")
-			} else {
-				for _, user := range users {
-					fmt.Printf("  %+v\n", user)
-				}
-			}
-			fmt.Printf("共 %d 条记录\n", len(users))
-			fmt.Println("")
+		case "get":
+			handleGet(database, parts)
 
-		case "sync":
-			peers := tenant.GetNetwork().Peers()
-			if len(peers) == 0 {
-				fmt.Println("无在线节点可同步")
-				continue
-			}
-
-			var users []map[string]any
-			database.View(func(tx *db.Tx) error {
-				table := tx.Table("users")
-				if table != nil {
-					users, _ = table.Where("name", "!=", "").Limit(1000).Find()
-				}
-				return nil
-			})
-
-			clock := database.Clock().Now()
-			for _, user := range users {
-				tenant.BroadcastData("users", "", user, clock)
-			}
-			fmt.Printf("📢 已同步 %d 条数据到 %d 个节点 (HLC: %d)\n", len(users), len(peers), clock)
+		case "clock":
+			handleClock(database)
 
 		case "peers":
-			peers := tenant.GetNetwork().Peers()
-			if len(peers) == 0 {
-				fmt.Println("无在线节点")
-			} else {
-				fmt.Printf("在线节点 (%d):\n", len(peers))
-				for _, peer := range peers {
-					fmt.Printf("  - %s\n", peer)
-				}
-			}
+			handlePeers(engine)
+
+		case "help":
+			printHelp()
 
 		case "quit", "exit":
-			cancel()
 			return
 
 		default:
-			fmt.Printf("未知命令: %s\n", cmd)
+			fmt.Printf("❌ 未知命令: %s (输入 help 查看帮助)\n", cmd)
 		}
 	}
+}
 
-	<-ctx.Done()
-	mtm.StopTenant(*tenantID)
-	fmt.Println("已退出")
+func printHelp() {
+	fmt.Println("\n📖 命令帮助:")
+	fmt.Println("  add <name> <email>           - 添加用户 (自动同步)")
+	fmt.Println("  update <id> <name> <email>   - 更新用户 (自动同步)")
+	fmt.Println("  list                         - 列出所有用户")
+	fmt.Println("  get <id>                     - 查看用户详情")
+	fmt.Println("  clock                        - 查看 HLC 时钟")
+	fmt.Println("  peers                        - 查看在线节点")
+	fmt.Println("  help                         - 显示此帮助")
+	fmt.Println("  quit                         - 退出")
+	fmt.Println("")
+}
+
+func handleAdd(database *db.DB, parts []string) {
+	if len(parts) < 3 {
+		fmt.Println("❌ 用法: add <name> <email>")
+		return
+	}
+
+	userKey := uuid.New()
+	err := database.Update(func(tx *db.Tx) error {
+		return tx.Table("users").Set(userKey, map[string]any{
+			"name":  parts[1],
+			"email": parts[2],
+		})
+	})
+	if err != nil {
+		fmt.Printf("❌ 添加失败: %v\n", err)
+		return
+	}
+
+	fmt.Printf("✅ 添加成功: %s (%s <%s>)\n", userKey.String()[:8], parts[1], parts[2])
+	fmt.Println("   📡 已自动广播到所有节点")
+}
+
+func handleUpdate(database *db.DB, parts []string) {
+	if len(parts) < 4 {
+		fmt.Println("❌ 用法: update <id> <name> <email>")
+		return
+	}
+
+	userID, err := uuid.Parse(parts[1])
+	if err != nil {
+		fmt.Printf("❌ 无效的 UUID: %v\n", err)
+		return
+	}
+
+	err = database.Update(func(tx *db.Tx) error {
+		return tx.Table("users").Set(userID, map[string]any{
+			"name":  parts[2],
+			"email": parts[3],
+		})
+	})
+	if err != nil {
+		fmt.Printf("❌ 更新失败: %v\n", err)
+		return
+	}
+
+	fmt.Printf("✅ 更新成功: %s\n", userID.String()[:8])
+	fmt.Println("   📡 已自动广播到所有节点")
+}
+
+func handleList(database *db.DB) {
+	fmt.Println("\n📋 用户列表:")
+	var users []map[string]any
+	database.View(func(tx *db.Tx) error {
+		table := tx.Table("users")
+		if table != nil {
+			users, _ = table.Where("name", "!=", "").Limit(1000).Find()
+		}
+		return nil
+	})
+
+	if len(users) == 0 {
+		fmt.Println("  (无数据)")
+	} else {
+		for i, user := range users {
+			fmt.Printf("  %d. %+v\n", i+1, user)
+		}
+	}
+	fmt.Printf("共 %d 条记录\n\n", len(users))
+}
+
+func handleGet(database *db.DB, parts []string) {
+	if len(parts) < 2 {
+		fmt.Println("❌ 用法: get <id>")
+		return
+	}
+
+	userID, err := uuid.Parse(parts[1])
+	if err != nil {
+		fmt.Printf("❌ 无效的 UUID: %v\n", err)
+		return
+	}
+
+	var user map[string]any
+	database.View(func(tx *db.Tx) error {
+		table := tx.Table("users")
+		if table != nil {
+			user, _ = table.Get(userID)
+		}
+		return nil
+	})
+
+	if user == nil {
+		fmt.Printf("❌ 用户不存在: %s\n", userID.String()[:8])
+	} else {
+		fmt.Printf("\n👤 用户详情 (%s):\n", userID.String()[:8])
+		for k, v := range user {
+			fmt.Printf("  %s: %v\n", k, v)
+		}
+		fmt.Println()
+	}
+}
+
+func handleClock(database *db.DB) {
+	clock := database.Clock().Now()
+	fmt.Printf("🕐 当前 HLC 时钟: %d\n", clock)
+}
+
+func handlePeers(engine *sync.Engine) {
+	peers := engine.Peers()
+	if len(peers) == 0 {
+		fmt.Println("⚠️  无在线节点")
+	} else {
+		fmt.Printf("🌐 在线节点 (%d):\n", len(peers))
+		for i, peer := range peers {
+			fmt.Printf("  %d. %s\n", i+1, peer)
+		}
+	}
 }

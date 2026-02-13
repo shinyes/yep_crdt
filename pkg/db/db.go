@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -12,7 +13,31 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
-// DB 代表数据库实例 (针对特定租户)。
+// SyncConfig 同步配置
+type SyncConfig struct {
+	Password   string // 网络密码（必须）
+	ListenPort int    // 监听端口，0=随机
+	ConnectTo  string // 初始连接地址（可选，格式 host:port）
+	Debug      bool   // 启用调试日志
+}
+
+// ChangeCallback 数据变更回调
+// tableName: 发生变更的表名
+// key: 发生变更的行主键
+type ChangeCallback func(tableName string, key uuid.UUID)
+
+// SyncEngine 同步引擎接口
+// 由 sync 包实现，DB 持有引用以避免循环依赖。
+type SyncEngine interface {
+	Start(ctx context.Context) error
+	Stop()
+	Connect(addr string) error
+	Peers() []string
+	LocalAddr() string
+	LocalID() string
+	OnDataChanged(tableName string, key uuid.UUID)
+}
+
 // DB 代表数据库实例 (针对特定租户)。
 type DB struct {
 	store   store.Store
@@ -28,6 +53,13 @@ type DB struct {
 	// FileStorageDir 是存储 LocalFileCRDT 文件的根目录。
 	// 如果为空，LocalFileCRDT.ReadAll 等操作将失败。
 	FileStorageDir string
+
+	// 同步引擎（通过 EnableSync 启动）
+	syncEngine SyncEngine
+
+	// 变更回调（数据写入时通知）
+	onChangeMu        sync.RWMutex
+	onChangeCallbacks []ChangeCallback
 }
 
 type Option func(*DB)
@@ -122,7 +154,42 @@ func (db *DB) SetFileStorageDir(dir string) {
 }
 
 func (db *DB) Close() error {
+	// 停止同步引擎
+	if db.syncEngine != nil {
+		db.syncEngine.Stop()
+		db.syncEngine = nil
+	}
 	return db.store.Close()
+}
+
+// OnChange 注册数据变更回调。
+// 当 Table.Set() 或 Table.Add() 成功写入后触发。
+// MergeRawRow() 不会触发（避免远程数据合并时循环广播）。
+func (db *DB) OnChange(fn ChangeCallback) {
+	db.onChangeMu.Lock()
+	defer db.onChangeMu.Unlock()
+	db.onChangeCallbacks = append(db.onChangeCallbacks, fn)
+}
+
+// notifyChange 触发所有变更回调（内部使用）。
+func (db *DB) notifyChange(tableName string, key uuid.UUID) {
+	db.onChangeMu.RLock()
+	callbacks := db.onChangeCallbacks
+	db.onChangeMu.RUnlock()
+
+	for _, fn := range callbacks {
+		fn(tableName, key)
+	}
+}
+
+// SetSyncEngine 设置同步引擎实例（由 sync 包调用）。
+func (db *DB) SetSyncEngine(engine SyncEngine) {
+	db.syncEngine = engine
+}
+
+// GetSyncEngine 获取同步引擎实例。
+func (db *DB) GetSyncEngine() SyncEngine {
+	return db.syncEngine
 }
 
 // Now 返回当前的混合逻辑时钟 (HLC) 时间戳。
@@ -205,10 +272,10 @@ func (db *DB) View(fn func(*Tx) error) error {
 
 // GCResult 包含 GC 操作的结果统计。
 type GCResult struct {
-	TablesScanned     int   // 扫描的表数量
-	RowsScanned       int   // 扫描的行数量
-	TombstonesRemoved int   // 移除的墓碑数量
-	Errors           []error // 遇到的错误
+	TablesScanned     int     // 扫描的表数量
+	RowsScanned       int     // 扫描的行数量
+	TombstonesRemoved int     // 移除的墓碑数量
+	Errors            []error // 遇到的错误
 }
 
 // GC 对数据库中所有 CRDT 执行垃圾回收。
@@ -216,22 +283,22 @@ type GCResult struct {
 // 例如：safeTimestamp = db.Now() - 60000 (60 秒前)
 func (db *DB) GC(safeTimestamp int64) *GCResult {
 	result := &GCResult{}
-	
+
 	db.mu.Lock()
 	tableNames := make([]string, 0, len(db.tables))
 	for name := range db.tables {
 		tableNames = append(tableNames, name)
 	}
 	db.mu.Unlock()
-	
+
 	result.TablesScanned = len(tableNames)
-	
+
 	for _, tableName := range tableNames {
 		table := db.Table(tableName)
 		if table == nil {
 			continue
 		}
-		
+
 		// 获取该表的所有行
 		tableResult := table.GC(safeTimestamp)
 		result.RowsScanned += tableResult.RowsScanned
@@ -240,7 +307,7 @@ func (db *DB) GC(safeTimestamp int64) *GCResult {
 			result.Errors = append(result.Errors, tableResult.Errors...)
 		}
 	}
-	
+
 	return result
 }
 
@@ -251,3 +318,13 @@ func (db *DB) GCByTimeOffset(offset time.Duration) *GCResult {
 	return db.GC(safeTimestamp)
 }
 
+// TableNames 返回所有已注册的表名。
+func (db *DB) TableNames() []string {
+	return db.catalog.TableNames()
+}
+
+// GetStore 返回底层 KV 存储实例。
+// 同步模块需要直接访问事务能力。
+func (db *DB) GetStore() store.Store {
+	return db.store
+}

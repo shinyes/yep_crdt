@@ -60,8 +60,23 @@ func main() {
 	// 3. 打开数据库实例
 	// Open 会启动后台服务（如 HLC 时钟），并校验 DatabaseID
 	myDB := db.Open(s, "my-database-id")
+	defer myDB.Close()
+
 	// (可选) 设置文件存储根目录，用于 LocalFileCRDT
 	myDB.SetFileStorageDir("./data/files")
+
+	// 4. [NEW] 开启自动同步
+	// 仅需一行代码，即可加入 P2P 网络
+	engine, err := sync.EnableSync(myDB, db.SyncConfig{
+		ListenPort: 8001,       // 本地监听端口 (0 表示随机)
+		ConnectTo:  "192.168.1.100:8001", // (可选) 初始连接节点
+		Password:   "my-secret-password", // 集群密码
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	
+	fmt.Printf("Node ID: %s running at %s\n", engine.LocalID(), engine.LocalAddr())
     
     // ... 后续操作
 }
@@ -526,13 +541,67 @@ err := myDB.Update(func(tx *db.Tx) error {
 
 ---
 
-## 7. 分布式与同步 (Preview)
+## 7. 分布式与同步 (Distributed & Sync)
 
-Yep CRDT 设计为去中心化架构的基础。
+Yep CRDT 内置了强大的分布式同步引擎 (`pkg/sync`)，旨在让构建“本地优先 (Local-First)”应用变得极其简单。
 
-*   **Node Identity**: 每个数据库实例都有一个唯一的 `myDB.NodeID`。
-*   **HLC (Hybrid Logical Clock)**: 数据库内部维护一个混合逻辑时钟 `myDB.Clock()`，用于生成单调递增且具有因果关系的时间戳。
-*   **Sync**: 虽然目前的 API 集中在单机操作，但底层数据结构 (`MapCRDT`, `RGA` 等) 均支持 `Merge` 操作。可以通过导出/导入数据块或操作日志来实现多节点间的同步。
+### 7.1 核心架构
+
+Yep CRDT 的同步层基于 TCP 长连接和 Gossip 协议（部分理念），实现了全自动的 P2P 同步。
+
+*   **Node Identity (节点身份)**: 每个数据库实例在初始化时会生成一个基于 UUIDv7 的唯一 `NodeID`，并持久化存储。
+*   **Version Vector (版本向量)**: 系统使用混合逻辑时钟 (HLC) 和版本向量来跟踪数据的因果关系，精确识别哪些数据需要同步。
+*   **Automatic Discovery (自动发现)**: 节点间通过 TCP 互联后，会自动交换节点列表，形成网状拓扑。
+
+### 7.2 启用同步
+
+使用 `sync.EnableSync` 一键启用同步。不需要额外部署中心化服务器（如 Redis 或 Kafka）。
+
+```go
+import "github.com/shinyes/yep_crdt/pkg/sync"
+
+engine, err := sync.EnableSync(myDB, db.SyncConfig{
+    // 网络配置
+    ListenPort: 8080,        // 本地监听端口
+    ConnectTo:  "seed-node:8080", // 种子节点地址
+    
+    // 安全配置
+    Password: "cluster-secret", // 预共享密钥 (PSK) 防止未授权访问
+    
+    // 调试
+    Debug: true, // 打印详细的同步日志
+})
+```
+
+### 7.3 同步机制原理
+
+Yep CRDT 实现了三种层级的同步机制，自动智能切换：
+
+#### 1. 实时广播 (Real-time Broadcast)
+当本地发生数据写入 (`table.Set`, `table.Add` 等) 时，变更操作会被立即封装并通过长连接广播给所有活跃的对等节点。
+*   **延迟**: 毫秒级
+*   **触发**: 写入即触发
+
+#### 2. 增量同步 (Incremental Sync)
+当两个节点建立连接（或重连）时，它们会交换各自的 **Version Vector (版本向量)**。
+*   **流程**: 节点 A 告诉节点 B：“我拥有 Node X 的数据直到时间 T1”。节点 B 计算差异，只发送 A 缺失的数据补丁。
+*   **优势**: 极大节省带宽，仅传输断连期间产生的差异数据。
+
+#### 3. 差异检测 (Anti-Entropy / Full Sync)
+为了处理极端情况（如完全陌生节点加入），系统支持基于 Merkle Tree 思想的表级指纹 (Table Digest) 比对。
+*   **流程**: 定期（或在握手时）比对表的 Hash 摘要。如果发现不一致，则拉取差异数据。
+
+### 7.4 冲突解决
+
+基于 CRDT (Conflict-free Replicated Data Types) 数学理论，Yep CRDT 保证所有副本的数据 **最终强一致 (Strong Eventual Consistency)**。
+
+*   **LWW (Last-Write-Wins)**: 基于 HLC 时间戳，时间戳大的覆盖小的。HLC 保证了即使在物理时钟略有偏差的情况下，因果关系也能被正确保留。
+*   **ORSet / RGA / Counter**: 通过保留操作历史或元数据，自动合并并发修改，不会丢失数据。
+
+### 7.5 网络拓扑与防火墙
+
+*   **P2P Mesh**: 节点间形成网状结构，不需要所有节点两两互联。消息可以通过中间节点转发（Gossip 传播）。
+*   **穿透性**: 目前主要支持直连。如果在 NAT 后，需要确保端口映射或使用 VPN/Overlay 网络（如 Tailscale）。
 
 ---
 

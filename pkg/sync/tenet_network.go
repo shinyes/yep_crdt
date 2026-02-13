@@ -15,15 +15,15 @@ import (
 // TenantNetwork 租户网络（对应一个租户/数据库）
 // 每个租户有独立的 tenet 频道，实现租户间的数据隔离
 type TenantNetwork struct {
-	tenantID   string           // 租户 ID (DatabaseID)
-	config     *TenetConfig    // 配置
-	tunnel     *api.Tunnel     // tenet 隧道
-	ctx        context.Context
-	cancel     context.CancelFunc
+	tenantID string       // 租户 ID (DatabaseID)
+	config   *TenetConfig // 配置
+	tunnel   *api.Tunnel  // tenet 隧道
+	ctx      context.Context
+	cancel   context.CancelFunc
 
 	mu               sync.RWMutex
-	peerHandlers     map[string]PeerMessageHandler // peerID -> 消息处理器
-	broadcastHandler PeerMessageHandler             // 广播消息处理器（用于接收所有消息）
+	peerHandlers     map[string]PeerMessageHandler   // peerID -> 消息处理器
+	broadcastHandler PeerMessageHandler              // 广播消息处理器（用于接收所有消息）
 	responseChannels map[string]chan *NetworkMessage // 请求ID -> 响应通道
 }
 
@@ -295,8 +295,8 @@ func (tn *TenantNetwork) SendWithResponse(peerID string, msg *NetworkMessage, ti
 // SendHeartbeat 发送心跳
 func (tn *TenantNetwork) SendHeartbeat(targetNodeID string, clock int64) error {
 	msg := &NetworkMessage{
-		Type:      MsgTypeHeartbeat,
-		Clock:     clock,
+		Type:  MsgTypeHeartbeat,
+		Clock: clock,
 	}
 	return tn.Send(targetNodeID, msg)
 }
@@ -312,45 +312,45 @@ func (tn *TenantNetwork) BroadcastHeartbeat(clock int64) error {
 	return err
 }
 
-// SendData 发送数据到指定节点
-func (tn *TenantNetwork) SendData(targetNodeID string, table string, key string, data any, timestamp int64) error {
+// SendRawData 发送原始 CRDT 字节到指定节点
+func (tn *TenantNetwork) SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error {
 	msg := &NetworkMessage{
-		Type:      MsgTypeData,
+		Type:      MsgTypeRawData,
 		Table:     table,
 		Key:       key,
-		Data:      data,
+		RawData:   rawData,
 		Timestamp: timestamp,
 	}
 	return tn.Send(targetNodeID, msg)
 }
 
-// BroadcastData 广播数据
-func (tn *TenantNetwork) BroadcastData(table string, key string, data any, timestamp int64) error {
+// BroadcastRawData 广播原始 CRDT 字节
+func (tn *TenantNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
 	msg := &NetworkMessage{
-		Type:      MsgTypeData,
+		Type:      MsgTypeRawData,
 		Table:     table,
 		Key:       key,
-		Data:      data,
+		RawData:   rawData,
 		Timestamp: timestamp,
 	}
 	count, err := tn.Broadcast(msg)
 	if err != nil {
-		stdlog.Printf("[TenantNetwork:%s] 广播失败: %v", tn.tenantID, err)
+		stdlog.Printf("[TenantNetwork:%s] 广播原始数据失败: %v", tn.tenantID, err)
 	} else {
-		stdlog.Printf("[TenantNetwork:%s] 已广播到 %d 个节点", tn.tenantID, count)
+		stdlog.Printf("[TenantNetwork:%s] 已广播原始数据到 %d 个节点: table=%s, key=%s", tn.tenantID, count, table, key)
 	}
 	return err
 }
 
-// FetchData 获取远程节点数据
-func (tn *TenantNetwork) FetchData(sourceNodeID string, tableName string) (map[string]map[string]any, error) {
-	return tn.FetchDataWithTimeout(sourceNodeID, tableName, 10*time.Second)
+// FetchRawTableData 获取远程节点指定表的所有原始数据
+func (tn *TenantNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
+	return tn.FetchRawTableDataWithTimeout(sourceNodeID, tableName, 30*time.Second)
 }
 
-// FetchDataWithTimeout 获取远程节点数据（带超时）
-func (tn *TenantNetwork) FetchDataWithTimeout(sourceNodeID string, tableName string, timeout time.Duration) (map[string]map[string]any, error) {
+// FetchRawTableDataWithTimeout 获取远程节点原始表数据（带超时）
+func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, tableName string, timeout time.Duration) ([]RawRowData, error) {
 	msg := &NetworkMessage{
-		Type:      MsgTypeFetchRequest,
+		Type:      MsgTypeFetchRawRequest,
 		Table:     tableName,
 		Timestamp: time.Now().UnixMilli(),
 	}
@@ -360,23 +360,21 @@ func (tn *TenantNetwork) FetchDataWithTimeout(sourceNodeID string, tableName str
 		return nil, err
 	}
 
-	// 解析响应数据
-	if response.Data == nil {
+	// 解析响应中的原始数据
+	if response.RawData == nil {
 		return nil, nil
 	}
 
-	data, ok := response.Data.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("invalid response data format")
+	// 响应中包含单行数据
+	// 注意：全量同步会发送多条 FetchRawResponse 消息，
+	// 这里只能通过 SendWithResponse 获取第一条。
+	// 实际的批量同步由 MultiTenantManager 的消息处理逻辑完成。
+	result := []RawRowData{
+		{
+			Key:  response.Key,
+			Data: response.RawData,
+		},
 	}
-
-	result := make(map[string]map[string]any)
-	for key, val := range data {
-		if rowData, ok := val.(map[string]any); ok {
-			result[key] = rowData
-		}
-	}
-
 	return result, nil
 }
 

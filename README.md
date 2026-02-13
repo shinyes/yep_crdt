@@ -22,6 +22,10 @@
     *   **混合逻辑时钟 (HLC)**: 提供因果一致的时间戳，为分布式同步奠定基础。
 *   **自动索引**: 定义 Schema 后自动维护二级索引。
 *   **多租户支持**: 基于文件系统的多租户隔离。
+*   **分布式同步 (Auto Sync)**: 基于 TCP 的 P2P 自动发现和增量同步，仅需一行代码即可启用。支持：
+    *   **自动广播**: 本地变更实时推送到连接的节点。
+    *   **自动重连**: 网络断开后自动尝试重新建立连接。
+    *   **增量/全量同步**: 智能切换同步策略，确保数据最终一致。
 *   **泛型支持 (Generics)**: 核心 CRDT 类型 (`ORSet`, `RGA`) 全面支持 Go 泛型，提供更好的类型安全和开发体验。
 *   **垃圾回收 (Garbage Collection)**:
     *   **稳定时间戳**: 基于 Hybrid Logical Clock (HLC) 的 Safe Time 机制。
@@ -39,7 +43,7 @@ go get github.com/shinyes/yep_crdt
 
 ### 完整使用指南
 
-#### 1. 初始化数据库
+#### 1. 初始化数据库及同步
 
 ```go
 package main
@@ -52,6 +56,7 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
+	"github.com/shinyes/yep_crdt/pkg/sync"
 	"github.com/google/uuid"
 )
 
@@ -69,8 +74,22 @@ func main() {
 
 	// 打开数据库实例 (需要指定唯一的数据库 ID)
 	myDB := db.Open(s, "tenant-1")
+	defer myDB.Close()
+	
 	// 设置文件存储根目录（用于 LocalFileCRDT）
 	myDB.SetFileStorageDir("./data/files")
+
+	// ✨ 一行代码开启分布式自动同步
+	engine, err := sync.EnableSync(myDB, db.SyncConfig{
+		ListenPort: 8001,       // 本地监听端口
+		ConnectTo:  "127.00.1:8002", // (可选) 连接到其他节点
+		Password:   "secret",   // 集群密码
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	
+	fmt.Printf("节点 ID: %s, 监听地址: %s\n", engine.LocalID(), engine.LocalAddr())
     // ...
 }
 ```
@@ -120,6 +139,7 @@ func main() {
 	u1ID, _ := uuid.NewV7()
 
 	// 插入或更新整行 (或部分 LWW 列)
+	// 任何写入操作都会自动广播到已连接的节点
 	table.Set(u1ID, map[string]any{
 		"name": "Alice", 
 		"age": 30,
@@ -307,14 +327,13 @@ startPeriodicGC(myDB, 1*time.Minute, 30*time.Second)
 
 ##### 分布式同步中的 GC 管理（推荐用于多节点场景）
 
-对于多节点 CRDT 系统，使用 `pkg/sync` 中的 `GCManager` 以获得更强大的错误恢复和监控能力：
+对于多节点 CRDT 系统，使用 `pkg/sync` 中的 `Engine` 及其内置的 GC 管理器：
 
 ```go
 import "github.com/shinyes/yep_crdt/pkg/sync"
 
-// 初始化节点管理器和 GC 管理器
-nodeManager := sync.NewNodeManager(myDB, "node-1")
-nodeManager.Start(ctx)
+// 初始化并启动同步引擎
+engine, _ := sync.EnableSync(myDB, ...)
 
 // GC 会自动启动，默认参数：
 // - 运行间隔: 1 分钟
@@ -322,26 +341,9 @@ nodeManager.Start(ctx)
 // - 超时控制: 30 秒
 // - 最大重试: 3 次
 
-// 可选：在运行时调整参数
-gcManager := nodeManager.gcManager
-gcManager.SetTimeout(45 * time.Second)  // 超时改为 45 秒
-gcManager.SetMaxRetry(5)                // 最多重试 5 次
-
-// 获取 GC 统计信息用于监控
-stats := gcManager.GetStats()
-fmt.Printf("GC 成功率: %.2f%%\n", 100.0 - stats["failure_rate_pct"].(float64))
-fmt.Printf("已清理墓碑数: %d/%d\n", stats["total_removed"], stats["total_tombstones"])
-fmt.Printf("最后一次运行耗时: %s\n", stats["last_run_duration"])
-
-// 关闭时 GC 会自动停止
-nodeManager.Stop()
+// 引擎会在关闭时自动停止 GC
+// engine.Close()
 ```
-
-**GC Manager 高级功能** (v1.1.0+):
-- ✅ **自动错误恢复**: 3 次指数退避重试（1秒 → 4秒 → 9秒）
-- ✅ **超时控制**: 防止 GC 无限期阻塞调度器
-- ✅ **完整的统计信息**: 包括成功率、失败率、清理数等
-- ✅ **线程安全**: 所有统计操作都是原子性的
 
 ##### GC 原理
 
@@ -528,9 +530,10 @@ MapCRDT 内部实现了写回缓存 (Write-Back Cache)。
 *   **pkg/meta**: 元数据和 Schema 管理 (Catalog)。
 *   **pkg/index**: 索引编码和管理。
 *   **pkg/db**: 顶层数据库 API，集成 Schema、Index 和 Storage，包含查询规划器。
+*   **pkg/sync**: **[NEW]** 自动同步引擎，支持节点发现、版本沟通、增量/全量同步。
 
 ## 待办事项
 
-*   [ ] 实现 CRDT 状态的 P2P 同步逻辑 (Merkle Tree / Vector Clocks)。
+*   [x] 实现 CRDT 状态的 P2P 同步逻辑 (版本向量 / 增量同步)。
 *   [ ] 增加 HTTP/RPC 接口。
 *   [ ] 增加 Mobile (Android/iOS) 绑定支持。

@@ -17,17 +17,17 @@ type MultiTenantManager struct {
 	tenetConfig *TenetConfig                  // 共享的 tenet 配置
 
 	// 全局回调
-	OnTenantConnected func(tenantID, peerID string)
+	OnTenantConnected    func(tenantID, peerID string)
 	OnTenantDisconnected func(tenantID, peerID string)
 }
 
 // TenantNodeManager 租户节点管理器
 // 每个租户对应一个独立的节点管理器，用于该租户内的数据同步
 type TenantNodeManager struct {
-	tenantID    string           // 租户 ID (DatabaseID)
-	db          *db.DB           // 数据库实例
-	nodeMgr     *NodeManager    // 节点管理器
-	network     *TenantNetwork  // tenet 网络
+	tenantID     string         // 租户 ID (DatabaseID)
+	db           *db.DB         // 数据库实例
+	nodeMgr      *NodeManager   // 节点管理器
+	network      *TenantNetwork // tenet 网络
 	multitenancy *MultiTenantManager
 }
 
@@ -65,7 +65,7 @@ func (m *MultiTenantManager) StartTenant(ctx context.Context, database *db.DB) (
 
 	// 创建节点管理器
 	nodeMgr := NewNodeManager(database, network.LocalID())
-	nodeMgr.network = network
+	nodeMgr.RegisterNetwork(network)
 
 	// 设置消息处理（使用广播处理器接收所有消息）
 	network.SetBroadcastHandler(PeerMessageHandler{
@@ -79,10 +79,10 @@ func (m *MultiTenantManager) StartTenant(ctx context.Context, database *db.DB) (
 
 	// 创建租户节点管理器
 	tnm := &TenantNodeManager{
-		tenantID:    tenantID,
-		db:          database,
-		nodeMgr:     nodeMgr,
-		network:     network,
+		tenantID:     tenantID,
+		db:           database,
+		nodeMgr:      nodeMgr,
+		network:      network,
 		multitenancy: m,
 	}
 
@@ -176,71 +176,54 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg *Network
 			tnm.nodeMgr.UpdateLocalClock(msg.Clock)
 		}
 
-	case MsgTypeData:
-		// 处理数据同步
-		if msg.Table != "" && msg.Key != "" {
-			stdlog.Printf("[MultiTenantManager:%s] 收到数据: table=%s, key=%s, from=%s", tenantID, msg.Table, msg.Key, peerID[:8])
-			stdlog.Printf("[MultiTenantManager:%s]   数据时间戳=%d, 本地时钟=%d", tenantID, msg.Timestamp, tnm.db.Clock().Now())
-			err := tnm.nodeMgr.OnReceiveData(msg.Table, msg.Key, msg.Data, msg.Timestamp)
+	case MsgTypeRawData:
+		// 处理原始 CRDT 字节同步
+		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
+			stdlog.Printf("[MultiTenantManager:%s] 收到原始数据: table=%s, key=%s, from=%s", tenantID, msg.Table, msg.Key, peerID[:8])
+			err := tnm.nodeMgr.OnReceiveMerge(msg.Table, msg.Key, msg.RawData, msg.Timestamp)
 			if err != nil {
-				stdlog.Printf("[MultiTenantManager:%s] 处理数据失败: %v", tenantID, err)
+				stdlog.Printf("[MultiTenantManager:%s] Merge 数据失败: %v", tenantID, err)
 			} else {
-				stdlog.Printf("[MultiTenantManager:%s] 数据处理成功", tenantID)
+				stdlog.Printf("[MultiTenantManager:%s] Merge 数据成功", tenantID)
 			}
 		}
 
-	case MsgTypeFetchRequest:
-		// 处理数据获取请求
-		m.handleFetchRequest(tnm, peerID, msg)
+	case MsgTypeFetchRawRequest:
+		// 处理原始数据获取请求
+		m.handleFetchRawRequest(tnm, peerID, msg)
 
-	case MsgTypeFetchResponse:
+	case MsgTypeFetchRawResponse:
 		// 响应已由 TenantNetwork 的 SendWithResponse 处理
 	}
 }
 
-// handleFetchRequest 处理数据获取请求
-func (m *MultiTenantManager) handleFetchRequest(tnm *TenantNodeManager, peerID string, msg *NetworkMessage) {
+// handleFetchRawRequest 处理原始数据获取请求
+func (m *MultiTenantManager) handleFetchRawRequest(tnm *TenantNodeManager, peerID string, msg *NetworkMessage) {
 	if msg.Table == "" {
 		return
 	}
 
-	// 从数据库获取表数据（简化实现：获取所有表的元数据）
-	// 实际实现需要 Table 提供获取所有 key 的方法
-	var resultData map[string]map[string]any
-
-	err := tnm.db.View(func(tx *db.Tx) error {
-		table := tx.Table(msg.Table)
-		if table == nil {
-			return fmt.Errorf("table not found: %s", msg.Table)
-		}
-
-		// 由于 Table 没有提供 Iterator，我们这里返回一个空结果
-		// 实际实现需要在 db.Table 中添加获取所有 key 的方法
-		resultData = make(map[string]map[string]any)
-
-		// TODO: 需要在 Table 中添加获取所有数据的方法
-		// 目前只能通过其他方式获取数据，例如：
-		// - 遍历所有可能的 UUID（不实际）
-		// - 添加一个新的 API 方法
-
-		return nil
-	})
-
+	// 使用 DataSyncManager 导出表的原始数据
+	rawRows, err := tnm.nodeMgr.dataSync.ExportTableRawData(msg.Table)
 	if err != nil {
-		stdlog.Printf("[MultiTenantManager:%s] 获取表数据失败: %v", tnm.tenantID, err)
+		stdlog.Printf("[MultiTenantManager:%s] 导出表数据失败: %v", tnm.tenantID, err)
 		return
 	}
 
-	// 发送响应
-	responseMsg := &NetworkMessage{
-		Type:      MsgTypeFetchResponse,
-		RequestID: msg.RequestID,
-		Data:      resultData,
-	}
+	// 逐行发送原始数据（用响应消息格式）
+	for _, row := range rawRows {
+		responseMsg := &NetworkMessage{
+			Type:      MsgTypeFetchRawResponse,
+			RequestID: msg.RequestID,
+			Table:     msg.Table,
+			Key:       row.Key,
+			RawData:   row.Data,
+		}
 
-	err = tnm.network.Send(peerID, responseMsg)
-	if err != nil {
-		stdlog.Printf("[MultiTenantManager:%s] 发送响应失败: %v", tnm.tenantID, err)
+		err := tnm.network.Send(peerID, responseMsg)
+		if err != nil {
+			stdlog.Printf("[MultiTenantManager:%s] 发送行数据失败: %v", tnm.tenantID, err)
+		}
 	}
 }
 
@@ -269,7 +252,7 @@ func (tnm *TenantNodeManager) Connect(addr string) error {
 	return tnm.network.Connect(addr)
 }
 
-// BroadcastData 广播数据到同租户的所有节点
-func (tnm *TenantNodeManager) BroadcastData(table string, key string, data any, timestamp int64) error {
-	return tnm.network.BroadcastData(table, key, data, timestamp)
+// BroadcastRawData 广播原始 CRDT 字节到同租户的所有节点
+func (tnm *TenantNodeManager) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
+	return tnm.network.BroadcastRawData(table, key, rawData, timestamp)
 }

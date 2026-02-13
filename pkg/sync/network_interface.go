@@ -9,7 +9,7 @@ import (
 var ErrNoNetwork = fmt.Errorf("no network interface registered")
 
 // NetworkInterface 网络接口
-// 使用者需要实现这个接口来。传输心跳和数据
+// 使用者需要实现这个接口来传输心跳和数据。
 type NetworkInterface interface {
 	// SendHeartbeat 发送心跳
 	SendHeartbeat(targetNodeID string, clock int64) error
@@ -17,14 +17,14 @@ type NetworkInterface interface {
 	// BroadcastHeartbeat 广播心跳
 	BroadcastHeartbeat(clock int64) error
 
-	// SendData 发送数据
-	SendData(targetNodeID string, table string, key string, data any, timestamp int64) error
+	// SendRawData 发送原始 CRDT 字节到指定节点
+	SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error
 
-	// BroadcastData 广播数据
-	BroadcastData(table string, key string, data any, timestamp int64) error
+	// BroadcastRawData 广播原始 CRDT 字节到所有节点
+	BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error
 
-	// FetchData 获取数据
-	FetchData(sourceNodeID string, tableName string) (map[string]map[string]any, error)
+	// FetchRawTableData 获取远程节点指定表的所有原始数据
+	FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error)
 }
 
 // DefaultNetwork 默认网络实现（仅用于测试）
@@ -47,33 +47,24 @@ func (n *DefaultNetwork) BroadcastHeartbeat(clock int64) error {
 	return nil
 }
 
-// SendData 发送数据（默认实现）
-func (n *DefaultNetwork) SendData(targetNodeID string, table string, key string, data any, timestamp int64) error {
-	log.Printf("sending data to node %s, table: %s, key: %s, timestamp: %d",
-		targetNodeID, table, key, timestamp)
+// SendRawData 发送原始 CRDT 字节（默认实现）
+func (n *DefaultNetwork) SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error {
+	log.Printf("sending raw data to node %s, table: %s, key: %s, size: %d bytes, timestamp: %d",
+		targetNodeID, table, key, len(rawData), timestamp)
 	return nil
 }
 
-// BroadcastData 广播数据（默认实现）
-func (n *DefaultNetwork) BroadcastData(table string, key string, data any, timestamp int64) error {
-	log.Printf("broadcasting data, table: %s, key: %s, timestamp: %d",
-		table, key, timestamp)
+// BroadcastRawData 广播原始 CRDT 字节（默认实现）
+func (n *DefaultNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
+	log.Printf("broadcasting raw data, table: %s, key: %s, size: %d bytes, timestamp: %d",
+		table, key, len(rawData), timestamp)
 	return nil
 }
 
-// FetchData 获取数据（默认实现）
-func (n *DefaultNetwork) FetchData(sourceNodeID string, tableName string) (map[string]map[string]any, error) {
-	log.Printf("fetching data from node %s, table: %s", sourceNodeID, tableName)
-	
-	// 返回模拟数据
-	return map[string]map[string]any{
-		"user-1": {
-			"name": "Alice",
-			"age":  30,
-		},
-		"user-2": {
-			"name": "Bob",
-			"age": 25,
-		},
-	}, nil
+// FetchRawTableData 获取远程节点的原始表数据（默认实现）
+func (n *DefaultNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
+	log.Printf("fetching raw table data from node %s, table: %s", sourceNodeID, tableName)
+
+	// 返回空数据（默认实现不做实际传输）
+	return []RawRowData{}, nil
 }

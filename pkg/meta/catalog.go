@@ -186,3 +186,15 @@ func (c *Catalog) GetTableByID(id uint32) (*TableSchema, bool) {
 	t, ok := c.ids[id]
 	return t, ok
 }
+
+// TableNames 返回所有已注册的表名。
+func (c *Catalog) TableNames() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	names := make([]string, 0, len(c.tables))
+	for name := range c.tables {
+		names = append(names, name)
+	}
+	return names
+}

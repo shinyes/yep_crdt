@@ -51,7 +51,7 @@ func (t *Table) tablePrefix() []byte {
 // 所以我们需要将 Data 转换为 CRDT。
 func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err := t.inTx(true, func(txn store.Tx) error {
 		// 1. 加载现有 CRDT (用于索引比较)
 		keyBytes := t.dataKey(key)
 		existingBytes, err := txn.Get(keyBytes)
@@ -203,6 +203,12 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		}
 		return txn.Set(keyBytes, finalBytes, 0)
 	})
+
+	// 写入成功后触发变更回调（用于自动广播）
+	if err == nil {
+		t.db.notifyChange(t.schema.Name, key)
+	}
+	return err
 }
 
 func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
@@ -258,7 +264,7 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 		return err
 	}
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err = t.inTx(true, func(txn store.Tx) error {
 		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
@@ -342,6 +348,12 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 		return t.saveRow(txn, key, currentMap, oldBody)
 
 	})
+
+	// 写入成功后触发变更回调（用于自动广播）
+	if err == nil {
+		t.db.notifyChange(t.schema.Name, key)
+	}
+	return err
 }
 
 // Remove 执行特定 CRDT 的移除/减少操作。
@@ -774,28 +786,149 @@ func copyFile(src, dst string) error {
 	}
 	return nil
 }
+
+// RawRow 表示一行的原始 CRDT 数据。
+// 用于同步模块导出或导入表数据。
+type RawRow struct {
+	Key  uuid.UUID // 行的主键
+	Data []byte    // MapCRDT 序列化后的原始字节
+}
+
+// ScanRawRows 扫描表中所有行的原始 CRDT 字节数据。
+// 用于全量同步时导出整个表。
+func (t *Table) ScanRawRows() ([]RawRow, error) {
+	var rows []RawRow
+	err := t.inTx(false, func(txn store.Tx) error {
+		prefix := t.tablePrefix()
+		iterator := txn.NewIterator(store.IteratorOptions{Prefix: prefix})
+		defer iterator.Close()
+
+		iterator.Seek(prefix)
+		for iterator.ValidForPrefix(prefix) {
+			key, value, err := iterator.Item()
+			if err != nil {
+				return fmt.Errorf("读取行失败: %w", err)
+			}
+
+			// 从 key 中提取 UUID（去掉 tablePrefix 部分）
+			uuidBytes := key[len(prefix):]
+			if len(uuidBytes) != 16 {
+				iterator.Next()
+				continue
+			}
+
+			pk, err := uuid.FromBytes(uuidBytes)
+			if err != nil {
+				iterator.Next()
+				continue
+			}
+
+			// 复制 value 数据（迭代器使用的是内部缓冲区）
+			dataCopy := make([]byte, len(value))
+			copy(dataCopy, value)
+
+			rows = append(rows, RawRow{Key: pk, Data: dataCopy})
+			iterator.Next()
+		}
+		return nil
+	})
+	return rows, err
+}
+
+// GetRawRow 获取单行的原始 CRDT 字节数据。
+// 用于增量同步时获取需要广播的行数据。
+func (t *Table) GetRawRow(key uuid.UUID) ([]byte, error) {
+	var data []byte
+	err := t.inTx(false, func(txn store.Tx) error {
+		val, err := txn.Get(t.dataKey(key))
+		if err != nil {
+			return err
+		}
+		data = make([]byte, len(val))
+		copy(data, val)
+		return nil
+	})
+	return data, err
+}
+
+// MergeRawRow 将远程 CRDT 原始字节与本地行进行 Merge。
+// 如果本地行不存在，直接写入远程数据。
+// 如果本地行存在，执行 MapCRDT.Merge() 进行无冲突合并。
+func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
+	return t.inTx(true, func(txn store.Tx) error {
+		keyBytes := t.dataKey(key)
+
+		// 反序列化远程 MapCRDT
+		remoteMap, err := crdt.FromBytesMap(remoteData)
+		if err != nil {
+			return fmt.Errorf("反序列化远程数据失败: %w", err)
+		}
+
+		// 尝试加载本地行
+		existingBytes, err := txn.Get(keyBytes)
+		if err == store.ErrKeyNotFound {
+			// 本地不存在，直接写入远程数据
+			return txn.Set(keyBytes, remoteData, 0)
+		}
+		if err != nil {
+			return fmt.Errorf("读取本地行失败: %w", err)
+		}
+
+		// 反序列化本地 MapCRDT
+		localMap, err := crdt.FromBytesMap(existingBytes)
+		if err != nil {
+			return fmt.Errorf("反序列化本地数据失败: %w", err)
+		}
+
+		// 执行 CRDT Merge
+		if err := localMap.Merge(remoteMap); err != nil {
+			return fmt.Errorf("CRDT Merge 失败: %w", err)
+		}
+
+		// 序列化合并后的结果
+		mergedBytes, err := localMap.Bytes()
+		if err != nil {
+			return fmt.Errorf("序列化合并结果失败: %w", err)
+		}
+
+		// 更新索引
+		newBody := localMap.Value().(map[string]any)
+		// 获取旧的 body 用于索引更新
+		oldMap, _ := crdt.FromBytesMap(existingBytes)
+		var oldBody map[string]any
+		if oldMap != nil {
+			oldBody = oldMap.Value().(map[string]any)
+		}
+		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldBody, newBody); err != nil {
+			return fmt.Errorf("更新索引失败: %w", err)
+		}
+
+		return txn.Set(keyBytes, mergedBytes, 0)
+	})
+}
+
 // TableGCResult 包含表级 GC 操作的结果统计。
 type TableGCResult struct {
-	RowsScanned       int   // 扫描的行数量
-	TombstonesRemoved int   // 移除的墓碑数量
-	Errors           []error // 遇到的错误
+	RowsScanned       int     // 扫描的行数量
+	TombstonesRemoved int     // 移除的墓碑数量
+	Errors            []error // 遇到的错误
 }
 
 // GC 对表中所有 CRDT 执行垃圾回收。
 // safeTimestamp 是安全的时间戳，所有在此时间戳之前被删除的数据都可以安全清理。
 func (t *Table) GC(safeTimestamp int64) *TableGCResult {
 	result := &TableGCResult{}
-	
+
 	err := t.inTx(true, func(txn store.Tx) error {
 		prefix := t.tablePrefix()
-		
+
 		// 使用 Prefix 迭代器遍历所有行
 		iterator := txn.NewIterator(store.IteratorOptions{Prefix: prefix})
 		defer iterator.Close()
-		
+
 		// 移动到第一个匹配的键
 		iterator.Seek(prefix)
-		
+
 		for iterator.ValidForPrefix(prefix) {
 			// 获取键和值
 			key, value, err := iterator.Item()
@@ -804,21 +937,21 @@ func (t *Table) GC(safeTimestamp int64) *TableGCResult {
 					fmt.Errorf("failed to get iterator item: %w", err))
 				continue
 			}
-			
+
 			// 反序列化 MapCRDT
 			mapCRDT, err := crdt.FromBytesMap(value)
 			if err != nil {
-				result.Errors = append(result.Errors, 
+				result.Errors = append(result.Errors,
 					fmt.Errorf("failed to decode row %x: %w", key, err))
 				continue
 			}
-			
+
 			result.RowsScanned++
-			
+
 			// 对 MapCRDT 中的每个 CRDT 调用 GC
 			removed := mapCRDT.GC(safeTimestamp)
 			result.TombstonesRemoved += removed
-			
+
 			// 如果有数据被清理，更新存储
 			if removed > 0 {
 				updatedBytes, err := mapCRDT.Bytes()
@@ -827,25 +960,25 @@ func (t *Table) GC(safeTimestamp int64) *TableGCResult {
 						fmt.Errorf("failed to encode row %x after GC: %w", key, err))
 					continue
 				}
-				
+
 				if err := txn.Set(key, updatedBytes, 0); err != nil {
 					result.Errors = append(result.Errors,
 						fmt.Errorf("failed to update row %x after GC: %w", key, err))
 					continue
 				}
 			}
-			
+
 			// 移动到下一个
 			iterator.Next()
 		}
-		
+
 		return nil
 	})
-	
+
 	if err != nil {
 		result.Errors = append(result.Errors, err)
 	}
-	
+
 	return result
 }
 
@@ -873,4 +1006,71 @@ func createFileMetadata(localPath string, relativePath string) (crdt.FileMetadat
 		Size: info.Size(),
 		Hash: fmt.Sprintf("%x", h.Sum(nil)),
 	}, nil
+}
+
+// RowDigest 行摘要，用于版本沟通。
+type RowDigest struct {
+	Key  uuid.UUID // 行主键
+	Hash uint32    // 数据哈希（用于快速比较）
+}
+
+// ScanRowDigest 扫描表中所有行，返回每行的摘要信息。
+// 用于版本沟通时快速比较两个节点的数据差异。
+func (t *Table) ScanRowDigest() ([]RowDigest, error) {
+	var digests []RowDigest
+
+	err := t.inTx(false, func(txn store.Tx) error {
+		prefix := t.tablePrefix()
+		iterator := txn.NewIterator(store.IteratorOptions{Prefix: prefix})
+		defer iterator.Close()
+
+		iterator.Seek(prefix)
+		for iterator.ValidForPrefix(prefix) {
+			keyRaw, valBytes, err := iterator.Item()
+			if err != nil {
+				iterator.Next()
+				continue
+			}
+
+			// 提取 UUID
+			uidBytes := keyRaw[len(prefix):]
+			if len(uidBytes) != 16 {
+				iterator.Next()
+				continue
+			}
+
+			key, err := uuid.FromBytes(uidBytes)
+			if err != nil {
+				iterator.Next()
+				continue
+			}
+
+			// FNV-1a 哈希（快速且分布均匀）
+			h := fnv32a(valBytes)
+
+			digests = append(digests, RowDigest{
+				Key:  key,
+				Hash: h,
+			})
+
+			iterator.Next()
+		}
+		return nil
+	})
+
+	return digests, err
+}
+
+// fnv32a FNV-1a 哈希算法（用于快速数据比较）
+func fnv32a(data []byte) uint32 {
+	const (
+		offset32 = uint32(2166136261)
+		prime32  = uint32(16777619)
+	)
+	h := offset32
+	for _, b := range data {
+		h ^= uint32(b)
+		h *= prime32
+	}
+	return h
 }

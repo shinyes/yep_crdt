@@ -19,8 +19,8 @@ type MapCRDT struct {
 
 	// 内存泄漏防护：最大缓存大小
 	maxCacheSize int
-	lruKeys     []string        // 简单的 LRU 键跟踪
-	lruIndex    map[string]int  // 键到索引的映射，用于 O(1) 查找
+	lruKeys      []string       // 简单的 LRU 键跟踪
+	lruIndex     map[string]int // 键到索引的映射，用于 O(1) 查找
 }
 
 // Entry 表示 MapCRDT 中的一列数据。
@@ -120,10 +120,10 @@ func (m *MapCRDT) Value() any {
 
 // TypeRegistry 存储泛型类型的反序列化函数
 var TypeRegistry = struct {
-	ORSetSerializers   map[string]func([]byte) (any, error)
-	RGASerializers     map[string]func([]byte) (any, error)
-	ORSetTypeHints     map[string]string
-	RGATypeHints       map[string]string
+	ORSetSerializers map[string]func([]byte) (any, error)
+	RGASerializers   map[string]func([]byte) (any, error)
+	ORSetTypeHints   map[string]string
+	RGATypeHints     map[string]string
 }{
 	ORSetSerializers: make(map[string]func([]byte) (any, error)),
 	RGASerializers:   make(map[string]func([]byte) (any, error)),
@@ -248,11 +248,11 @@ func (op OpMapUpdate) Type() Type { return TypeMap }
 func (m *MapCRDT) Apply(op Op) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if op == nil {
 		return fmt.Errorf("%w: 操作不能为 nil", ErrInvalidOp)
 	}
-	
+
 	switch o := op.(type) {
 	case OpMapSet:
 		if o.Key == "" {
@@ -261,7 +261,7 @@ func (m *MapCRDT) Apply(op Op) error {
 		if o.Value == nil {
 			return fmt.Errorf("%w: 值不能为 nil (键: %s)", ErrInvalidOp, o.Key)
 		}
-		
+
 		// 如果是 LocalFile CRDT，注入 BaseDir
 		if lf, ok := o.Value.(*LocalFileCRDT); ok && m.baseDir != "" {
 			lf.SetBaseDir(m.baseDir)
@@ -288,7 +288,7 @@ func (m *MapCRDT) Apply(op Op) error {
 		if o.Op == nil {
 			return fmt.Errorf("%w: 操作不能为 nil (键: %s)", ErrInvalidOp, o.Key)
 		}
-		
+
 		// 1. 尝试从缓存获取
 		c, inCache := m.cache[o.Key]
 
@@ -332,7 +332,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 	if other == nil {
 		return fmt.Errorf("%w: 合并的 CRDT 不能为 nil", ErrInvalidData)
 	}
-	
+
 	o, ok := other.(*MapCRDT)
 	if !ok {
 		return fmt.Errorf("%w: 期望 *MapCRDT, 得到 %T", ErrTypeMismatch, other)
@@ -515,7 +515,7 @@ func FromBytesMap(data []byte) (*MapCRDT, error) {
 	if len(data) == 0 {
 		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "输入数据为空", DataLength: 0}
 	}
-	
+
 	m := NewMapCRDT()
 	if err := json.Unmarshal(data, m); err != nil {
 		return nil, fmt.Errorf("%w: JSON 反序列化失败: %v", ErrDeserialization, err)
@@ -665,10 +665,10 @@ func (m *MapCRDT) GetRGA(key string) (ReadOnlyRGA[any], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	// 注意：底层 RGA 必须实际上是 RGA[any]，否则会类型转换失败。
 	// 如果底层是 RGA[string]，这里会报错。
-r, err := GetRGA[any](m, key)
+	r, err := GetRGA[any](m, key)
 	if err != nil {
 		return nil, err
 	}
@@ -683,7 +683,7 @@ func (m *MapCRDT) GetRGAString(key string) (ReadOnlyRGA[string], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	r, err := GetRGA[string](m, key)
 	if err != nil {
 		return nil, err
@@ -699,7 +699,7 @@ func (m *MapCRDT) GetRGABytes(key string) (ReadOnlyRGA[[]byte], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	r, err := GetRGA[[]byte](m, key)
 	if err != nil {
 		return nil, err
@@ -715,7 +715,7 @@ func (m *MapCRDT) GetSetString(key string) (ReadOnlySet[string], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	s, err := GetORSet[string](m, key)
 	if err != nil {
 		return nil, err
@@ -731,7 +731,7 @@ func (m *MapCRDT) GetSetInt(key string) (ReadOnlySet[int], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	s, err := GetORSet[int](m, key)
 	if err != nil {
 		return nil, err
@@ -747,7 +747,7 @@ func (m *MapCRDT) GetLocalFile(key string) (ReadOnlyLocalFile, error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	// Try cache via GetCRDT (which handles lazy loading and baseDir injection)
 	c := m.GetCRDT(key)
 	if c == nil {
@@ -769,7 +769,7 @@ func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: 键不能为空", ErrInvalidOp)
 	}
-	
+
 	m.mu.RLock()
 	// Try cache
 	if c, ok := m.cache[key]; ok {

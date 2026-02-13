@@ -93,7 +93,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 		t.Errorf("添加node-2后，SafeTimestamp应该基于最小时钟: 期望=%d, 实际=%d", expectedSafeTs, safeTs)
 	}
 
-	t.Logf("✓ 添加node-2: 本地时钟=%d, node-2时钟=%d, SafeTimestamp=%d\n", 
+	t.Logf("✓ 添加node-2: 本地时钟=%d, node-2时钟=%d, SafeTimestamp=%d\n",
 		baseTime, node2Clock, safeTs)
 
 	// 添加另一个在线节点，时钟更小
@@ -138,7 +138,7 @@ func TestNodeManager_Rejoin(t *testing.T) {
 	// 场景1: node-2 第一次上线，时钟为 95000
 	node2FirstClock := int64(95000)
 	nm.OnHeartbeat("node-2", node2FirstClock)
-	
+
 	if !nm.IsNodeOnline("node-2") {
 		t.Error("node-2 应该在线")
 	}
@@ -154,12 +154,12 @@ func TestNodeManager_Rejoin(t *testing.T) {
 	// 这会触发 performFullSync（因为时钟差距过大）
 	node2RejoinClock := int64(95000)
 	clockDiff := advancedLocalClock - node2RejoinClock
-	
+
 	nm.OnHeartbeat("node-2", node2RejoinClock)
-	
+
 	t.Logf("node-2 重新上线: 本地时钟=%d, node-2时钟=%d, 差距=%d (阈值=%d)",
 		advancedLocalClock, node2RejoinClock, clockDiff, 8000)
-	
+
 	if clockDiff > 8000 {
 		t.Logf("✓ 时钟差距过大，应该执行 performFullSync 策略")
 	} else {
@@ -193,12 +193,14 @@ func TestNodeManager_DataReject(t *testing.T) {
 	initialClock := database.Clock().Now()
 	t.Logf("初始本地时钟: %d", initialClock)
 
+	// 构造测试用的原始 CRDT 字节（空 MapCRDT）
+	testRawData := []byte(`{"Entries":{}}`)
+
 	// 测试1: 验证拒绝过期数据的逻辑
-	// 直接调用DataSyncManager的OnReceiveData方法
 	key1 := uuid.New().String()
 	staleDataTimestamp := initialClock - 100000 // 时间戳比本地时钟早100秒
-	err = nm.dataSync.OnReceiveData("test-table", key1, map[string]any{"value": "data"}, staleDataTimestamp)
-	
+	err = nm.dataSync.OnReceiveMerge("test-table", key1, testRawData, staleDataTimestamp)
+
 	if err == nil {
 		t.Error("应该拒绝过期数据 (timestamp < myClock)")
 	}
@@ -209,8 +211,8 @@ func TestNodeManager_DataReject(t *testing.T) {
 	currentClockBeforeSend := database.Clock().Now()
 	key2 := uuid.New().String()
 	newDataTimestamp := currentClockBeforeSend + 10000000 // 时间戳比当前时钟晚10000秒
-	err = nm.dataSync.OnReceiveData("test-table", key2, map[string]any{"value": "data"}, newDataTimestamp)
-	
+	err = nm.dataSync.OnReceiveMerge("test-table", key2, testRawData, newDataTimestamp)
+
 	// 允许两种情况：
 	// 1. 成功接收新数据
 	// 2. 表不存在错误（时间戳检查通过，但表操作失败）
@@ -230,8 +232,8 @@ func TestNodeManager_DataReject(t *testing.T) {
 	// 测试4: 验证再次拒绝现在被认为是过期的数据
 	key3 := uuid.New().String()
 	nowStaleTimestamp := currentClockBeforeSend + 100000 // 这个时间戳现在已经是历史的了
-	err = nm.dataSync.OnReceiveData("test-table", key3, map[string]any{"value": "data"}, nowStaleTimestamp)
-	
+	err = nm.dataSync.OnReceiveMerge("test-table", key3, testRawData, nowStaleTimestamp)
+
 	if err == nil {
 		t.Errorf("应该拒绝时间戳在历史中的数据")
 	}
