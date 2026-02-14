@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/google/uuid v1.6.0
-	github.com/shinyes/tenet v1.0.1
+	github.com/shinyes/tenet v1.1.1
 )
 
 require (
