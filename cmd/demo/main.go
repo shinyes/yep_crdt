@@ -47,8 +47,12 @@ func run() error {
 	}
 
 	nodeDir := filepath.Join(*dataRoot, fmt.Sprintf("%s_%d", *tenantID, *listenPort))
+	identityPath := filepath.Join(*dataRoot, "_tenet_identity", fmt.Sprintf("%s_%d.json", *tenantID, *listenPort))
 	if *reset {
 		if err := os.RemoveAll(nodeDir); err != nil {
+			return err
+		}
+		if err := os.Remove(identityPath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -73,7 +77,7 @@ func run() error {
 		ConnectTo:    *connectTo,
 		Password:     *password,
 		Debug:        *debug,
-		IdentityPath: filepath.Join(nodeDir, "tenet_identity.json"),
+		IdentityPath: identityPath,
 	})
 	if err != nil {
 		return err

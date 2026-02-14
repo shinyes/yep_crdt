@@ -77,10 +77,11 @@ func main() {
 	}
 
 	engine, err := ysync.EnableSync(myDB, db.SyncConfig{
-		ListenPort: 8001,
-		ConnectTo:  "127.0.0.1:8002", // 可选
-		Password:   "secret",          // 必填
-		Debug:      false,
+		ListenPort:   8001,
+		ConnectTo:    "127.0.0.1:8002", // 可选
+		Password:     "secret",          // 必填
+		Debug:        false,
+		IdentityPath: "./tmp/_tenet_identity/tenant-1-8001.json", // 推荐：持久化节点网络身份
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -167,6 +168,7 @@ _ = err
 - 自动重连
 - 增量同步 + 全量同步补齐
 - HLC 驱动的因果一致时序
+- 网络层连接状态作为在线/离线判定来源（应用层不再单独做离线超时判定）
 
 ### 关键配置（2026-02）
 
@@ -174,6 +176,10 @@ _ = err
 
 - `FetchResponseBuffer`：fetch 响应缓冲容量（默认 `256`）
 - `FetchResponseIdleTimeout`：无 done marker 时的空闲等待（默认 `1s`）
+
+`db.SyncConfig` 关键建议：
+
+- `IdentityPath`：tenet 节点身份文件路径。建议单独放在如 `./tmp/_tenet_identity/...`，不要与 Badger 数据目录混放；这样重启后 `peerID` 保持稳定。
 
 ```go
 network, err := ysync.NewTenantNetwork("tenant-1", &ysync.TenetConfig{
