@@ -87,3 +87,53 @@ func TestRGAConcurrentInsert(t *testing.T) {
 		t.Errorf("Expected B first (newer), got %s", vals1[0])
 	}
 }
+
+func TestRGAMergeIntoEmptyKeepsHeadUsable(t *testing.T) {
+	clockA := hlc.New()
+	src := NewRGA[[]byte](clockA)
+
+	if err := src.Apply(OpRGAInsert[[]byte]{AnchorID: src.Head, Value: []byte("A")}); err != nil {
+		t.Fatalf("insert A failed: %v", err)
+	}
+
+	var idA string
+	for id, v := range src.Vertices {
+		if string(v.Value) == "A" {
+			idA = id
+			break
+		}
+	}
+	if idA == "" {
+		t.Fatal("failed to find A vertex")
+	}
+	if err := src.Apply(OpRGAInsert[[]byte]{AnchorID: idA, Value: []byte("B")}); err != nil {
+		t.Fatalf("insert B failed: %v", err)
+	}
+
+	dst := NewRGA[[]byte](hlc.New())
+	localHead := dst.Head
+
+	if err := dst.Merge(src); err != nil {
+		t.Fatalf("merge into empty failed: %v", err)
+	}
+
+	if dst.Head != localHead {
+		t.Fatalf("expected local head to remain stable, got %s -> %s", localHead, dst.Head)
+	}
+	if _, ok := dst.Vertices[src.Head]; ok {
+		t.Fatalf("remote head should not be copied into destination vertices")
+	}
+
+	values := dst.Value().([][]byte)
+	if len(values) != 2 || string(values[0]) != "A" || string(values[1]) != "B" {
+		t.Fatalf("unexpected merged values: %v", values)
+	}
+
+	if err := dst.Apply(OpRGAInsert[[]byte]{AnchorID: dst.Head, Value: []byte("C")}); err != nil {
+		t.Fatalf("apply after merge failed: %v", err)
+	}
+	values = dst.Value().([][]byte)
+	if len(values) != 3 {
+		t.Fatalf("expected 3 values after append, got %d", len(values))
+	}
+}

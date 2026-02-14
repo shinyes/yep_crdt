@@ -221,6 +221,81 @@ func (r *RGA[T]) traverseRightMost(node *RGAVertex[T]) *RGAVertex[T] {
 	}
 }
 
+func (r *RGA[T]) isTriviallyEmptyLocked() bool {
+	if len(r.Vertices) != 1 {
+		return false
+	}
+	head, ok := r.Vertices[r.Head]
+	if !ok {
+		return false
+	}
+	return head.Next == ""
+}
+
+func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
+	localHead := r.Head
+	localHeadVertex := r.Vertices[localHead]
+	if localHeadVertex == nil {
+		var zero T
+		localHeadVertex = &RGAVertex[T]{
+			ID:      localHead,
+			Value:   zero,
+			Deleted: true,
+		}
+	}
+
+	remoteHead, ok := o.Vertices[o.Head]
+	if !ok {
+		return
+	}
+
+	localHeadVertex.Next = remoteHead.Next
+	localHeadVertex.Origin = ""
+	localHeadVertex.Timestamp = 0
+	localHeadVertex.Deleted = true
+	localHeadVertex.DeletedAt = 0
+
+	clonedVertices := make(map[string]*RGAVertex[T], len(o.Vertices))
+	clonedVertices[localHead] = localHeadVertex
+
+	for id, vRemote := range o.Vertices {
+		if id == o.Head {
+			continue
+		}
+
+		origin := vRemote.Origin
+		if origin == o.Head {
+			origin = localHead
+		}
+		next := vRemote.Next
+		if next == o.Head {
+			next = localHead
+		}
+
+		clonedVertices[id] = &RGAVertex[T]{
+			ID:        vRemote.ID,
+			Value:     deepCopyValue(vRemote.Value),
+			Origin:    origin,
+			Next:      next,
+			Timestamp: vRemote.Timestamp,
+			Deleted:   vRemote.Deleted,
+			DeletedAt: vRemote.DeletedAt,
+		}
+	}
+
+	r.Vertices = clonedVertices
+	r.edges = make(map[string][]*RGAVertex[T], len(clonedVertices))
+	for id, v := range r.Vertices {
+		if id == localHead {
+			continue
+		}
+		r.edges[v.Origin] = append(r.edges[v.Origin], v)
+	}
+	for _, children := range r.edges {
+		sortChildren(children)
+	}
+}
+
 // Merge merges another RGA state using incremental updates.
 func (r *RGA[T]) Merge(other CRDT) error {
 	o, ok := other.(*RGA[T])
@@ -233,6 +308,11 @@ func (r *RGA[T]) Merge(other CRDT) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if r.isTriviallyEmptyLocked() {
+		r.mergeIntoEmptyLocked(o)
+		return nil
+	}
 
 	r.ensureEdges()
 

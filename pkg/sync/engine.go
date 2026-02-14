@@ -61,7 +61,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.vs = NewVersionSync(e.db, e.nodeMgr)
 
 	e.network.SetBroadcastHandler(PeerMessageHandler{
-		OnReceive: func(peerID string, msg *NetworkMessage) {
+		OnReceive: func(peerID string, msg NetworkMessage) {
 			e.handleMessage(peerID, msg)
 		},
 	})
@@ -153,7 +153,7 @@ func (e *Engine) OnDataChangedDetailed(tableName string, key uuid.UUID, columns 
 }
 
 // handleMessage handles incoming network messages.
-func (e *Engine) handleMessage(peerID string, msg *NetworkMessage) {
+func (e *Engine) handleMessage(peerID string, msg NetworkMessage) {
 	switch msg.Type {
 	case MsgTypeHeartbeat:
 		e.nodeMgr.OnHeartbeat(peerID, msg.Clock)
@@ -183,15 +183,15 @@ func (e *Engine) handleMessage(peerID string, msg *NetworkMessage) {
 		e.handleFetchRawRequest(peerID, msg)
 
 	case MsgTypeFetchRawResponse:
-		// handled by TenantNetwork SendWithResponse
+		// handled by TenantNetwork request waiter
 
 	case MsgTypeVersionDigest:
-		e.vs.OnReceiveDigest(peerID, msg)
+		e.vs.OnReceiveDigest(peerID, &msg)
 	}
 }
 
 // handleFetchRawRequest replies all rows for the requested table.
-func (e *Engine) handleFetchRawRequest(peerID string, msg *NetworkMessage) {
+func (e *Engine) handleFetchRawRequest(peerID string, msg NetworkMessage) {
 	if msg.Table == "" {
 		return
 	}
@@ -214,6 +214,16 @@ func (e *Engine) handleFetchRawRequest(peerID string, msg *NetworkMessage) {
 		if err := e.network.Send(peerID, responseMsg); err != nil {
 			log.Printf("[Engine:%s] send row failed: %v", e.db.DatabaseID, err)
 		}
+	}
+
+	doneMsg := &NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: msg.RequestID,
+		Table:     msg.Table,
+		Key:       fetchRawResponseDoneKey,
+	}
+	if err := e.network.Send(peerID, doneMsg); err != nil {
+		log.Printf("[Engine:%s] send fetch done marker failed: %v", e.db.DatabaseID, err)
 	}
 }
 

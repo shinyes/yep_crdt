@@ -145,8 +145,15 @@ const (
 	MsgTypeRawData          = "raw_data"           // 整行 CRDT 状态同步
 	MsgTypeRawDelta         = "raw_delta"          // 列级 CRDT 状态同步
 	MsgTypeFetchRawRequest  = "fetch_raw_request"  // 请求某表全部行数据
-	MsgTypeFetchRawResponse = "fetch_raw_response" // 返回某行原始数据
+	MsgTypeFetchRawResponse = "fetch_raw_response" // 返回某行原始数据，或结束标记
 	MsgTypeVersionDigest    = "version_digest"     // 版本摘要交换
+)
+
+const (
+	// fetchRawResponseDoneKey marks end-of-stream for fetch_raw_response batches.
+	fetchRawResponseDoneKey = "__fetch_raw_done__"
+	// Backward compatibility: old peers may not send done marker.
+	fetchRawResponseIdleTimeout = 300 * time.Millisecond
 )
 
 // NetworkMessage 是节点间统一传输消息。

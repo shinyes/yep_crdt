@@ -80,6 +80,7 @@ func (tx *BadgerTx) Delete(key []byte) error {
 func (tx *BadgerTx) NewIterator(opts IteratorOptions) Iterator {
 	bOpts := badger.DefaultIteratorOptions
 	bOpts.Reverse = opts.Reverse
+	bOpts.Prefix = opts.Prefix
 	// 我们可能默认获取值，因为迭代器通常需要它们。
 	// PrefetchSize 可以调整。
 

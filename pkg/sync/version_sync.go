@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
@@ -67,32 +66,35 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 		Tables: make([]TableDigest, 0, len(tableNames)),
 	}
 
-	for _, tableName := range tableNames {
-		table := vs.db.Table(tableName)
-		if table == nil {
-			continue
-		}
-
-		var rowDigests []db.RowDigest
-		_ = vs.db.View(func(tx *db.Tx) error {
+	_ = vs.db.View(func(tx *db.Tx) error {
+		for _, tableName := range tableNames {
 			t := tx.Table(tableName)
-			if t != nil {
-				rowDigests, _ = t.ScanRowDigest()
+			if t == nil {
+				continue
 			}
-			return nil
-		})
 
-		rowKeys := make(map[string]uint32, len(rowDigests))
-		for _, rd := range rowDigests {
-			rowKeys[rd.Key.String()] = rd.Hash
+			rowDigests, err := t.ScanRowDigest()
+			if err != nil {
+				log.Printf("[VersionSync] scan digest failed: table=%s, err=%v", tableName, err)
+				continue
+			}
+
+			rowKeys := make(map[string]uint32, len(rowDigests))
+			for _, rd := range rowDigests {
+				rowKeys[rd.Key.String()] = rd.Hash
+			}
+
+			digest.Tables = append(digest.Tables, TableDigest{
+				TableName: tableName,
+				RowKeys:   rowKeys,
+			})
 		}
+		return nil
+	})
 
-		digest.Tables = append(digest.Tables, TableDigest{
-			TableName: tableName,
-			RowKeys:   rowKeys,
-		})
+	if len(digest.Tables) == 0 {
+		return nil
 	}
-
 	return digest
 }
 
@@ -114,32 +116,56 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	var diffCount int
 	tableNames := vs.db.TableNames()
 	for _, tableName := range tableNames {
-		table := vs.db.Table(tableName)
-		if table == nil {
-			continue
+		type rowPayload struct {
+			keyStr  string
+			rawData []byte
 		}
+		rowsToSend := make([]rowPayload, 0)
 
-		var localDigests []db.RowDigest
 		_ = vs.db.View(func(tx *db.Tx) error {
 			t := tx.Table(tableName)
-			if t != nil {
-				localDigests, _ = t.ScanRowDigest()
+			if t == nil {
+				return nil
+			}
+
+			localDigests, err := t.ScanRowDigest()
+			if err != nil {
+				log.Printf("[VersionSync] scan local digest failed: table=%s, err=%v", tableName, err)
+				return nil
+			}
+
+			remoteRows := remoteIndex[tableName]
+			for _, ld := range localDigests {
+				keyStr := ld.Key.String()
+				remoteHash, existsInRemote := uint32(0), false
+				if remoteRows != nil {
+					remoteHash, existsInRemote = remoteRows[keyStr]
+				}
+
+				if existsInRemote && remoteHash == ld.Hash {
+					continue
+				}
+
+				rawData, err := t.GetRawRow(ld.Key)
+				if err != nil || rawData == nil {
+					continue
+				}
+				rowsToSend = append(rowsToSend, rowPayload{
+					keyStr:  keyStr,
+					rawData: rawData,
+				})
 			}
 			return nil
 		})
 
-		remoteRows := remoteIndex[tableName]
-		for _, ld := range localDigests {
-			keyStr := ld.Key.String()
-			remoteHash, existsInRemote := uint32(0), false
-			if remoteRows != nil {
-				remoteHash, existsInRemote = remoteRows[keyStr]
+		for _, row := range rowsToSend {
+			timestamp := vs.db.Clock().Now()
+			if err := vs.nodeMgr.network.SendRawData(peerID, tableName, row.keyStr, row.rawData, timestamp); err != nil {
+				log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
+					tableName, shortPeerID(row.keyStr), err)
+				continue
 			}
-
-			if !existsInRemote || remoteHash != ld.Hash {
-				vs.sendRow(peerID, tableName, ld.Key)
-				diffCount++
-			}
+			diffCount++
 		}
 	}
 
@@ -148,28 +174,6 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	// Echo back local digest only when the remote digest comes from another node.
 	if msg.NodeID != vs.nodeMgr.localNodeID {
 		go vs.OnPeerConnected(peerID)
-	}
-}
-
-// sendRow sends one local row to a peer.
-func (vs *VersionSync) sendRow(peerID string, tableName string, key uuid.UUID) {
-	var rawData []byte
-	_ = vs.db.View(func(tx *db.Tx) error {
-		table := tx.Table(tableName)
-		if table != nil {
-			rawData, _ = table.GetRawRow(key)
-		}
-		return nil
-	})
-
-	if rawData == nil {
-		return
-	}
-
-	timestamp := vs.db.Clock().Now()
-	if err := vs.nodeMgr.network.SendRawData(peerID, tableName, key.String(), rawData, timestamp); err != nil {
-		log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
-			tableName, shortPeerID(key.String()), err)
 	}
 }
 

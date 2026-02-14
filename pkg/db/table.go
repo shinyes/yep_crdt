@@ -972,6 +972,8 @@ func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
 			return fmt.Errorf("反序列化本地数据失败: %w", err)
 		}
 
+		oldBody := localMap.Value().(map[string]any)
+
 		// 执行 CRDT Merge
 		if err := localMap.Merge(remoteMap); err != nil {
 			return fmt.Errorf("CRDT Merge 失败: %w", err)
@@ -985,12 +987,6 @@ func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
 
 		// 更新索引
 		newBody := localMap.Value().(map[string]any)
-		// 获取旧的 body 用于索引更新
-		oldMap, _ := crdt.FromBytesMap(existingBytes)
-		var oldBody map[string]any
-		if oldMap != nil {
-			oldBody = oldMap.Value().(map[string]any)
-		}
 		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldBody, newBody); err != nil {
 			return fmt.Errorf("更新索引失败: %w", err)
 		}

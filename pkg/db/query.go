@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -32,10 +33,14 @@ type Condition struct {
 type Query struct {
 	table      *Table
 	conditions []Condition
-	limit      int
-	offset     int
-	orderBy    string // Field name
-	desc       bool
+	// conditionFirstIndex keeps the first condition position per field.
+	// This preserves existing behavior while avoiding repeated linear scans in selectPlan.
+	conditionFirstIndex map[string]int
+	columnTypes         map[string]meta.ColumnType
+	limit               int
+	offset              int
+	orderBy             string // Field name
+	desc                bool
 }
 
 func (t *Table) Where(field string, op Operator, val any) *Query {
@@ -44,11 +49,29 @@ func (t *Table) Where(field string, op Operator, val any) *Query {
 		conditions: []Condition{
 			{Field: field, Op: op, Value: val},
 		},
+		conditionFirstIndex: map[string]int{field: 0},
+		columnTypes:         buildColumnTypeMap(t.schema),
 	}
+}
+
+func buildColumnTypeMap(schema *meta.TableSchema) map[string]meta.ColumnType {
+	if schema == nil {
+		return nil
+	}
+	m := make(map[string]meta.ColumnType, len(schema.Columns))
+	for _, col := range schema.Columns {
+		m[col.Name] = col.Type
+	}
+	return m
 }
 
 func (q *Query) And(field string, op Operator, val any) *Query {
 	q.conditions = append(q.conditions, Condition{Field: field, Op: op, Value: val})
+	if q.conditionFirstIndex == nil {
+		q.rebuildConditionIndex()
+	} else if _, exists := q.conditionFirstIndex[field]; !exists {
+		q.conditionFirstIndex[field] = len(q.conditions) - 1
+	}
 	return q
 }
 
@@ -96,7 +119,11 @@ func (q *Query) FindCRDTs() ([]crdt.ReadOnlyMap, error) {
 	// 1. Plan Selection
 	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
 
-	results := make([]crdt.ReadOnlyMap, 0)
+	capHint := 0
+	if q.limit > 0 {
+		capHint = q.limit
+	}
+	results := make([]crdt.ReadOnlyMap, 0, capHint)
 
 	err := q.table.inTx(false, func(txn store.Tx) error {
 		// 2. Execution
@@ -154,12 +181,22 @@ func (q *Query) selectPlan() (uint32, []any, int, *Condition) {
 }
 
 func (q *Query) findCondition(col string) *Condition {
-	for _, c := range q.conditions {
-		if c.Field == col {
-			return &c
-		}
+	if q.conditionFirstIndex == nil {
+		q.rebuildConditionIndex()
+	}
+	if idx, ok := q.conditionFirstIndex[col]; ok && idx >= 0 && idx < len(q.conditions) {
+		return &q.conditions[idx]
 	}
 	return nil
+}
+
+func (q *Query) rebuildConditionIndex() {
+	q.conditionFirstIndex = make(map[string]int, len(q.conditions))
+	for i, cond := range q.conditions {
+		if _, exists := q.conditionFirstIndex[cond.Field]; !exists {
+			q.conditionFirstIndex[cond.Field] = i
+		}
+	}
 }
 
 // scanIndex returns map[string]any
@@ -203,17 +240,13 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 		seekKey = append(basePrefix, 0xFF)
 	}
 
-	// 修复：处理 OpLt 和 OpLte 范围条件
-	// 这些条件需要在 matches() 中过滤，这里只需要正确设置 basePrefix
-	if rangeCond != nil && (rangeCond.Op == OpLt || rangeCond.Op == OpLte) {
-		// 对于 < 和 <= 条件，我们不能简单设置 seekKey
-		// 需要在遍历时过滤，这里 basePrefix 保持不变
-		// 但需要确保迭代从正确的起点开始
-	}
-
 	iter.Seek(seekKey)
 
-	results := make([]crdt.ReadOnlyMap, 0)
+	capHint := 0
+	if q.limit > 0 {
+		capHint = q.limit
+	}
+	results := make([]crdt.ReadOnlyMap, 0, capHint)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
@@ -275,7 +308,11 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 		iter.Seek(prefix)
 	}
 
-	results := make([]crdt.ReadOnlyMap, 0)
+	capHint := 0
+	if q.limit > 0 {
+		capHint = q.limit
+	}
+	results := make([]crdt.ReadOnlyMap, 0, capHint)
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
@@ -334,13 +371,10 @@ func (q *Query) matches(row crdt.ReadOnlyMap) bool {
 			return false
 		}
 
-		// Find column type from schema
+		// Find column type from prebuilt map
 		colType := meta.ColTypeString // Default fallback
-		for _, col := range q.table.schema.Columns {
-			if col.Name == cond.Field {
-				colType = col.Type
-				break
-			}
+		if t, exists := q.columnTypes[cond.Field]; exists {
+			colType = t
 		}
 
 		cmp := compare(val, cond.Value, colType)
@@ -466,16 +500,29 @@ func toFloat(v any) (float64, bool) {
 		return float64(val), true
 	case float64:
 		return val, true
+	case string:
+		return parseNumericText(val)
 	case []byte:
-		// Attempt to parse string/bytes as float since storage is LWWRegister (bytes)
-		strVal := string(val)
-		var f float64
-		// create a temporary variable standardizing to float64 for comparison
-		if _, err := fmt.Sscanf(strVal, "%f", &f); err == nil {
-			return f, true
-		}
-		return 0, false
+		// Attempt to parse bytes as numeric text since storage is often LWWRegister bytes.
+		return parseNumericText(string(val))
 	default:
 		return 0, false
 	}
+}
+
+func parseNumericText(text string) (float64, bool) {
+	if text == "" {
+		return 0, false
+	}
+	if i, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return float64(i), true
+	}
+	if u, err := strconv.ParseUint(text, 10, 64); err == nil {
+		return float64(u), true
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
 }

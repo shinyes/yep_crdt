@@ -444,8 +444,8 @@ func TestFullSync_WithExistingData(t *testing.T) {
 	t.Logf("✓ 全量同步 Merge 成功")
 }
 
-// TestIncrementalSync_RejectStaleData 测试拒绝过期数据
-func TestIncrementalSync_RejectStaleData(t *testing.T) {
+// TestIncrementalSync_StaleTimestampStillConverges ensures stale transport timestamps do not block CRDT merge.
+func TestIncrementalSync_StaleTimestampStillConverges(t *testing.T) {
 	node1, db1 := createTestNode(t, "node-1")
 	defer db1.Close()
 
@@ -466,18 +466,30 @@ func TestIncrementalSync_RejectStaleData(t *testing.T) {
 	currentClock := db1.Clock().Now()
 	t.Logf("当前时钟: %d", currentClock)
 
-	// 尝试接收过期数据
+	// Even with a stale transport timestamp, CRDT merge should still be accepted.
 	userID, _ := uuid.NewV7()
 	staleTimestamp := currentClock - 1000
 	testRawData := []byte(`{"Entries":{}}`)
 
 	err := node1.dataSync.OnReceiveMerge("users", userID.String(), testRawData, staleTimestamp)
 
-	if err == nil {
-		t.Error("应该拒绝过期数据")
+	if err != nil {
+		t.Fatalf("stale timestamp should not block merge: %v", err)
 	}
 
-	t.Logf("✓ 正确拒绝过期数据: %v", err)
+	var row map[string]any
+	db1.View(func(tx *db.Tx) error {
+		row, _ = tx.Table("users").Get(userID)
+		return nil
+	})
+	if row == nil {
+		t.Fatal("expected merged row to exist")
+	}
+
+	updatedClock := db1.Clock().Now()
+	if updatedClock < currentClock {
+		t.Fatalf("local clock must not move backwards: before=%d after=%d", currentClock, updatedClock)
+	}
 }
 
 // MockNetwork 模拟网络接口用于测试

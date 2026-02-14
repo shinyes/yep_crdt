@@ -69,7 +69,7 @@ func (m *MultiTenantManager) StartTenant(ctx context.Context, database *db.DB) (
 
 	// 设置消息处理（使用广播处理器接收所有消息）
 	network.SetBroadcastHandler(PeerMessageHandler{
-		OnReceive: func(peerID string, msg *NetworkMessage) {
+		OnReceive: func(peerID string, msg NetworkMessage) {
 			m.handleMessage(tenantID, peerID, msg)
 		},
 	})
@@ -162,7 +162,7 @@ func (m *MultiTenantManager) Connect(tenantID string, addr string) error {
 }
 
 // handleMessage 处理收到的消息
-func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg *NetworkMessage) {
+func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkMessage) {
 	tnm, exists := m.tenants[tenantID]
 	if !exists {
 		stdlog.Printf("[MultiTenantManager] 收到未知租户的消息: %s", tenantID)
@@ -204,12 +204,12 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg *Network
 		m.handleFetchRawRequest(tnm, peerID, msg)
 
 	case MsgTypeFetchRawResponse:
-		// 响应已由 TenantNetwork 的 SendWithResponse 处理
+		// 响应已由 TenantNetwork 请求等待器处理
 	}
 }
 
 // handleFetchRawRequest 处理原始数据获取请求
-func (m *MultiTenantManager) handleFetchRawRequest(tnm *TenantNodeManager, peerID string, msg *NetworkMessage) {
+func (m *MultiTenantManager) handleFetchRawRequest(tnm *TenantNodeManager, peerID string, msg NetworkMessage) {
 	if msg.Table == "" {
 		return
 	}
@@ -235,6 +235,16 @@ func (m *MultiTenantManager) handleFetchRawRequest(tnm *TenantNodeManager, peerI
 		if err != nil {
 			stdlog.Printf("[MultiTenantManager:%s] 发送行数据失败: %v", tnm.tenantID, err)
 		}
+	}
+
+	doneMsg := &NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: msg.RequestID,
+		Table:     msg.Table,
+		Key:       fetchRawResponseDoneKey,
+	}
+	if err := tnm.network.Send(peerID, doneMsg); err != nil {
+		stdlog.Printf("[MultiTenantManager:%s] 发送 fetch 结束标记失败: %v", tnm.tenantID, err)
 	}
 }
 

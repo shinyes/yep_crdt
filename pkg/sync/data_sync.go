@@ -44,28 +44,24 @@ func (dsm *DataSyncManager) OnReceiveDelta(tableName string, keyStr string, colu
 }
 
 func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, rawData []byte, timestamp int64, columns []string) error {
-	dsm.mu.RLock()
-	defer dsm.mu.RUnlock()
-
-	myClock := dsm.db.Clock().Now()
-	if timestamp < myClock {
-		return fmt.Errorf("拒绝过期数据: 远程时间戳 %d < 本地时钟 %d", timestamp, myClock)
+	// CRDT merge must remain convergent even when transport timestamps are older.
+	// We only use incoming timestamp to advance local HLC when possible.
+	if timestamp > 0 {
+		dsm.db.Clock().Update(timestamp)
 	}
-
-	dsm.db.Clock().Update(timestamp)
 
 	key, err := uuid.Parse(keyStr)
 	if err != nil {
-		return fmt.Errorf("解析 UUID 失败: %w", err)
+		return fmt.Errorf("parse UUID failed: %w", err)
 	}
 
 	table := dsm.db.Table(tableName)
 	if table == nil {
-		return fmt.Errorf("表不存在: %s", tableName)
+		return fmt.Errorf("table does not exist: %s", tableName)
 	}
 
 	if err := table.MergeRawRow(key, rawData); err != nil {
-		return fmt.Errorf("Merge 行数据失败: %w", err)
+		return fmt.Errorf("merge row failed: %w", err)
 	}
 
 	if len(columns) == 0 {
@@ -88,12 +84,12 @@ func (dsm *DataSyncManager) BroadcastRow(tableName string, key uuid.UUID) error 
 
 	table := dsm.db.Table(tableName)
 	if table == nil {
-		return fmt.Errorf("表不存在: %s", tableName)
+		return fmt.Errorf("table does not exist: %s", tableName)
 	}
 
 	rawData, err := table.GetRawRow(key)
 	if err != nil {
-		return fmt.Errorf("获取原始 CRDT 数据失败: %w", err)
+		return fmt.Errorf("get raw row failed: %w", err)
 	}
 
 	timestamp := dsm.db.Clock().Now()
@@ -116,12 +112,12 @@ func (dsm *DataSyncManager) BroadcastRowDelta(tableName string, key uuid.UUID, c
 
 	table := dsm.db.Table(tableName)
 	if table == nil {
-		return fmt.Errorf("表不存在: %s", tableName)
+		return fmt.Errorf("table does not exist: %s", tableName)
 	}
 
 	rawData, err := table.GetRawRowColumns(key, columns)
 	if err != nil {
-		return fmt.Errorf("获取列级 CRDT 数据失败: %w", err)
+		return fmt.Errorf("get raw row columns failed: %w", err)
 	}
 
 	timestamp := dsm.db.Clock().Now()
@@ -142,12 +138,12 @@ func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID stri
 
 	rows, err := network.FetchRawTableData(sourceNodeID, tableName)
 	if err != nil {
-		return nil, fmt.Errorf("获取远程表数据失败: %w", err)
+		return nil, fmt.Errorf("fetch remote table data failed: %w", err)
 	}
 
 	table := dsm.db.Table(tableName)
 	if table == nil {
-		return nil, fmt.Errorf("表不存在: %s", tableName)
+		return nil, fmt.Errorf("table does not exist: %s", tableName)
 	}
 
 	for _, row := range rows {
@@ -160,13 +156,13 @@ func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID stri
 
 		key, err := uuid.Parse(row.Key)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("解析 UUID '%s' 失败: %w", row.Key, err))
+			result.Errors = append(result.Errors, fmt.Errorf("parse UUID '%s' failed: %w", row.Key, err))
 			result.RejectedCount++
 			continue
 		}
 
 		if err := table.MergeRawRow(key, row.Data); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("Merge 行 '%s' 失败: %w", row.Key, err))
+			result.Errors = append(result.Errors, fmt.Errorf("merge row '%s' failed: %w", row.Key, err))
 			result.RejectedCount++
 			continue
 		}
@@ -194,7 +190,7 @@ func (dsm *DataSyncManager) FullSync(ctx context.Context, sourceNodeID string) (
 
 		result, err := dsm.FullSyncTable(ctx, sourceNodeID, tableName)
 		if err != nil {
-			totalResult.Errors = append(totalResult.Errors, fmt.Errorf("全量同步表 '%s' 失败: %w", tableName, err))
+			totalResult.Errors = append(totalResult.Errors, fmt.Errorf("full sync table '%s' failed: %w", tableName, err))
 			continue
 		}
 
@@ -214,12 +210,12 @@ func (dsm *DataSyncManager) FullSync(ctx context.Context, sourceNodeID string) (
 func (dsm *DataSyncManager) ExportTableRawData(tableName string) ([]RawRowData, error) {
 	table := dsm.db.Table(tableName)
 	if table == nil {
-		return nil, fmt.Errorf("表不存在: %s", tableName)
+		return nil, fmt.Errorf("table does not exist: %s", tableName)
 	}
 
 	rawRows, err := table.ScanRawRows()
 	if err != nil {
-		return nil, fmt.Errorf("扫描表数据失败: %w", err)
+		return nil, fmt.Errorf("scan table data failed: %w", err)
 	}
 
 	result := make([]RawRowData, 0, len(rawRows))
