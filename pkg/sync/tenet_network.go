@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	stdlog "log"
 	"strconv"
@@ -32,14 +33,18 @@ type TenantNetwork struct {
 	responseChannels map[string]pendingResponse // requestID -> waiter
 	onPeerConnected  []func(peerID string)
 	onPeerDropped    []func(peerID string)
+
+	stats tenantNetworkStats
 }
 
 // TenetConfig defines network settings.
 type TenetConfig struct {
-	Password    string
-	ListenPort  int
-	RelayNodes  []string
-	EnableDebug bool
+	Password                 string
+	ListenPort               int
+	RelayNodes               []string
+	EnableDebug              bool
+	FetchResponseBuffer      int
+	FetchResponseIdleTimeout time.Duration
 }
 
 // PeerMessageHandler handles incoming messages from peers.
@@ -48,11 +53,57 @@ type PeerMessageHandler struct {
 }
 
 type pendingResponse struct {
-	peerID string
-	ch     chan NetworkMessage
+	peerID     string
+	ch         chan NetworkMessage
+	overflowCh chan struct{}
 }
 
 const internalMsgTypePeerDisconnected = "__peer_disconnected__"
+const defaultFetchResponseBuffer = 256
+const defaultFetchResponseIdleTimeout = 1 * time.Second
+
+func normalizeTenetConfig(config *TenetConfig) TenetConfig {
+	cfg := *config
+	if cfg.FetchResponseBuffer <= 0 {
+		cfg.FetchResponseBuffer = defaultFetchResponseBuffer
+	}
+	if cfg.FetchResponseIdleTimeout <= 0 {
+		cfg.FetchResponseIdleTimeout = defaultFetchResponseIdleTimeout
+	}
+	return cfg
+}
+
+type tenantNetworkStats struct {
+	routedResponses         uint64
+	unexpectedPeerResponses uint64
+	droppedResponses        uint64
+	fetchRequests           uint64
+	fetchRequestSendErrors  uint64
+	fetchRowsReceived       uint64
+	fetchSuccess            uint64
+	fetchTimeouts           uint64
+	fetchPartialTimeouts    uint64
+	fetchOverflows          uint64
+	fetchPeerDisconnected   uint64
+	fetchChannelClosed      uint64
+}
+
+// TenantNetworkStats is a snapshot of transport-level sync metrics.
+type TenantNetworkStats struct {
+	RoutedResponses         uint64
+	UnexpectedPeerResponses uint64
+	DroppedResponses        uint64
+	FetchRequests           uint64
+	FetchRequestSendErrors  uint64
+	FetchRowsReceived       uint64
+	FetchSuccess            uint64
+	FetchTimeouts           uint64
+	FetchPartialTimeouts    uint64
+	FetchOverflows          uint64
+	FetchPeerDisconnected   uint64
+	FetchChannelClosed      uint64
+	InFlightRequests        int
+}
 
 func (tn *TenantNetwork) currentLocalID() string {
 	if cached := tn.localNodeID.Load(); cached != nil {
@@ -106,17 +157,19 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 		return nil, fmt.Errorf("password is required")
 	}
 
+	cfg := normalizeTenetConfig(config)
+
 	opts := []api.Option{
-		api.WithPassword(config.Password),
-		api.WithListenPort(config.ListenPort),
+		api.WithPassword(cfg.Password),
+		api.WithListenPort(cfg.ListenPort),
 		api.WithChannelID(tenantID),
 	}
 
-	if len(config.RelayNodes) > 0 {
-		opts = append(opts, api.WithRelayNodes(config.RelayNodes))
+	if len(cfg.RelayNodes) > 0 {
+		opts = append(opts, api.WithRelayNodes(cfg.RelayNodes))
 	}
 
-	if config.EnableDebug {
+	if cfg.EnableDebug {
 		logger := tenetlog.NewStdLogger(
 			tenetlog.WithLevel(tenetlog.LevelDebug),
 			tenetlog.WithPrefix(fmt.Sprintf("[tenet:%s]", tenantID)),
@@ -134,7 +187,7 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 	ctx, cancel := context.WithCancel(context.Background())
 	tn := &TenantNetwork{
 		tenantID:         tenantID,
-		config:           config,
+		config:           &cfg,
 		tunnel:           tunnel,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -233,10 +286,25 @@ func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 		tn.mu.RUnlock()
 
 		if ok {
+			if waiter.peerID != "" && waiter.peerID != peerID {
+				atomic.AddUint64(&tn.stats.unexpectedPeerResponses, 1)
+				stdlog.Printf("[TenantNetwork:%s] ignore response from unexpected peer: request_id=%s expected=%s got=%s",
+					tn.tenantID, msg.RequestID, waiter.peerID, peerID)
+				return
+			}
+
 			select {
 			case waiter.ch <- msg:
+				atomic.AddUint64(&tn.stats.routedResponses, 1)
 			default:
-				stdlog.Printf("[TenantNetwork:%s] response channel is full", tn.tenantID)
+				atomic.AddUint64(&tn.stats.droppedResponses, 1)
+				stdlog.Printf("[TenantNetwork:%s] response channel is full: request_id=%s peer=%s", tn.tenantID, msg.RequestID, peerID)
+				if waiter.overflowCh != nil {
+					select {
+					case waiter.overflowCh <- struct{}{}:
+					default:
+					}
+				}
 			}
 			return
 		}
@@ -405,11 +473,11 @@ func (tn *TenantNetwork) SendWithResponse(peerID string, msg *NetworkMessage, ti
 	select {
 	case response, ok := <-responseCh:
 		if !ok || response.Type == internalMsgTypePeerDisconnected {
-			return nil, fmt.Errorf("peer disconnected before response")
+			return nil, fmt.Errorf("%w", ErrPeerDisconnectedBeforeResponse)
 		}
 		return &response, nil
 	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for response")
+		return nil, fmt.Errorf("%w", ErrTimeoutWaitingResponse)
 	}
 }
 
@@ -511,9 +579,17 @@ func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, table
 		Timestamp: time.Now().UnixMilli(),
 	}
 
-	responseCh := make(chan NetworkMessage, 64)
+	start := time.Now()
+	atomic.AddUint64(&tn.stats.fetchRequests, 1)
+
+	responseCh := make(chan NetworkMessage, tn.config.FetchResponseBuffer)
+	overflowCh := make(chan struct{}, 1)
 	tn.mu.Lock()
-	tn.responseChannels[requestID] = pendingResponse{peerID: sourceNodeID, ch: responseCh}
+	tn.responseChannels[requestID] = pendingResponse{
+		peerID:     sourceNodeID,
+		ch:         responseCh,
+		overflowCh: overflowCh,
+	}
 	tn.mu.Unlock()
 
 	defer func() {
@@ -523,15 +599,44 @@ func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, table
 	}()
 
 	if err := tn.sendValue(sourceNodeID, msg); err != nil {
+		atomic.AddUint64(&tn.stats.fetchRequestSendErrors, 1)
 		return nil, err
 	}
 
-	return collectFetchRawResponses(responseCh, timeout)
+	rows, err := collectFetchRawResponses(responseCh, overflowCh, timeout, tn.config.FetchResponseIdleTimeout)
+	atomic.AddUint64(&tn.stats.fetchRowsReceived, uint64(len(rows)))
+
+	if err == nil {
+		atomic.AddUint64(&tn.stats.fetchSuccess, 1)
+		stdlog.Printf("[TenantNetwork:%s] fetch raw done: peer=%s, table=%s, request_id=%s, rows=%d, duration=%s",
+			tn.tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start))
+		return rows, nil
+	}
+
+	switch {
+	case errors.Is(err, ErrTimeoutWaitingResponseCompletion):
+		atomic.AddUint64(&tn.stats.fetchPartialTimeouts, 1)
+	case errors.Is(err, ErrTimeoutWaitingResponse):
+		atomic.AddUint64(&tn.stats.fetchTimeouts, 1)
+	case errors.Is(err, ErrResponseOverflow):
+		atomic.AddUint64(&tn.stats.fetchOverflows, 1)
+	case errors.Is(err, ErrPeerDisconnectedBeforeResponse):
+		atomic.AddUint64(&tn.stats.fetchPeerDisconnected, 1)
+	case errors.Is(err, ErrResponseChannelClosed):
+		atomic.AddUint64(&tn.stats.fetchChannelClosed, 1)
+	}
+
+	stdlog.Printf("[TenantNetwork:%s] fetch raw failed: peer=%s, table=%s, request_id=%s, rows=%d, duration=%s, err=%v",
+		tn.tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start), err)
+	return rows, err
 }
 
-func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Duration) ([]RawRowData, error) {
+func collectFetchRawResponses(responseCh <-chan NetworkMessage, overflowCh <-chan struct{}, timeout time.Duration, idleTimeout time.Duration) ([]RawRowData, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
+	}
+	if idleTimeout <= 0 {
+		idleTimeout = defaultFetchResponseIdleTimeout
 	}
 
 	overallTimer := time.NewTimer(timeout)
@@ -554,7 +659,7 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Dur
 
 	resetIdle := func() {
 		if idleTimer == nil {
-			idleTimer = time.NewTimer(fetchRawResponseIdleTimeout)
+			idleTimer = time.NewTimer(idleTimeout)
 			idleC = idleTimer.C
 			return
 		}
@@ -564,7 +669,7 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Dur
 			default:
 			}
 		}
-		idleTimer.Reset(fetchRawResponseIdleTimeout)
+		idleTimer.Reset(idleTimeout)
 	}
 
 	rows := make([]RawRowData, 0, cap(responseCh))
@@ -575,10 +680,10 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Dur
 				if len(rows) > 0 {
 					return rows, nil
 				}
-				return nil, fmt.Errorf("response channel closed before data arrived")
+				return nil, fmt.Errorf("%w", ErrResponseChannelClosed)
 			}
 			if msg.Type == internalMsgTypePeerDisconnected {
-				return nil, fmt.Errorf("peer disconnected before response")
+				return nil, fmt.Errorf("%w", ErrPeerDisconnectedBeforeResponse)
 			}
 			if msg.Type != MsgTypeFetchRawResponse {
 				continue
@@ -590,7 +695,7 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Dur
 				continue
 			}
 
-			// RawData already comes from JSON unmarshal into a per-message byte slice.
+			// RawData already comes from msgpack unmarshal into a per-message byte slice.
 			// Reusing it avoids an extra copy on full-sync hot path.
 			rows = append(rows, RawRowData{
 				Key:  msg.Key,
@@ -602,12 +707,38 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, timeout time.Dur
 			// Backward compatibility: old peers may not send done marker.
 			return rows, nil
 
+		case <-overflowCh:
+			return nil, fmt.Errorf("%w", ErrResponseOverflow)
+
 		case <-overallTimer.C:
 			if len(rows) > 0 {
-				return rows, nil
+				return rows, fmt.Errorf("%w: received %d rows", ErrTimeoutWaitingResponseCompletion, len(rows))
 			}
-			return nil, fmt.Errorf("timeout waiting for response")
+			return nil, fmt.Errorf("%w", ErrTimeoutWaitingResponse)
 		}
+	}
+}
+
+// Stats returns a transport-level metrics snapshot.
+func (tn *TenantNetwork) Stats() TenantNetworkStats {
+	tn.mu.RLock()
+	inFlight := len(tn.responseChannels)
+	tn.mu.RUnlock()
+
+	return TenantNetworkStats{
+		RoutedResponses:         atomic.LoadUint64(&tn.stats.routedResponses),
+		UnexpectedPeerResponses: atomic.LoadUint64(&tn.stats.unexpectedPeerResponses),
+		DroppedResponses:        atomic.LoadUint64(&tn.stats.droppedResponses),
+		FetchRequests:           atomic.LoadUint64(&tn.stats.fetchRequests),
+		FetchRequestSendErrors:  atomic.LoadUint64(&tn.stats.fetchRequestSendErrors),
+		FetchRowsReceived:       atomic.LoadUint64(&tn.stats.fetchRowsReceived),
+		FetchSuccess:            atomic.LoadUint64(&tn.stats.fetchSuccess),
+		FetchTimeouts:           atomic.LoadUint64(&tn.stats.fetchTimeouts),
+		FetchPartialTimeouts:    atomic.LoadUint64(&tn.stats.fetchPartialTimeouts),
+		FetchOverflows:          atomic.LoadUint64(&tn.stats.fetchOverflows),
+		FetchPeerDisconnected:   atomic.LoadUint64(&tn.stats.fetchPeerDisconnected),
+		FetchChannelClosed:      atomic.LoadUint64(&tn.stats.fetchChannelClosed),
+		InFlightRequests:        inFlight,
 	}
 }
 

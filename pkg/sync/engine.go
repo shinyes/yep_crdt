@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
@@ -12,14 +13,34 @@ import (
 
 // Engine orchestrates network/node/version sync components.
 type Engine struct {
-	mu      sync.RWMutex
-	db      *db.DB
-	config  *TenetConfig
-	network *TenantNetwork
-	nodeMgr *NodeManager
-	vs      *VersionSync
-	ctx     context.Context
-	cancel  context.CancelFunc
+	mu       sync.RWMutex
+	db       *db.DB
+	config   *TenetConfig
+	network  *TenantNetwork
+	nodeMgr  *NodeManager
+	vs       *VersionSync
+	ctx      context.Context
+	cancel   context.CancelFunc
+	changeQ  chan db.ChangeEvent
+	workerWg sync.WaitGroup
+	stats    engineStats
+}
+
+const engineChangeQueueSize = 1024
+
+type engineStats struct {
+	changeEnqueued     uint64
+	changeProcessed    uint64
+	changeBackpressure uint64
+}
+
+// EngineStats is a snapshot of sync-engine runtime counters.
+type EngineStats struct {
+	ChangeEnqueued     uint64
+	ChangeProcessed    uint64
+	ChangeBackpressure uint64
+	ChangeQueueDepth   int
+	Network            TenantNetworkStats
 }
 
 // NewEngine creates a sync engine.
@@ -76,8 +97,26 @@ func (e *Engine) Start(ctx context.Context) error {
 		log.Printf("[Engine:%s] peer disconnected: %s", e.db.DatabaseID, shortPeerID(peerID))
 	})
 
+	e.changeQ = make(chan db.ChangeEvent, engineChangeQueueSize)
+	e.workerWg.Add(1)
+	go e.runChangeWorker()
+
 	e.db.OnChangeDetailed(func(event db.ChangeEvent) {
-		go e.OnDataChangedDetailed(event.TableName, event.Key, event.Columns)
+		if e.ctx.Err() != nil {
+			return
+		}
+
+		select {
+		case e.changeQ <- event:
+			atomic.AddUint64(&e.stats.changeEnqueued, 1)
+		default:
+			// Apply backpressure on the writer path when queue is saturated.
+			atomic.AddUint64(&e.stats.changeBackpressure, 1)
+			log.Printf("[Engine:%s] change queue saturated, applying backpressure: table=%s, key=%s",
+				e.db.DatabaseID, event.TableName, shortPeerID(event.Key.String()))
+			e.OnDataChangedDetailed(event.TableName, event.Key, event.Columns)
+			atomic.AddUint64(&e.stats.changeProcessed, 1)
+		}
 	})
 
 	e.nodeMgr.Start(ctx)
@@ -91,6 +130,7 @@ func (e *Engine) Start(ctx context.Context) error {
 func (e *Engine) Stop() {
 	log.Printf("[Engine:%s] stopping", e.db.DatabaseID)
 	e.cancel()
+	e.workerWg.Wait()
 
 	if e.nodeMgr != nil {
 		e.nodeMgr.Stop()
@@ -98,6 +138,36 @@ func (e *Engine) Stop() {
 	if e.network != nil {
 		e.network.Stop()
 	}
+}
+
+func (e *Engine) runChangeWorker() {
+	defer e.workerWg.Done()
+
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case event := <-e.changeQ:
+			e.OnDataChangedDetailed(event.TableName, event.Key, event.Columns)
+			atomic.AddUint64(&e.stats.changeProcessed, 1)
+		}
+	}
+}
+
+// Stats returns runtime metrics for the sync engine.
+func (e *Engine) Stats() EngineStats {
+	s := EngineStats{
+		ChangeEnqueued:     atomic.LoadUint64(&e.stats.changeEnqueued),
+		ChangeProcessed:    atomic.LoadUint64(&e.stats.changeProcessed),
+		ChangeBackpressure: atomic.LoadUint64(&e.stats.changeBackpressure),
+	}
+	if e.changeQ != nil {
+		s.ChangeQueueDepth = len(e.changeQ)
+	}
+	if e.network != nil {
+		s.Network = e.network.Stats()
+	}
+	return s
 }
 
 // Connect connects to another node.

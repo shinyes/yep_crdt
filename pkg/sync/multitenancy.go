@@ -181,7 +181,7 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 	case MsgTypeRawData:
 		// 处理原始 CRDT 字节同步
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
-			stdlog.Printf("[MultiTenantManager:%s] 收到原始数据: table=%s, key=%s, from=%s", tenantID, msg.Table, msg.Key, peerID[:8])
+			stdlog.Printf("[MultiTenantManager:%s] 收到原始数据: table=%s, key=%s, from=%s", tenantID, msg.Table, msg.Key, shortPeerID(peerID))
 			err := tnm.nodeMgr.OnReceiveMerge(msg.Table, msg.Key, msg.RawData, msg.Timestamp)
 			if err != nil {
 				stdlog.Printf("[MultiTenantManager:%s] Merge 数据失败: %v", tenantID, err)
@@ -193,7 +193,7 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 	case MsgTypeRawDelta:
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			stdlog.Printf("[MultiTenantManager:%s] received delta data: table=%s, key=%s, cols=%v, from=%s",
-				tenantID, msg.Table, msg.Key, msg.Columns, peerID[:8])
+				tenantID, msg.Table, msg.Key, msg.Columns, shortPeerID(peerID))
 			if err := tnm.nodeMgr.OnReceiveDelta(msg.Table, msg.Key, msg.Columns, msg.RawData, msg.Timestamp); err != nil {
 				stdlog.Printf("[MultiTenantManager:%s] merge delta failed: %v", tenantID, err)
 			}

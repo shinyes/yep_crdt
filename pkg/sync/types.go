@@ -152,8 +152,6 @@ const (
 const (
 	// fetchRawResponseDoneKey marks end-of-stream for fetch_raw_response batches.
 	fetchRawResponseDoneKey = "__fetch_raw_done__"
-	// Backward compatibility: old peers may not send done marker.
-	fetchRawResponseIdleTimeout = 300 * time.Millisecond
 )
 
 // NetworkMessage 是节点间统一传输消息。

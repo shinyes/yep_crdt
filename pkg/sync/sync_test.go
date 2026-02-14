@@ -56,9 +56,10 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	nm := NewNodeManager(database, "node-1")
 
 	baseTime := database.Clock().Now()
+	safetyOffset := DefaultConfig().GCTimeOffset.Milliseconds()
 
 	safeTs := nm.CalculateSafeTimestamp()
-	expectedSafeTs := baseTime - 30000
+	expectedSafeTs := baseTime - safetyOffset
 
 	timeDiff := safeTs - expectedSafeTs
 	if timeDiff < -100 || timeDiff > 100 {
@@ -69,7 +70,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	nm.OnHeartbeat("node-2", node2Clock)
 
 	safeTs = nm.CalculateSafeTimestamp()
-	expectedSafeTs = node2Clock - 5000
+	expectedSafeTs = node2Clock - safetyOffset
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected SafeTimestamp to use node-2 clock: want=%d got=%d", expectedSafeTs, safeTs)
 	}
@@ -78,7 +79,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	nm.OnHeartbeat("node-3", node3Clock)
 
 	safeTs = nm.CalculateSafeTimestamp()
-	expectedSafeTs = node3Clock - 5000
+	expectedSafeTs = node3Clock - safetyOffset
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected SafeTimestamp to use node-3 clock: want=%d got=%d", expectedSafeTs, safeTs)
 	}

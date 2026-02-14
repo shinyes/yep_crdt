@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -81,6 +82,36 @@ func TestTenantNetworkHandleReceive_ResponseRoutesToWaiter(t *testing.T) {
 	}
 }
 
+func TestTenantNetworkHandleReceive_ResponseFromUnexpectedPeerIgnored(t *testing.T) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+
+	responseCh := make(chan NetworkMessage, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-expected", ch: responseCh}
+
+	payload, err := msgpack.Marshal(&NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: "req-1",
+		Key:       "k1",
+		RawData:   []byte("v1"),
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	tn.handleReceive("peer-unexpected", payload)
+
+	select {
+	case msg := <-responseCh:
+		t.Fatalf("unexpected routed response: %+v", msg)
+	default:
+	}
+}
+
 func TestCollectFetchRawResponses_WithDoneMarker(t *testing.T) {
 	ch := make(chan NetworkMessage, 4)
 	ch <- NetworkMessage{
@@ -98,7 +129,7 @@ func TestCollectFetchRawResponses_WithDoneMarker(t *testing.T) {
 		Key:  fetchRawResponseDoneKey,
 	}
 
-	rows, err := collectFetchRawResponses(ch, time.Second)
+	rows, err := collectFetchRawResponses(ch, nil, 2*time.Second, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("collect failed: %v", err)
 	}
@@ -122,7 +153,7 @@ func TestCollectFetchRawResponses_IdleFallbackWithoutDoneMarker(t *testing.T) {
 	}
 
 	start := time.Now()
-	rows, err := collectFetchRawResponses(ch, time.Second)
+	rows, err := collectFetchRawResponses(ch, nil, 2*time.Second, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("collect failed: %v", err)
 	}
@@ -132,16 +163,53 @@ func TestCollectFetchRawResponses_IdleFallbackWithoutDoneMarker(t *testing.T) {
 	if rows[0].Key != "k1" || string(rows[0].Data) != "v1" {
 		t.Fatalf("unexpected row: %+v", rows[0])
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("idle fallback took too long: %v", elapsed)
 	}
 }
 
 func TestCollectFetchRawResponses_TimeoutWithoutRows(t *testing.T) {
 	ch := make(chan NetworkMessage)
-	_, err := collectFetchRawResponses(ch, 50*time.Millisecond)
+	_, err := collectFetchRawResponses(ch, nil, 50*time.Millisecond, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, ErrTimeoutWaitingResponse) {
+		t.Fatalf("expected timeout classification, got: %v", err)
+	}
+}
+
+func TestCollectFetchRawResponses_TimeoutWithPartialRowsReturnsError(t *testing.T) {
+	ch := make(chan NetworkMessage, 1)
+	ch <- NetworkMessage{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k1",
+		RawData: []byte("v1"),
+	}
+
+	rows, err := collectFetchRawResponses(ch, nil, 50*time.Millisecond, 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error for incomplete response")
+	}
+	if !errors.Is(err, ErrTimeoutWaitingResponseCompletion) {
+		t.Fatalf("expected partial-timeout classification, got: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected collected partial rows, got %d", len(rows))
+	}
+}
+
+func TestCollectFetchRawResponses_Overflow(t *testing.T) {
+	ch := make(chan NetworkMessage)
+	overflowCh := make(chan struct{}, 1)
+	overflowCh <- struct{}{}
+
+	_, err := collectFetchRawResponses(ch, overflowCh, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected overflow error")
+	}
+	if !errors.Is(err, ErrResponseOverflow) {
+		t.Fatalf("expected overflow classification, got: %v", err)
 	}
 }
 
@@ -149,9 +217,12 @@ func TestCollectFetchRawResponses_PeerDisconnected(t *testing.T) {
 	ch := make(chan NetworkMessage, 1)
 	ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}
 
-	_, err := collectFetchRawResponses(ch, time.Second)
+	_, err := collectFetchRawResponses(ch, nil, time.Second, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected peer disconnected error")
+	}
+	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
+		t.Fatalf("expected peer-disconnected classification, got: %v", err)
 	}
 }
 
@@ -194,6 +265,70 @@ func TestTenantNetworkRemovePeerHandler_NotifiesPendingWaiter(t *testing.T) {
 		}
 	default:
 		t.Fatal("pending waiter should be notified")
+	}
+}
+
+func TestNormalizeTenetConfig_Defaults(t *testing.T) {
+	cfg := normalizeTenetConfig(&TenetConfig{
+		Password: "p",
+	})
+
+	if cfg.FetchResponseBuffer != defaultFetchResponseBuffer {
+		t.Fatalf("unexpected default buffer size: %d", cfg.FetchResponseBuffer)
+	}
+	if cfg.FetchResponseIdleTimeout != defaultFetchResponseIdleTimeout {
+		t.Fatalf("unexpected default idle timeout: %v", cfg.FetchResponseIdleTimeout)
+	}
+}
+
+func TestNormalizeTenetConfig_KeepCustomValues(t *testing.T) {
+	cfg := normalizeTenetConfig(&TenetConfig{
+		Password:                 "p",
+		FetchResponseBuffer:      1024,
+		FetchResponseIdleTimeout: 3 * time.Second,
+	})
+
+	if cfg.FetchResponseBuffer != 1024 {
+		t.Fatalf("unexpected custom buffer size: %d", cfg.FetchResponseBuffer)
+	}
+	if cfg.FetchResponseIdleTimeout != 3*time.Second {
+		t.Fatalf("unexpected custom idle timeout: %v", cfg.FetchResponseIdleTimeout)
+	}
+}
+
+func TestTenantNetworkStats_Snapshot(t *testing.T) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+
+	ch := make(chan NetworkMessage, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: ch}
+
+	payload, err := msgpack.Marshal(&NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: "req-1",
+		Key:       "k1",
+		RawData:   []byte("v1"),
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	tn.handleReceive("peer-1", payload)
+	tn.handleReceive("peer-2", payload) // unexpected peer for same requestID
+
+	stats := tn.Stats()
+	if stats.RoutedResponses != 1 {
+		t.Fatalf("expected routed responses = 1, got %d", stats.RoutedResponses)
+	}
+	if stats.UnexpectedPeerResponses != 1 {
+		t.Fatalf("expected unexpected-peer responses = 1, got %d", stats.UnexpectedPeerResponses)
+	}
+	if stats.InFlightRequests != 1 {
+		t.Fatalf("expected in-flight requests = 1, got %d", stats.InFlightRequests)
 	}
 }
 

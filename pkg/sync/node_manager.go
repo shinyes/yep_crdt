@@ -4,11 +4,12 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// NodeManager 节点管理器
+// NodeManager coordinates heartbeat, GC, clock, and data sync for one node.
 type NodeManager struct {
 	mu          sync.RWMutex
 	nodes       map[string]*NodeInfo
@@ -16,7 +17,6 @@ type NodeManager struct {
 	db          *db.DB
 	config      Config
 
-	// 子组件
 	heartbeat *HeartbeatMonitor
 	gc        *GCManager
 	dataSync  *DataSyncManager
@@ -24,9 +24,8 @@ type NodeManager struct {
 	network   NetworkInterface
 }
 
-// NewNodeManager 创建节点管理器
+// NewNodeManager creates a node manager.
 func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager {
-	// 应用配置
 	config := DefaultConfig()
 	for _, opt := range opts {
 		opt(&config)
@@ -37,10 +36,9 @@ func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager
 		localNodeID: nodeID,
 		db:          database,
 		config:      config,
-		network:     &DefaultNetwork{}, // 使用默认网络实现
+		network:     &DefaultNetwork{},
 	}
 
-	// 初始化子组件
 	nm.heartbeat = NewHeartbeatMonitor(nm, config.HeartbeatInterval, config.TimeoutThreshold)
 	nm.gc = NewGCManager(nm, config.GCInterval, config.GCTimeOffset)
 	nm.dataSync = NewDataSyncManager(database, nodeID)
@@ -49,36 +47,27 @@ func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager
 	return nm
 }
 
-// Start 启动节点管理器
+// Start starts background heartbeat and GC components.
 func (nm *NodeManager) Start(ctx context.Context) {
-	log.Printf("节点管理器启动: 本地节点=%s", nm.localNodeID)
-
-	// 启动心跳监控
+	log.Printf("node manager starting: local=%s", nm.localNodeID)
 	nm.heartbeat.Start(ctx)
-
-	// 启动 GC
 	nm.gc.Start(ctx)
-
-	log.Println("节点管理器已启动")
+	log.Printf("node manager started: local=%s", nm.localNodeID)
 }
 
-// Stop 停止节点管理器
+// Stop stops all background components.
 func (nm *NodeManager) Stop() {
-	log.Println("停止节点管理器")
-
-	// 停止心跳监控
+	log.Printf("node manager stopping: local=%s", nm.localNodeID)
 	nm.heartbeat.Stop()
-
-	// 停止 GC
 	nm.gc.Stop()
 }
 
-// OnHeartbeat 处理收到的心跳
+// OnHeartbeat records heartbeat from a peer.
 func (nm *NodeManager) OnHeartbeat(nodeID string, clock int64) {
 	nm.heartbeat.OnHeartbeat(nodeID, clock)
 }
 
-// GetNodeInfo 获取节点信息
+// GetNodeInfo returns one node record.
 func (nm *NodeManager) GetNodeInfo(nodeID string) (*NodeInfo, bool) {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
@@ -87,7 +76,7 @@ func (nm *NodeManager) GetNodeInfo(nodeID string) (*NodeInfo, bool) {
 	return nodeInfo, exists
 }
 
-// IsNodeOnline 检查节点是否在线
+// IsNodeOnline returns whether a node is online.
 func (nm *NodeManager) IsNodeOnline(nodeID string) bool {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
@@ -98,7 +87,7 @@ func (nm *NodeManager) IsNodeOnline(nodeID string) bool {
 	return false
 }
 
-// GetOnlineNodes 获取所有在线节点
+// GetOnlineNodes returns all online node IDs.
 func (nm *NodeManager) GetOnlineNodes() []string {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
@@ -112,101 +101,90 @@ func (nm *NodeManager) GetOnlineNodes() []string {
 	return onlineNodes
 }
 
-// CalculateSafeTimestamp 计算安全时间戳
+// CalculateSafeTimestamp computes GC safe time using online peer clocks.
 func (nm *NodeManager) CalculateSafeTimestamp() int64 {
 	nm.mu.RLock()
+	defer nm.mu.RUnlock()
 
-	// 只考虑在线的节点
 	var minClock int64
 	first := true
-
 	for _, nodeInfo := range nm.nodes {
-		// 只考虑在线的节点
 		if !nodeInfo.IsOnline {
 			continue
 		}
-
-		// 跳过本地节点
 		if nodeInfo.ID == nm.localNodeID {
 			continue
 		}
-
 		if first || nodeInfo.LastKnownClock < minClock {
 			minClock = nodeInfo.LastKnownClock
 			first = false
 		}
 	}
 
-	nm.mu.RUnlock()
-
-	if first {
-		// 没有其他在线节点，使用保守估计
-		// 在锁以外获取本地时钟，避免死锁
-		myClock := nm.db.Clock().Now()
-		conservativeOffset := int64(30 * 1000) // 30 秒
-		return myClock - conservativeOffset
+	safetyOffset := nm.config.GCTimeOffset.Milliseconds()
+	if safetyOffset <= 0 {
+		safetyOffset = int64((30 * time.Second).Milliseconds())
 	}
 
-	// 应用安全容差
-	safetyMargin := int64(5 * 1000) // 5 秒
-	return minClock - safetyMargin
+	if first {
+		return nm.db.Clock().Now() - safetyOffset
+	}
+	return minClock - safetyOffset
 }
 
-// OnReceiveMerge 处理收到的原始 CRDT 字节数据并执行 Merge
+// OnReceiveMerge applies one full-row CRDT payload.
 func (nm *NodeManager) OnReceiveMerge(table string, key string, rawData []byte, timestamp int64) error {
 	return nm.dataSync.OnReceiveMerge(table, key, rawData, timestamp)
 }
 
+// OnReceiveDelta applies one partial-row CRDT payload.
 func (nm *NodeManager) OnReceiveDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
 	return nm.dataSync.OnReceiveDelta(table, key, columns, rawData, timestamp)
 }
 
-// UpdateLocalClock 更新本地时钟
+// UpdateLocalClock merges remote clock into local HLC.
 func (nm *NodeManager) UpdateLocalClock(remoteClock int64) {
 	nm.db.Clock().Update(remoteClock)
-	log.Printf("本地时钟已更新: %d", remoteClock)
+	log.Printf("local clock updated: %d", remoteClock)
 }
 
-// RegisterNetwork 注册网络接口
+// RegisterNetwork binds transport implementation.
 func (nm *NodeManager) RegisterNetwork(network NetworkInterface) {
 	nm.network = network
 	nm.dataSync.SetNetwork(network)
-	log.Println("网络接口已注册")
+	log.Println("network interface registered")
 }
 
-// BroadcastHeartbeat 广播心跳
+// BroadcastHeartbeat sends heartbeat to all peers.
 func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
 	if nm.network == nil {
-		return nil // 没有网络接口，跳过
+		return nil
 	}
-
 	return nm.network.BroadcastHeartbeat(clock)
 }
 
-// BroadcastRawData 广播原始 CRDT 字节数据
+// BroadcastRawData sends one full-row CRDT payload to all peers.
 func (nm *NodeManager) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
 	if nm.network == nil {
-		return nil // 没有网络接口，跳过
+		return nil
 	}
-
 	return nm.network.BroadcastRawData(table, key, rawData, timestamp)
 }
 
-// FetchRawTableData 获取远程节点的原始表数据
+// FetchRawTableData fetches all rows of a table from one remote peer.
 func (nm *NodeManager) FetchRawTableData(sourceNodeID, tableName string) ([]RawRowData, error) {
 	if nm.network == nil {
 		return nil, ErrNoNetwork
 	}
-
 	return nm.network.FetchRawTableData(sourceNodeID, tableName)
 }
 
-// GetLocalNodeID 获取本地节点 ID
+// GetLocalNodeID returns local node ID.
 func (nm *NodeManager) GetLocalNodeID() string {
 	return nm.localNodeID
 }
 
-// FullSync 从指定节点执行全量同步
+// FullSync runs full sync from one source node.
 func (nm *NodeManager) FullSync(ctx context.Context, sourceNodeID string) (*SyncResult, error) {
 	return nm.dataSync.FullSync(ctx, sourceNodeID)
 }
