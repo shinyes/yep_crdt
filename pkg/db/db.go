@@ -15,10 +15,11 @@ import (
 
 // SyncConfig 同步配置
 type SyncConfig struct {
-	Password   string // 网络密码（必须）
-	ListenPort int    // 监听端口，0=随机
-	ConnectTo  string // 初始连接地址（可选，格式 host:port）
-	Debug      bool   // 启用调试日志
+	Password     string // 网络密码（必须）
+	ListenPort   int    // 监听端口，0=随机
+	ConnectTo    string // 初始连接地址（可选，格式 host:port）
+	Debug        bool   // 启用调试日志
+	IdentityPath string // tenet identity JSON 路径；为空则使用临时身份
 }
 
 // ChangeCallback 数据变更回调

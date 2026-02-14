@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	stdlog "log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,6 +45,7 @@ type TenetConfig struct {
 	ListenPort               int
 	RelayNodes               []string
 	EnableDebug              bool
+	IdentityPath             string
 	FetchResponseBuffer      int
 	FetchResponseIdleTimeout time.Duration
 }
@@ -165,6 +168,16 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 		api.WithChannelID(tenantID),
 	}
 
+	if cfg.IdentityPath != "" {
+		identityJSON, err := os.ReadFile(cfg.IdentityPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read identity file failed: %w", err)
+		}
+		if len(identityJSON) > 0 {
+			opts = append(opts, api.WithIdentityJSON(identityJSON))
+		}
+	}
+
 	if len(cfg.RelayNodes) > 0 {
 		opts = append(opts, api.WithRelayNodes(cfg.RelayNodes))
 	}
@@ -199,8 +212,34 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 		tn.localNodeID.Store(localID)
 	}
 
+	if err := persistIdentityJSON(cfg.IdentityPath, tunnel); err != nil {
+		return nil, err
+	}
+
 	tn.setupCallbacks()
 	return tn, nil
+}
+
+func persistIdentityJSON(path string, tunnel *api.Tunnel) error {
+	if path == "" || tunnel == nil {
+		return nil
+	}
+
+	identityJSON, err := tunnel.GetIdentityJSON()
+	if err != nil {
+		return fmt.Errorf("export identity failed: %w", err)
+	}
+	if len(identityJSON) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create identity dir failed: %w", err)
+	}
+	if err := os.WriteFile(path, identityJSON, 0o600); err != nil {
+		return fmt.Errorf("write identity file failed: %w", err)
+	}
+	return nil
 }
 
 func (tn *TenantNetwork) setupCallbacks() {

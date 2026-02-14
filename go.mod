@@ -5,7 +5,8 @@ go 1.25.5
 require (
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/google/uuid v1.6.0
-	github.com/shinyes/tenet v1.1.1
+	github.com/shinyes/tenet v1.1.2
+	github.com/vmihailenco/msgpack/v5 v5.4.1
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
-	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/xtaci/kcp-go/v5 v5.6.66 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect

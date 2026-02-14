@@ -50,9 +50,10 @@ func NewEngine(database *db.DB, config db.SyncConfig) (*Engine, error) {
 	}
 
 	tenetConfig := &TenetConfig{
-		Password:    config.Password,
-		ListenPort:  config.ListenPort,
-		EnableDebug: config.Debug,
+		Password:     config.Password,
+		ListenPort:   config.ListenPort,
+		EnableDebug:  config.Debug,
+		IdentityPath: config.IdentityPath,
 	}
 
 	tenantID := database.DatabaseID
@@ -224,6 +225,10 @@ func (e *Engine) OnDataChangedDetailed(tableName string, key uuid.UUID, columns 
 
 // handleMessage handles incoming network messages.
 func (e *Engine) handleMessage(peerID string, msg NetworkMessage) {
+	if msg.Type != MsgTypeHeartbeat {
+		e.nodeMgr.MarkPeerSeen(peerID)
+	}
+
 	switch msg.Type {
 	case MsgTypeHeartbeat:
 		e.nodeMgr.OnHeartbeat(peerID, msg.Clock)

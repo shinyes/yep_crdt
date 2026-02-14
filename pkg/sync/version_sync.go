@@ -170,11 +170,6 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	}
 
 	log.Printf("[VersionSync] sent %d diff rows to %s", diffCount, shortPeerID(peerID))
-
-	// Echo back local digest only when the remote digest comes from another node.
-	if msg.NodeID != vs.nodeMgr.localNodeID {
-		go vs.OnPeerConnected(peerID)
-	}
 }
 
 // CompareAndSync triggers a digest exchange with one peer.

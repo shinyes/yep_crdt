@@ -161,7 +161,7 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 	}
 
 	remoteDigest := VersionDigest{
-		NodeID: "local-1", // same as local to avoid echo goroutine
+		NodeID: "peer-1",
 		Tables: []TableDigest{
 			{
 				TableName: "users",
@@ -184,6 +184,9 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 
 	if len(net.rawCalls) != 1 {
 		t.Fatalf("expected 1 diff row to be sent, got %d", len(net.rawCalls))
+	}
+	if net.msg != nil {
+		t.Fatal("did not expect digest echo message")
 	}
 	call := net.rawCalls[0]
 	if call.target != "peer-1" {

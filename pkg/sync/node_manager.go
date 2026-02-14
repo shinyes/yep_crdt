@@ -67,6 +67,28 @@ func (nm *NodeManager) OnHeartbeat(nodeID string, clock int64) {
 	nm.heartbeat.OnHeartbeat(nodeID, clock)
 }
 
+// MarkPeerSeen updates liveness based on any inbound peer traffic.
+// It intentionally avoids clock-sync side effects and full-rejoin handling.
+func (nm *NodeManager) MarkPeerSeen(nodeID string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	now := time.Now()
+	nodeInfo, exists := nm.nodes[nodeID]
+	if !exists {
+		nm.nodes[nodeID] = &NodeInfo{
+			ID:            nodeID,
+			LastHeartbeat: now,
+			IsOnline:      true,
+			LastSyncTime:  now,
+		}
+		return
+	}
+
+	nodeInfo.LastHeartbeat = now
+	nodeInfo.IsOnline = true
+}
+
 // GetNodeInfo returns one node record.
 func (nm *NodeManager) GetNodeInfo(nodeID string) (*NodeInfo, bool) {
 	nm.mu.RLock()
