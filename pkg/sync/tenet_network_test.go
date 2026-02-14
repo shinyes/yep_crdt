@@ -1,10 +1,11 @@
 package sync
 
 import (
-	"encoding/json"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 func TestTenantNetworkHandleReceive_RequestIDWithoutWaiterFallsThrough(t *testing.T) {
@@ -23,7 +24,7 @@ func TestTenantNetworkHandleReceive_RequestIDWithoutWaiterFallsThrough(t *testin
 		}
 	}})
 
-	payload, err := json.Marshal(&NetworkMessage{
+	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawRequest,
 		RequestID: "req-1",
 		Table:     "users",
@@ -54,7 +55,7 @@ func TestTenantNetworkHandleReceive_ResponseRoutesToWaiter(t *testing.T) {
 		broadcastCalled = true
 	}})
 
-	payload, err := json.Marshal(&NetworkMessage{
+	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,
 		RequestID: "req-1",
 		Key:       "k1",
@@ -232,7 +233,7 @@ func BenchmarkTenantNetworkHandleReceive_ResponseRouting(b *testing.B) {
 	ch := make(chan NetworkMessage, 1)
 	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: ch}
 
-	payload, err := json.Marshal(&NetworkMessage{
+	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,
 		RequestID: "req-1",
 		Key:       "k1",
@@ -251,7 +252,7 @@ func BenchmarkTenantNetworkHandleReceive_ResponseRouting(b *testing.B) {
 }
 
 func BenchmarkDecodeNetworkMessageFull_FetchRawResponse(b *testing.B) {
-	payload, err := json.Marshal(&NetworkMessage{
+	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,
 		RequestID: "req-1",
 		Table:     "users",
@@ -267,7 +268,7 @@ func BenchmarkDecodeNetworkMessageFull_FetchRawResponse(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var msg NetworkMessage
-		if err := json.Unmarshal(payload, &msg); err != nil {
+		if err := msgpack.Unmarshal(payload, &msg); err != nil {
 			b.Fatalf("unmarshal failed: %v", err)
 		}
 	}
@@ -275,16 +276,16 @@ func BenchmarkDecodeNetworkMessageFull_FetchRawResponse(b *testing.B) {
 
 func BenchmarkDecodeFetchRawResponseLite(b *testing.B) {
 	type fetchRawResponseLite struct {
-		Type      string `json:"type"`
-		RequestID string `json:"request_id"`
-		Table     string `json:"table,omitempty"`
-		Key       string `json:"key,omitempty"`
-		RawData   []byte `json:"raw_data,omitempty"`
-		Timestamp int64  `json:"timestamp"`
-		Clock     int64  `json:"clock,omitempty"`
+		Type      string `msgpack:"type"`
+		RequestID string `msgpack:"request_id"`
+		Table     string `msgpack:"table,omitempty"`
+		Key       string `msgpack:"key,omitempty"`
+		RawData   []byte `msgpack:"raw_data,omitempty"`
+		Timestamp int64  `msgpack:"timestamp"`
+		Clock     int64  `msgpack:"clock,omitempty"`
 	}
 
-	payload, err := json.Marshal(&NetworkMessage{
+	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,
 		RequestID: "req-1",
 		Table:     "users",
@@ -300,7 +301,7 @@ func BenchmarkDecodeFetchRawResponseLite(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var msg fetchRawResponseLite
-		if err := json.Unmarshal(payload, &msg); err != nil {
+		if err := msgpack.Unmarshal(payload, &msg); err != nil {
 			b.Fatalf("unmarshal failed: %v", err)
 		}
 	}

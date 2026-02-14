@@ -1,13 +1,13 @@
 package sync
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 type captureNetwork struct {
@@ -171,7 +171,7 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 			},
 		},
 	}
-	rawDigest, err := json.Marshal(remoteDigest)
+	rawDigest, err := msgpack.Marshal(remoteDigest)
 	if err != nil {
 		t.Fatalf("marshal remote digest failed: %v", err)
 	}

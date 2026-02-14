@@ -1,11 +1,11 @@
 package sync
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // VersionSync exchanges per-table digests when peers connect.
@@ -33,7 +33,7 @@ func (vs *VersionSync) OnPeerConnected(peerID string) {
 		return
 	}
 
-	digestBytes, err := json.Marshal(digest)
+	digestBytes, err := msgpack.Marshal(digest)
 	if err != nil {
 		log.Printf("[VersionSync] marshal digest failed: %v", err)
 		return
@@ -101,7 +101,7 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 // OnReceiveDigest compares remote digest and sends local diffs.
 func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	var remoteDigest VersionDigest
-	if err := json.Unmarshal(msg.RawData, &remoteDigest); err != nil {
+	if err := msgpack.Unmarshal(msg.RawData, &remoteDigest); err != nil {
 		log.Printf("[VersionSync] unmarshal remote digest failed: %v", err)
 		return
 	}

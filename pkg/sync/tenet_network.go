@@ -2,7 +2,6 @@ package sync
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	stdlog "log"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/shinyes/tenet/api"
 	tenetlog "github.com/shinyes/tenet/log"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // TenantNetwork is the tenet-backed network for one tenant/database.
@@ -77,7 +77,7 @@ func (tn *TenantNetwork) sendValue(peerID string, msg NetworkMessage) error {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
 
-	payload, err := json.Marshal(&msg)
+	payload, err := msgpack.Marshal(&msg)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (tn *TenantNetwork) broadcastValue(msg NetworkMessage) (int, error) {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
 
-	payload, err := json.Marshal(&msg)
+	payload, err := msgpack.Marshal(&msg)
 	if err != nil {
 		return 0, err
 	}
@@ -221,7 +221,7 @@ func (tn *TenantNetwork) dropAllPendingResponsesLocked(notify bool) {
 
 func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 	var msg NetworkMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := msgpack.Unmarshal(data, &msg); err != nil {
 		stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
 		return
 	}
