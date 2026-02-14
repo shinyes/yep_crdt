@@ -1,21 +1,21 @@
 ﻿# Yep CRDT Database
 
-Yep CRDT 是一个本地优先（Local-First）的嵌入式 CRDT 数据库，构建在 BadgerDB 之上，提供：
+Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库，构建在 BadgerDB 之上。
 
-- 多 CRDT 类型（LWW / ORSet / Counter / RGA / LocalFile）
-- SQL-Like 链式查询（Where / And / Limit / Offset / OrderBy / IN）
+- 多 CRDT 类型：`LWW` / `Counter` / `ORSet` / `RGA` / `LocalFile`
+- SQL-Like 查询：`Where` / `And` / `OrderBy` / `Limit` / `Offset` / `IN`
 - 自动索引与查询规划（Longest Prefix Match）
-- 分布式自动同步（增量、全量、重连）
+- 分布式自动同步（增量、全量补齐、重连）
 - 面向多节点场景的 GC 与可观测性
 
-完整文档请看 `USER_GUIDE.md`。
+完整说明见 `USER_GUIDE.md`。
 
-## 目录
+## 快速导航
 
 - [安装](#安装)
-- [快速开始](#快速开始)
-- [CRDT 列类型](#crdt-列类型)
-- [查询示例](#查询示例)
+- [5 分钟上手](#5-分钟上手)
+- [CRDT 列类型速查](#crdt-列类型速查)
+- [查询与事务速查](#查询与事务速查)
 - [分布式同步](#分布式同步)
 - [垃圾回收](#垃圾回收)
 - [性能建议](#性能建议)
@@ -28,9 +28,11 @@ Yep CRDT 是一个本地优先（Local-First）的嵌入式 CRDT 数据库，构
 go get github.com/shinyes/yep_crdt
 ```
 
-## 快速开始
+建议使用与 `go.mod` 一致的 Go 版本（当前为 `1.25.5`）。
 
-### 1) 初始化数据库
+## 5 分钟上手
+
+以下示例覆盖：初始化、建表、写入、查询、开启同步。
 
 ```go
 package main
@@ -44,7 +46,7 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
-	"github.com/shinyes/yep_crdt/pkg/sync"
+	ysync "github.com/shinyes/yep_crdt/pkg/sync"
 )
 
 func main() {
@@ -74,7 +76,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	engine, err := sync.EnableSync(myDB, db.SyncConfig{
+	engine, err := ysync.EnableSync(myDB, db.SyncConfig{
 		ListenPort: 8001,
 		ConnectTo:  "127.0.0.1:8002", // 可选
 		Password:   "secret",          // 必填
@@ -83,67 +85,79 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	fmt.Printf("node=%s addr=%s\n", engine.LocalID(), engine.LocalAddr())
 
-	table := myDB.Table("users")
-	id, _ := uuid.NewV7()
-
-	// LWW 写入
-	if err := table.Set(id, map[string]any{"name": "Alice"}); err != nil {
+	users := myDB.Table("users")
+	id, err := uuid.NewV7()
+	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Counter / ORSet 操作
-	_ = table.Add(id, "views", 1)
-	_ = table.Add(id, "tags", "developer")
+	if err := users.Set(id, map[string]any{"name": "Alice"}); err != nil {
+		log.Fatal(err)
+	}
+	if err := users.Add(id, "views", 1); err != nil {
+		log.Fatal(err)
+	}
+	if err := users.Add(id, "tags", "developer"); err != nil {
+		log.Fatal(err)
+	}
+
+	rows, err := users.Where("views", db.OpGt, 0).
+		OrderBy("views", true).
+		Limit(10).
+		Find()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(rows)
 }
 ```
 
-### 2) 事务写入
+## CRDT 列类型速查
 
-```go
-err := myDB.Update(func(tx *db.Tx) error {
-	t := tx.Table("users")
-	if err := t.Add(id1, "views", 100); err != nil {
-		return err
-	}
-	return t.Add(id2, "views", 100)
-})
-```
+主键要求使用 UUIDv7（时间有序、全局唯一）。
 
-## CRDT 列类型
-
-| CRDT 类型 | 典型方法 | 场景 |
+| CRDT 类型 | 常用方法 | 典型场景 |
 | :--- | :--- | :--- |
-| `CrdtLWW` | `Set` | 普通字段（昵称、状态、标题） |
-| `CrdtCounter` | `Add` / `Remove` | 点赞数、浏览量、库存 |
+| `CrdtLWW` | `Set` | 昵称、状态、标题等普通字段 |
+| `CrdtCounter` | `Add` / `Remove` | 点赞、浏览量、库存 |
 | `CrdtORSet` | `Add` / `Remove` | 标签、分类、成员集合 |
 | `CrdtRGA` | `Add` / `InsertAt` / `InsertAfter` / `RemoveAt` | 有序列表、协作文档片段 |
-| `CrdtLocalFile` | `Set`(via `db.FileImport`) / `ReadAll` / `ReadAt` | 图片、附件、大文件引用 |
+| `CrdtLocalFile` | `Set`（通过 `db.FileImport`）/ `ReadAll` / `ReadAt` | 图片、附件、大文件引用 |
 
-说明：主键要求 UUIDv7，以保证时间有序和全局唯一。
-
-## 查询示例
+## 查询与事务速查
 
 ```go
-u, _ := table.Get(userID)
+// 单行读取
+u, _ := users.Get(userID)
 fmt.Println(u)
 
-rows, err := table.Where("name", db.OpEq, "Alice").
+// 条件查询
+rows, err := users.Where("name", db.OpEq, "Alice").
 	And("views", db.OpGt, 10).
 	OrderBy("views", true).
 	Offset(0).
 	Limit(20).
 	Find()
 
-rows2, err := table.Where("views", db.OpIn, []any{100, 200, 300}).Find()
+// IN 查询
+rows2, err := users.Where("views", db.OpIn, []any{100, 200, 300}).Find()
+
+// 事务写入
+err = myDB.Update(func(tx *db.Tx) error {
+	t := tx.Table("users")
+	if err := t.Add(id1, "views", 100); err != nil {
+		return err
+	}
+	return t.Add(id2, "views", 100)
+})
 _ = rows
 _ = rows2
 _ = err
 ```
 
-如果要高性能读取复杂 CRDT（尤其大 RGA），优先用 `FindCRDTs()` + `Iterator()` 流式遍历，避免一次性 `.Value()` 带来的大内存分配。
+读取大 RGA 或复杂 CRDT 时，优先 `FindCRDTs()` + `Iterator()` 流式遍历，避免一次性 `.Value()` 带来的大内存分配。
 
 ## 分布式同步
 
@@ -154,22 +168,15 @@ _ = err
 - 增量同步 + 全量同步补齐
 - HLC 驱动的因果一致时序
 
-### 2026-02 更新
+### 关键配置（2026-02）
 
-#### 1) 列级 Delta 同步
-
-- 本地写入优先广播 `raw_delta`（携带 `columns`）。
-- 构造列级载荷失败时自动回退 `raw_data`（整行）。
-
-#### 2) 全量同步流控参数（`sync.TenetConfig`）
-
-以下参数作用于 `sync.NewTenantNetwork` / `sync.NewMultiTenantManager`：
+`sync.TenetConfig` 新增流控参数：
 
 - `FetchResponseBuffer`：fetch 响应缓冲容量（默认 `256`）
 - `FetchResponseIdleTimeout`：无 done marker 时的空闲等待（默认 `1s`）
 
 ```go
-network, err := sync.NewTenantNetwork("tenant-1", &sync.TenetConfig{
+network, err := ysync.NewTenantNetwork("tenant-1", &ysync.TenetConfig{
 	Password:                 "cluster-secret",
 	ListenPort:               8001,
 	FetchResponseBuffer:      1024,
@@ -179,12 +186,7 @@ _ = network
 _ = err
 ```
 
-#### 3) 可观测性（`engine.Stats()`）
-
-`engine.Stats()` 返回：
-
-- 引擎侧：`ChangeEnqueued` / `ChangeProcessed` / `ChangeBackpressure` / `ChangeQueueDepth`
-- 网络侧：`Network.FetchRequests` / `FetchSuccess` / `FetchTimeouts` / `FetchPartialTimeouts` / `FetchOverflows` / `DroppedResponses` / `InFlightRequests` 等
+### 可观测性（`engine.Stats()`）
 
 ```go
 stats := engine.Stats()
@@ -205,9 +207,9 @@ fmt.Printf("fetch req=%d ok=%d timeout=%d partial=%d overflow=%d dropped=%d infl
 )
 ```
 
-#### 4) 错误分类（`errors.Is`）
+### 错误分类（`errors.Is`）
 
-`pkg/sync/sync_errors.go` 提供了可识别错误：
+`pkg/sync/sync_errors.go` 提供可识别错误：
 
 - `sync.ErrTimeoutWaitingResponse`
 - `sync.ErrTimeoutWaitingResponseCompletion`
@@ -219,13 +221,13 @@ fmt.Printf("fetch req=%d ok=%d timeout=%d partial=%d overflow=%d dropped=%d infl
 rows, err := nodeMgr.FetchRawTableData(peerID, "users")
 if err != nil {
 	switch {
-	case errors.Is(err, sync.ErrTimeoutWaitingResponse):
+	case errors.Is(err, ysync.ErrTimeoutWaitingResponse):
 		// 直接超时，建议重试
-	case errors.Is(err, sync.ErrTimeoutWaitingResponseCompletion):
-		// 收到部分数据但未完整结束，建议告警+重试
-	case errors.Is(err, sync.ErrResponseOverflow):
+	case errors.Is(err, ysync.ErrTimeoutWaitingResponseCompletion):
+		// 收到部分数据但未完整结束，建议告警 + 重试
+	case errors.Is(err, ysync.ErrResponseOverflow):
 		// 增大 FetchResponseBuffer 或降低并发
-	case errors.Is(err, sync.ErrPeerDisconnectedBeforeResponse):
+	case errors.Is(err, ysync.ErrPeerDisconnectedBeforeResponse):
 		// 等待重连后重试
 	}
 }
@@ -251,7 +253,7 @@ fmt.Printf("tables=%d rows=%d removed=%d errors=%d\n",
 _ = result2
 ```
 
-建议在低峰期周期执行 GC；分布式场景应保守计算 safe time，避免过早清理导致离线节点回补异常。
+建议在低峰期周期执行 GC。分布式场景下应保守估计 safe time，避免过早清理导致离线节点回补异常。
 
 ## 性能建议
 
@@ -271,4 +273,4 @@ _ = result2
 ## 待办事项
 
 - [ ] 增加 HTTP/RPC 接口
-- [ ] 增加 Mobile (Android/iOS) 绑定支持
+- [ ] 增加 Mobile（Android/iOS）绑定支持
