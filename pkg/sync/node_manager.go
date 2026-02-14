@@ -157,6 +157,10 @@ func (nm *NodeManager) OnReceiveMerge(table string, key string, rawData []byte, 
 	return nm.dataSync.OnReceiveMerge(table, key, rawData, timestamp)
 }
 
+func (nm *NodeManager) OnReceiveDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nm.dataSync.OnReceiveDelta(table, key, columns, rawData, timestamp)
+}
+
 // UpdateLocalClock 更新本地时钟
 func (nm *NodeManager) UpdateLocalClock(remoteClock int64) {
 	nm.db.Clock().Update(remoteClock)

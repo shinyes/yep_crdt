@@ -26,6 +26,16 @@ type SyncConfig struct {
 // key: 发生变更的行主键
 type ChangeCallback func(tableName string, key uuid.UUID)
 
+// ChangeEvent carries detailed row change information for sync.
+type ChangeEvent struct {
+	TableName string
+	Key       uuid.UUID
+	Columns   []string
+}
+
+// ChangeEventCallback is invoked after a successful local write.
+type ChangeEventCallback func(event ChangeEvent)
+
 // SyncEngine 同步引擎接口
 // 由 sync 包实现，DB 持有引用以避免循环依赖。
 type SyncEngine interface {
@@ -58,8 +68,9 @@ type DB struct {
 	syncEngine SyncEngine
 
 	// 变更回调（数据写入时通知）
-	onChangeMu        sync.RWMutex
-	onChangeCallbacks []ChangeCallback
+	onChangeMu             sync.RWMutex
+	onChangeCallbacks      []ChangeCallback
+	onChangeEventCallbacks []ChangeEventCallback
 }
 
 type Option func(*DB)
@@ -171,14 +182,34 @@ func (db *DB) OnChange(fn ChangeCallback) {
 	db.onChangeCallbacks = append(db.onChangeCallbacks, fn)
 }
 
+func (db *DB) OnChangeDetailed(fn ChangeEventCallback) {
+	db.onChangeMu.Lock()
+	defer db.onChangeMu.Unlock()
+	db.onChangeEventCallbacks = append(db.onChangeEventCallbacks, fn)
+}
+
 // notifyChange 触发所有变更回调（内部使用）。
 func (db *DB) notifyChange(tableName string, key uuid.UUID) {
+	db.notifyChangeWithColumns(tableName, key, nil)
+}
+
+func (db *DB) notifyChangeWithColumns(tableName string, key uuid.UUID, columns []string) {
 	db.onChangeMu.RLock()
-	callbacks := db.onChangeCallbacks
+	callbacks := append([]ChangeCallback(nil), db.onChangeCallbacks...)
+	eventCallbacks := append([]ChangeEventCallback(nil), db.onChangeEventCallbacks...)
 	db.onChangeMu.RUnlock()
 
 	for _, fn := range callbacks {
 		fn(tableName, key)
+	}
+
+	event := ChangeEvent{
+		TableName: tableName,
+		Key:       key,
+		Columns:   append([]string(nil), columns...),
+	}
+	for _, fn := range eventCallbacks {
+		fn(event)
 	}
 }
 

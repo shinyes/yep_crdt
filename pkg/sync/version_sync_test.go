@@ -21,6 +21,12 @@ func (n *captureNetwork) SendRawData(targetNodeID string, table string, key stri
 func (n *captureNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
 	return nil
 }
+func (n *captureNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
+func (n *captureNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
 func (n *captureNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
 	n.target = targetNodeID
 	n.msg = msg

@@ -190,6 +190,15 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg *Network
 			}
 		}
 
+	case MsgTypeRawDelta:
+		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
+			stdlog.Printf("[MultiTenantManager:%s] received delta data: table=%s, key=%s, cols=%v, from=%s",
+				tenantID, msg.Table, msg.Key, msg.Columns, peerID[:8])
+			if err := tnm.nodeMgr.OnReceiveDelta(msg.Table, msg.Key, msg.Columns, msg.RawData, msg.Timestamp); err != nil {
+				stdlog.Printf("[MultiTenantManager:%s] merge delta failed: %v", tenantID, err)
+			}
+		}
+
 	case MsgTypeFetchRawRequest:
 		// 处理原始数据获取请求
 		m.handleFetchRawRequest(tnm, peerID, msg)

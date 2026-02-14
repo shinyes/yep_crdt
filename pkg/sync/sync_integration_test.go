@@ -504,6 +504,14 @@ func (m *MockNetwork) BroadcastRawData(table string, key string, rawData []byte,
 	return nil
 }
 
+func (m *MockNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
+func (m *MockNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
 func (m *MockNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
 	return nil
 }

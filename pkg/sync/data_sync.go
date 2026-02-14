@@ -10,8 +10,7 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// DataSyncManager 数据同步管理器
-// 负责基于 CRDT Merge 的增量同步和全量同步。
+// DataSyncManager handles CRDT merge-based incremental/full sync.
 type DataSyncManager struct {
 	mu      sync.RWMutex
 	db      *db.DB
@@ -19,7 +18,7 @@ type DataSyncManager struct {
 	network NetworkInterface
 }
 
-// NewDataSyncManager 创建数据同步管理器
+// NewDataSyncManager creates a sync manager.
 func NewDataSyncManager(database *db.DB, nodeID string) *DataSyncManager {
 	return &DataSyncManager{
 		db:     database,
@@ -27,53 +26,57 @@ func NewDataSyncManager(database *db.DB, nodeID string) *DataSyncManager {
 	}
 }
 
-// SetNetwork 设置网络接口
+// SetNetwork registers network transport.
 func (dsm *DataSyncManager) SetNetwork(n NetworkInterface) {
 	dsm.mu.Lock()
 	defer dsm.mu.Unlock()
 	dsm.network = n
 }
 
-// OnReceiveMerge 接收远程 CRDT 原始字节并 Merge 到本地。
-// 这是增量同步的核心方法：收到远端发来的某行的完整 CRDT 状态后，
-// 与本地对应行进行无冲突合并。
+// OnReceiveMerge applies a full-row raw CRDT state payload.
 func (dsm *DataSyncManager) OnReceiveMerge(tableName string, keyStr string, rawData []byte, timestamp int64) error {
+	return dsm.applyIncomingRaw(tableName, keyStr, rawData, timestamp, nil)
+}
+
+// OnReceiveDelta applies a column-level partial raw CRDT state payload.
+func (dsm *DataSyncManager) OnReceiveDelta(tableName string, keyStr string, columns []string, rawData []byte, timestamp int64) error {
+	return dsm.applyIncomingRaw(tableName, keyStr, rawData, timestamp, columns)
+}
+
+func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, rawData []byte, timestamp int64, columns []string) error {
 	dsm.mu.RLock()
 	defer dsm.mu.RUnlock()
 
-	// 时间戳检查：拒绝过于陈旧的数据
 	myClock := dsm.db.Clock().Now()
 	if timestamp < myClock {
 		return fmt.Errorf("拒绝过期数据: 远程时间戳 %d < 本地时钟 %d", timestamp, myClock)
 	}
 
-	// 更新本地时钟（HLC 语义：接收消息时推进时钟）
 	dsm.db.Clock().Update(timestamp)
 
-	// 解析 UUID
 	key, err := uuid.Parse(keyStr)
 	if err != nil {
 		return fmt.Errorf("解析 UUID 失败: %w", err)
 	}
 
-	// 获取表实例
 	table := dsm.db.Table(tableName)
 	if table == nil {
 		return fmt.Errorf("表不存在: %s", tableName)
 	}
 
-	// 执行 CRDT Merge
 	if err := table.MergeRawRow(key, rawData); err != nil {
 		return fmt.Errorf("Merge 行数据失败: %w", err)
 	}
 
-	log.Printf("[DataSync] 成功合并数据: table=%s, key=%s, timestamp=%d",
-		tableName, keyStr, timestamp)
+	if len(columns) == 0 {
+		log.Printf("[DataSync] merged full row: table=%s, key=%s, ts=%d", tableName, keyStr, timestamp)
+	} else {
+		log.Printf("[DataSync] merged delta row: table=%s, key=%s, cols=%v, ts=%d", tableName, keyStr, columns, timestamp)
+	}
 	return nil
 }
 
-// BroadcastRow 广播本地行的原始 CRDT 字节（增量同步的发送端）。
-// 当本地数据发生变更时调用，将变更后的完整 CRDT 状态广播给所有节点。
+// BroadcastRow broadcasts the full raw CRDT row state.
 func (dsm *DataSyncManager) BroadcastRow(tableName string, key uuid.UUID) error {
 	dsm.mu.RLock()
 	network := dsm.network
@@ -83,25 +86,49 @@ func (dsm *DataSyncManager) BroadcastRow(tableName string, key uuid.UUID) error 
 		return ErrNoNetwork
 	}
 
-	// 获取表实例
 	table := dsm.db.Table(tableName)
 	if table == nil {
 		return fmt.Errorf("表不存在: %s", tableName)
 	}
 
-	// 获取该行的原始 CRDT 字节
 	rawData, err := table.GetRawRow(key)
 	if err != nil {
 		return fmt.Errorf("获取原始 CRDT 数据失败: %w", err)
 	}
 
-	// 广播
 	timestamp := dsm.db.Clock().Now()
 	return network.BroadcastRawData(tableName, key.String(), rawData, timestamp)
 }
 
-// FullSyncTable 对指定表执行全量同步（从远程拉取所有数据并 Merge）。
-// 用于节点重新加入或时钟差距过大时的数据恢复。
+// BroadcastRowDelta broadcasts only selected columns of a row.
+func (dsm *DataSyncManager) BroadcastRowDelta(tableName string, key uuid.UUID, columns []string) error {
+	dsm.mu.RLock()
+	network := dsm.network
+	dsm.mu.RUnlock()
+
+	if network == nil {
+		return ErrNoNetwork
+	}
+
+	if len(columns) == 0 {
+		return dsm.BroadcastRow(tableName, key)
+	}
+
+	table := dsm.db.Table(tableName)
+	if table == nil {
+		return fmt.Errorf("表不存在: %s", tableName)
+	}
+
+	rawData, err := table.GetRawRowColumns(key, columns)
+	if err != nil {
+		return fmt.Errorf("获取列级 CRDT 数据失败: %w", err)
+	}
+
+	timestamp := dsm.db.Clock().Now()
+	return network.BroadcastRawDelta(tableName, key.String(), columns, rawData, timestamp)
+}
+
+// FullSyncTable performs full sync for one table.
 func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID string, tableName string) (*SyncResult, error) {
 	dsm.mu.RLock()
 	network := dsm.network
@@ -113,21 +140,17 @@ func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID stri
 
 	result := &SyncResult{}
 
-	// 从远程节点获取表的所有原始数据
 	rows, err := network.FetchRawTableData(sourceNodeID, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("获取远程表数据失败: %w", err)
 	}
 
-	// 获取表实例
 	table := dsm.db.Table(tableName)
 	if table == nil {
 		return nil, fmt.Errorf("表不存在: %s", tableName)
 	}
 
-	// 逐行 Merge
 	for _, row := range rows {
-		// 检查 context 是否被取消
 		select {
 		case <-ctx.Done():
 			result.Errors = append(result.Errors, ctx.Err())
@@ -152,16 +175,13 @@ func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID stri
 	}
 
 	result.TablesSynced = 1
-	log.Printf("[DataSync] 全量同步完成: table=%s, rows=%d, rejected=%d",
-		tableName, result.RowsSynced, result.RejectedCount)
+	log.Printf("[DataSync] full sync table done: table=%s, rows=%d, rejected=%d", tableName, result.RowsSynced, result.RejectedCount)
 	return result, nil
 }
 
-// FullSync 对所有表执行全量同步。
+// FullSync performs full sync for all tables.
 func (dsm *DataSyncManager) FullSync(ctx context.Context, sourceNodeID string) (*SyncResult, error) {
 	totalResult := &SyncResult{}
-
-	// 获取所有表名
 	tableNames := dsm.db.TableNames()
 
 	for _, tableName := range tableNames {
@@ -186,13 +206,11 @@ func (dsm *DataSyncManager) FullSync(ctx context.Context, sourceNodeID string) (
 		totalResult.Errors = append(totalResult.Errors, result.Errors...)
 	}
 
-	log.Printf("[DataSync] 全量同步所有表完成: tables=%d, rows=%d",
-		totalResult.TablesSynced, totalResult.RowsSynced)
+	log.Printf("[DataSync] full sync all done: tables=%d, rows=%d", totalResult.TablesSynced, totalResult.RowsSynced)
 	return totalResult, nil
 }
 
-// ExportTableRawData 导出指定表的所有原始 CRDT 数据。
-// 用于响应远程节点的全量同步请求。
+// ExportTableRawData exports all raw rows in one table.
 func (dsm *DataSyncManager) ExportTableRawData(tableName string) ([]RawRowData, error) {
 	table := dsm.db.Table(tableName)
 	if table == nil {

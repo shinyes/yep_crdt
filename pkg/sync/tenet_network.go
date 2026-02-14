@@ -375,6 +375,39 @@ func (tn *TenantNetwork) BroadcastRawData(table string, key string, rawData []by
 	return err
 }
 
+// SendRawDelta sends one column-level row delta payload to one peer.
+func (tn *TenantNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	msg := &NetworkMessage{
+		Type:      MsgTypeRawDelta,
+		Table:     table,
+		Key:       key,
+		Columns:   append([]string(nil), columns...),
+		RawData:   rawData,
+		Timestamp: timestamp,
+	}
+	return tn.Send(targetNodeID, msg)
+}
+
+// BroadcastRawDelta broadcasts one column-level row delta payload.
+func (tn *TenantNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	msg := &NetworkMessage{
+		Type:      MsgTypeRawDelta,
+		Table:     table,
+		Key:       key,
+		Columns:   append([]string(nil), columns...),
+		RawData:   rawData,
+		Timestamp: timestamp,
+	}
+	count, err := tn.Broadcast(msg)
+	if err != nil {
+		stdlog.Printf("[TenantNetwork:%s] broadcast raw delta failed: %v", tn.tenantID, err)
+	} else {
+		stdlog.Printf("[TenantNetwork:%s] broadcast raw delta to %d peers, table=%s, key=%s, columns=%v",
+			tn.tenantID, count, table, key, columns)
+	}
+	return err
+}
+
 // FetchRawTableData fetches raw table data with default timeout.
 func (tn *TenantNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
 	return tn.FetchRawTableDataWithTimeout(sourceNodeID, tableName, 30*time.Second)

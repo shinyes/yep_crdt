@@ -206,7 +206,7 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 
 	// 写入成功后触发变更回调（用于自动广播）
 	if err == nil {
-		t.db.notifyChange(t.schema.Name, key)
+		t.db.notifyChangeWithColumns(t.schema.Name, key, columnsFromMap(data))
 	}
 	return err
 }
@@ -351,7 +351,7 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 
 	// 写入成功后触发变更回调（用于自动广播）
 	if err == nil {
-		t.db.notifyChange(t.schema.Name, key)
+		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
 	}
 	return err
 }
@@ -368,7 +368,7 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 		return err
 	}
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err = t.inTx(true, func(txn store.Tx) error {
 		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
@@ -429,6 +429,11 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 		return t.saveRow(txn, key, currentMap, oldBody)
 
 	})
+
+	if err == nil {
+		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+	}
+	return err
 }
 
 // InsertAfter 在 RGA 中指定元素后插入。
@@ -441,7 +446,7 @@ func (t *Table) InsertAfter(key uuid.UUID, col string, anchorVal any, newVal any
 		return fmt.Errorf("InsertAfter only supported for RGA")
 	}
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err = t.inTx(true, func(txn store.Tx) error {
 		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
@@ -482,6 +487,11 @@ func (t *Table) InsertAfter(key uuid.UUID, col string, anchorVal any, newVal any
 
 		return t.saveRow(txn, key, currentMap, oldBody)
 	})
+
+	if err == nil {
+		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+	}
+	return err
 }
 
 // InsertAt 在 RGA 第 N 个位置插入 (0-based).
@@ -494,7 +504,7 @@ func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
 		return fmt.Errorf("InsertAt only supported for RGA")
 	}
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err = t.inTx(true, func(txn store.Tx) error {
 		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
@@ -581,6 +591,11 @@ func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
 
 		return t.saveRow(txn, key, currentMap, oldBody)
 	})
+
+	if err == nil {
+		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+	}
+	return err
 }
 
 // RemoveAt Removes element at index N.
@@ -593,7 +608,7 @@ func (t *Table) RemoveAt(key uuid.UUID, col string, index int) error {
 		return fmt.Errorf("RemoveAt only supported for RGA")
 	}
 
-	return t.inTx(true, func(txn store.Tx) error {
+	err = t.inTx(true, func(txn store.Tx) error {
 		currentMap, oldBody, err := t.loadRow(txn, key)
 		if err != nil {
 			return err
@@ -636,6 +651,11 @@ func (t *Table) RemoveAt(key uuid.UUID, col string, index int) error {
 
 		return t.saveRow(txn, key, currentMap, oldBody)
 	})
+
+	if err == nil {
+		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+	}
+	return err
 }
 
 // Internal Helpers
@@ -714,6 +734,17 @@ func toInt64(v any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func columnsFromMap(data map[string]any) []string {
+	columns := make([]string, 0, len(data))
+	for col := range data {
+		if col == "" {
+			continue
+		}
+		columns = append(columns, col)
+	}
+	return columns
 }
 
 // Helper to encode value for LWW/RGA (bytes) or ORSet (string->bytes)
@@ -848,6 +879,67 @@ func (t *Table) GetRawRow(key uuid.UUID) ([]byte, error) {
 		copy(data, val)
 		return nil
 	})
+	return data, err
+}
+
+// GetRawRowColumns returns a partial MapCRDT payload containing only selected columns.
+func (t *Table) GetRawRowColumns(key uuid.UUID, columns []string) ([]byte, error) {
+	if len(columns) == 0 {
+		return t.GetRawRow(key)
+	}
+
+	columnSet := make(map[string]struct{}, len(columns))
+	for _, col := range columns {
+		if col == "" {
+			continue
+		}
+		columnSet[col] = struct{}{}
+	}
+	if len(columnSet) == 0 {
+		return t.GetRawRow(key)
+	}
+
+	var data []byte
+	err := t.inTx(false, func(txn store.Tx) error {
+		raw, err := txn.Get(t.dataKey(key))
+		if err != nil {
+			return err
+		}
+
+		rowMap, err := crdt.FromBytesMap(raw)
+		if err != nil {
+			return fmt.Errorf("failed to decode existing data: %w", err)
+		}
+
+		partial := crdt.NewMapCRDT()
+		matched := 0
+		for col := range columnSet {
+			entry, ok := rowMap.Entries[col]
+			if !ok {
+				continue
+			}
+
+			entryCopy := &crdt.Entry{
+				Type:     entry.Type,
+				TypeHint: entry.TypeHint,
+				Data:     make([]byte, len(entry.Data)),
+			}
+			copy(entryCopy.Data, entry.Data)
+			partial.Entries[col] = entryCopy
+			matched++
+		}
+
+		if matched == 0 {
+			return fmt.Errorf("no matching columns found for key: %s", key.String())
+		}
+
+		data, err = partial.Bytes()
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
 	return data, err
 }
 

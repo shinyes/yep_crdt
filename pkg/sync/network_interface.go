@@ -22,6 +22,12 @@ type NetworkInterface interface {
 	// BroadcastRawData broadcasts a raw CRDT row payload to all peers.
 	BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error
 
+	// SendRawDelta sends selected columns of one row to a target node.
+	SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error
+
+	// BroadcastRawDelta broadcasts selected columns of one row to all peers.
+	BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error
+
 	// SendMessage sends a custom control/data network message.
 	SendMessage(targetNodeID string, msg *NetworkMessage) error
 
@@ -60,6 +66,20 @@ func (n *DefaultNetwork) SendRawData(targetNodeID string, table string, key stri
 func (n *DefaultNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
 	log.Printf("broadcasting raw data, table: %s, key: %s, size: %d bytes, timestamp: %d",
 		table, key, len(rawData), timestamp)
+	return nil
+}
+
+// SendRawDelta sends delta CRDT payload (default implementation).
+func (n *DefaultNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	log.Printf("sending raw delta to node %s, table: %s, key: %s, columns: %v, size: %d bytes, timestamp: %d",
+		targetNodeID, table, key, columns, len(rawData), timestamp)
+	return nil
+}
+
+// BroadcastRawDelta broadcasts delta CRDT payload (default implementation).
+func (n *DefaultNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	log.Printf("broadcasting raw delta, table: %s, key: %s, columns: %v, size: %d bytes, timestamp: %d",
+		table, key, columns, len(rawData), timestamp)
 	return nil
 }
 

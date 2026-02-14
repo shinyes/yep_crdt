@@ -1,38 +1,38 @@
-# Yep CRDT 数据库使用手册
+﻿# Yep CRDT 鏁版嵁搴撲娇鐢ㄦ墜鍐?
 
-## 1. 简介
+## 1. 绠€浠?
 
-**Yep CRDT** (Conflict-free Replicated Data Type Database) 是一个高性能、本地优先 (Local-First) 的嵌入式数据库，专为构建离线可用、实时协作的应用程序而设计。它构建在 BadgerDB 之上，提供了强大的 CRDT 支持，确保在分布式和断网环境下的数据最终一致性。
+**Yep CRDT** (Conflict-free Replicated Data Type Database) 鏄竴涓珮鎬ц兘銆佹湰鍦颁紭鍏?(Local-First) 鐨勫祵鍏ュ紡鏁版嵁搴擄紝涓撲负鏋勫缓绂荤嚎鍙敤銆佸疄鏃跺崗浣滅殑搴旂敤绋嬪簭鑰岃璁°€傚畠鏋勫缓鍦?BadgerDB 涔嬩笂锛屾彁渚涗簡寮哄ぇ鐨?CRDT 鏀寔锛岀‘淇濆湪鍒嗗竷寮忓拰鏂綉鐜涓嬬殑鏁版嵁鏈€缁堜竴鑷存€с€?
 
-### 核心特性
+### 鏍稿績鐗规€?
 
-*   **本地优先 (Local-First)**: 数据存储在本地设备，应用程序随时可用，无需持续联网。
-*   **CRDT 内核**: 内置多种 CRDT 类型，自动处理并发冲突，无需复杂的锁机制。
-*   **SQL-Like 查询**: 提供流畅的链式 API 用于数据查询，支持索引、复杂条件筛选和排序。
-*   **自动索引**: 基于 Schema 定义自动维护二级索引，查询速度快。
-*   **类型安全**: 核心 API 支持泛型，减少运行时错误。
-*   **高性能**: 底层使用 BadgerDB KV 存储，结合 LSM Tree 提供高吞吐量的读写。
-*   **垃圾回收 (GC)**: 基于 HLC (Hybrid Logical Clock) 的无等待垃圾回收机制，有效防止元数据膨胀。
+*   **鏈湴浼樺厛 (Local-First)**: 鏁版嵁瀛樺偍鍦ㄦ湰鍦拌澶囷紝搴旂敤绋嬪簭闅忔椂鍙敤锛屾棤闇€鎸佺画鑱旂綉銆?
+*   **CRDT 鍐呮牳**: 鍐呯疆澶氱 CRDT 绫诲瀷锛岃嚜鍔ㄥ鐞嗗苟鍙戝啿绐侊紝鏃犻渶澶嶆潅鐨勯攣鏈哄埗銆?
+*   **SQL-Like 鏌ヨ**: 鎻愪緵娴佺晠鐨勯摼寮?API 鐢ㄤ簬鏁版嵁鏌ヨ锛屾敮鎸佺储寮曘€佸鏉傛潯浠剁瓫閫夊拰鎺掑簭銆?
+*   **鑷姩绱㈠紩**: 鍩轰簬 Schema 瀹氫箟鑷姩缁存姢浜岀骇绱㈠紩锛屾煡璇㈤€熷害蹇€?
+*   **绫诲瀷瀹夊叏**: 鏍稿績 API 鏀寔娉涘瀷锛屽噺灏戣繍琛屾椂閿欒銆?
+*   **楂樻€ц兘**: 搴曞眰浣跨敤 BadgerDB KV 瀛樺偍锛岀粨鍚?LSM Tree 鎻愪緵楂樺悶鍚愰噺鐨勮鍐欍€?
+*   **鍨冨溇鍥炴敹 (GC)**: 鍩轰簬 HLC (Hybrid Logical Clock) 鐨勬棤绛夊緟鍨冨溇鍥炴敹鏈哄埗锛屾湁鏁堥槻姝㈠厓鏁版嵁鑶ㄨ儉銆?
 
 ---
 
-## 2. 安装
+## 2. 瀹夎
 
-使用 Go Modules 安装：
+浣跨敤 Go Modules 瀹夎锛?
 
 ```bash
 go get github.com/shinyes/yep_crdt
 ```
 
-确保你的 Go 版本 >= 1.20。
+纭繚浣犵殑 Go 鐗堟湰 >= 1.20銆?
 
 ---
 
-## 3. 快速开始
+## 3. 蹇€熷紑濮?
 
-### 3.1 初始化数据库
+### 3.1 鍒濆鍖栨暟鎹簱
 
-Yep CRDT 需要一个本地目录来存储数据（基于 BadgerDB）。
+Yep CRDT 闇€瑕佷竴涓湰鍦扮洰褰曟潵瀛樺偍鏁版嵁锛堝熀浜?BadgerDB锛夈€?
 
 ```go
 package main
@@ -46,31 +46,31 @@ import (
 )
 
 func main() {
-	// 1. 确保存储路径存在
+	// 1. 纭繚瀛樺偍璺緞瀛樺湪
 	dbPath := "./data/mydb"
 	os.MkdirAll(dbPath, 0755)
 
-	// 2. 初始化 BadgerDB 存储后端
+	// 2. 鍒濆鍖?BadgerDB 瀛樺偍鍚庣
 	s, err := store.NewBadgerStore(dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer s.Close()
 
-	// 3. 打开数据库实例
-	// Open 会启动后台服务（如 HLC 时钟），并校验 DatabaseID
+	// 3. 鎵撳紑鏁版嵁搴撳疄渚?
+	// Open 浼氬惎鍔ㄥ悗鍙版湇鍔★紙濡?HLC 鏃堕挓锛夛紝骞舵牎楠?DatabaseID
 	myDB := db.Open(s, "my-database-id")
 	defer myDB.Close()
 
-	// (可选) 设置文件存储根目录，用于 LocalFileCRDT
+	// (鍙€? 璁剧疆鏂囦欢瀛樺偍鏍圭洰褰曪紝鐢ㄤ簬 LocalFileCRDT
 	myDB.SetFileStorageDir("./data/files")
 
-	// 4. [NEW] 开启自动同步
-	// 仅需一行代码，即可加入 P2P 网络
+	// 4. [NEW] 寮€鍚嚜鍔ㄥ悓姝?
+	// 浠呴渶涓€琛屼唬鐮侊紝鍗冲彲鍔犲叆 P2P 缃戠粶
 	engine, err := sync.EnableSync(myDB, db.SyncConfig{
-		ListenPort: 8001,       // 本地监听端口 (0 表示随机)
-		ConnectTo:  "192.168.1.100:8001", // (可选) 初始连接节点
-		Password:   "my-secret-password", // 集群密码
+		ListenPort: 8001,       // 鏈湴鐩戝惉绔彛 (0 琛ㄧず闅忔満)
+		ConnectTo:  "192.168.1.100:8001", // (鍙€? 鍒濆杩炴帴鑺傜偣
+		Password:   "my-secret-password", // 闆嗙兢瀵嗙爜
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -78,20 +78,20 @@ func main() {
 	
 	fmt.Printf("Node ID: %s running at %s\n", engine.LocalID(), engine.LocalAddr())
     
-    // ... 后续操作
+    // ... 鍚庣画鎿嶄綔
 }
 ```
 
-### 3.2 定义 Schema (表结构)
+### 3.2 瀹氫箟 Schema (琛ㄧ粨鏋?
 
-在使用表之前，必须定义其 Schema。
+鍦ㄤ娇鐢ㄨ〃涔嬪墠锛屽繀椤诲畾涔夊叾 Schema銆?
 
-`DefineTable` 的主要作用是 **注册表结构 (Schema)**，它的行为类似于 **"Create If Not Exists" (如果不存在则创建)**。
+`DefineTable` 鐨勪富瑕佷綔鐢ㄦ槸 **娉ㄥ唽琛ㄧ粨鏋?(Schema)**锛屽畠鐨勮涓虹被浼间簬 **"Create If Not Exists" (濡傛灉涓嶅瓨鍦ㄥ垯鍒涘缓)**銆?
 
-1. **如果表不存在**：它会在 Catalog 中创建新表，分配 Table ID 并持久化。
-2. **如果表已存在**：它**不会**覆盖旧结构，直接返回成功，确保操作的幂等性。
+1. **濡傛灉琛ㄤ笉瀛樺湪**锛氬畠浼氬湪 Catalog 涓垱寤烘柊琛紝鍒嗛厤 Table ID 骞舵寔涔呭寲銆?
+2. **濡傛灉琛ㄥ凡瀛樺湪**锛氬畠**涓嶄細**瑕嗙洊鏃х粨鏋勶紝鐩存帴杩斿洖鎴愬姛锛岀‘淇濇搷浣滅殑骞傜瓑鎬с€?
 
-Schema 决定了每一列的数据类型和 CRDT 类型，以及索引策略。
+Schema 鍐冲畾浜嗘瘡涓€鍒楃殑鏁版嵁绫诲瀷鍜?CRDT 绫诲瀷锛屼互鍙婄储寮曠瓥鐣ャ€?
 
 ```go
 import "github.com/shinyes/yep_crdt/pkg/meta"
@@ -101,32 +101,32 @@ import "github.com/shinyes/yep_crdt/pkg/meta"
 err := myDB.DefineTable(&meta.TableSchema{
     Name: "products",
     Columns: []meta.ColumnSchema{
-        // 1. LWW (Last-Write-Wins): 普通字段
-        // 适用于用户名、标题、价格等不需要合并逻辑的字段。
-        // 最后写入的值会覆盖旧值。
+        // 1. LWW (Last-Write-Wins): 鏅€氬瓧娈?
+        // 閫傜敤浜庣敤鎴峰悕銆佹爣棰樸€佷环鏍肩瓑涓嶉渶瑕佸悎骞堕€昏緫鐨勫瓧娈点€?
+        // 鏈€鍚庡啓鍏ョ殑鍊间細瑕嗙洊鏃у€笺€?
         {Name: "title", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
         {Name: "price", Type: meta.ColTypeInt, CrdtType: meta.CrdtLWW},
         
-        // 2. Counter (PN-Counter): 计数器
-        // 适用于点赞数、库存、浏览量。支持并发加减。
+        // 2. Counter (PN-Counter): 璁℃暟鍣?
+        // 閫傜敤浜庣偣璧炴暟銆佸簱瀛樸€佹祻瑙堥噺銆傛敮鎸佸苟鍙戝姞鍑忋€?
         {Name: "views", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
         
-        // 3. ORSet (Observed-Remove Set): 集合
-        // 适用于标签、分类、关注列表。支持并发添加/移除元素。
+        // 3. ORSet (Observed-Remove Set): 闆嗗悎
+        // 閫傜敤浜庢爣绛俱€佸垎绫汇€佸叧娉ㄥ垪琛ㄣ€傛敮鎸佸苟鍙戞坊鍔?绉婚櫎鍏冪礌銆?
         {Name: "tags", Type: meta.ColTypeString, CrdtType: meta.CrdtORSet},
         
-        // 4. RGA (Replicated Growable Array): 有序列表
-        // 适用于文档内容、评论列表、待办事项。支持并发插入/排序。
+        // 4. RGA (Replicated Growable Array): 鏈夊簭鍒楄〃
+        // 閫傜敤浜庢枃妗ｅ唴瀹广€佽瘎璁哄垪琛ㄣ€佸緟鍔炰簨椤广€傛敮鎸佸苟鍙戞彃鍏?鎺掑簭銆?
         {Name: "comments", Type: meta.ColTypeString, CrdtType: meta.CrdtRGA},
 
-        // 5. LocalFile (本地文件): 引用外部文件
-        // 适用于图片、附件、大文件。只存储元数据，支持按需读取内容。
+        // 5. LocalFile (鏈湴鏂囦欢): 寮曠敤澶栭儴鏂囦欢
+        // 閫傜敤浜庡浘鐗囥€侀檮浠躲€佸ぇ鏂囦欢銆傚彧瀛樺偍鍏冩暟鎹紝鏀寔鎸夐渶璇诲彇鍐呭銆?
         {Name: "avatar", Type: meta.ColTypeString, CrdtType: meta.CrdtLocalFile},
     },
     Indexes: []meta.IndexSchema{
-        // 简单索引
+        // 绠€鍗曠储寮?
         {Name: "idx_price", Columns: []string{"price"}, Unique: false},
-        // 复合索引 (支持多列组合查询)
+        // 澶嶅悎绱㈠紩 (鏀寔澶氬垪缁勫悎鏌ヨ)
         {Name: "idx_title_price", Columns: []string{"title", "price"}, Unique: false},
     },
 })
@@ -135,28 +135,28 @@ if err != nil {
     log.Fatal("Failed to define table:", err)
 }
 
-// 获取表句柄用于后续操作
+// 鑾峰彇琛ㄥ彞鏌勭敤浜庡悗缁搷浣?
 table := myDB.Table("products")
 ```
 
 ---
 
-## 4. 数据操作
+## 4. 鏁版嵁鎿嶄綔
 
-所有数据操作都需要通过 `Table` 对象进行。**注意：主键必须是 UUIDv7 格式**，以保证时间有序性和全局唯一性，这对分布式系统至关重要。
+鎵€鏈夋暟鎹搷浣滈兘闇€瑕侀€氳繃 `Table` 瀵硅薄杩涜銆?*娉ㄦ剰锛氫富閿繀椤绘槸 UUIDv7 鏍煎紡**锛屼互淇濊瘉鏃堕棿鏈夊簭鎬у拰鍏ㄥ眬鍞竴鎬э紝杩欏鍒嗗竷寮忕郴缁熻嚦鍏抽噸瑕併€?
 
-### 4.1 基础增删改 (LWW Register)
+### 4.1 鍩虹澧炲垹鏀?(LWW Register)
 
-适用于 `LWW Register` 类型的字段（如上面的 `title`, `price`）。
+閫傜敤浜?`LWW Register` 绫诲瀷鐨勫瓧娈碉紙濡備笂闈㈢殑 `title`, `price`锛夈€?
 
 ```go
 import "github.com/google/uuid"
 
-// 生成 UUIDv7 主键
+// 鐢熸垚 UUIDv7 涓婚敭
 id, _ := uuid.NewV7()
 
-// 插入或更新整行 (或部分 LWW 列)
-// Set 接受 map[string]any，会覆盖指定的字段
+// 鎻掑叆鎴栨洿鏂版暣琛?(鎴栭儴鍒?LWW 鍒?
+// Set 鎺ュ彈 map[string]any锛屼細瑕嗙洊鎸囧畾鐨勫瓧娈?
 err := table.Set(id, map[string]any{
     "title": "Go Programming Guide",
     "price": 59,
@@ -166,74 +166,74 @@ if err != nil {
 }
 ```
 
-### 4.2 计数器操作 (PN Counter)
+### 4.2 璁℃暟鍣ㄦ搷浣?(PN Counter)
 
-适用于 `PN Counter` 类型的字段。`PN Counter` 类型保证在并发环境下计数的准确性。
+閫傜敤浜?`PN Counter` 绫诲瀷鐨勫瓧娈点€俙PN Counter` 绫诲瀷淇濊瘉鍦ㄥ苟鍙戠幆澧冧笅璁℃暟鐨勫噯纭€с€?
 
 ```go
-// 增加浏览量 (+1)
+// 澧炲姞娴忚閲?(+1)
 table.Add(id, "views", 1)
 
-// 增加多个 (+10)
+// 澧炲姞澶氫釜 (+10)
 table.Add(id, "views", 10)
 
-// 减少浏览量 (两种方式)
+// 鍑忓皯娴忚閲?(涓ょ鏂瑰紡)
 table.Add(id, "views", -1)
-// 或者
+// 鎴栬€?
 table.Remove(id, "views", 1)
 ```
 
-### 4.3 集合操作 (ORSet)
+### 4.3 闆嗗悎鎿嶄綔 (ORSet)
 
-适用于 `ORSet` 类型的字段。`ORSet` 允许并发添加和删除元素，且删除操作优先于添加操作（Observed-Remove）。
+閫傜敤浜?`ORSet` 绫诲瀷鐨勫瓧娈点€俙ORSet` 鍏佽骞跺彂娣诲姞鍜屽垹闄ゅ厓绱狅紝涓斿垹闄ゆ搷浣滀紭鍏堜簬娣诲姞鎿嶄綔锛圤bserved-Remove锛夈€?
 
 ```go
-// 添加标签
+// 娣诲姞鏍囩
 table.Add(id, "tags", "book")
 table.Add(id, "tags", "coding")
 
-// 移除标签
+// 绉婚櫎鏍囩
 table.Remove(id, "tags", "book")
 
-// 查询时，tags 集合将只包含 ["coding"]
+// 鏌ヨ鏃讹紝tags 闆嗗悎灏嗗彧鍖呭惈 ["coding"]
 ```
 
-### 4.4 有序列表操作 (RGA)
+### 4.4 鏈夊簭鍒楄〃鎿嶄綔 (RGA)
 
-适用于 `RGA` 类型的字段。`RGA` 是专为协同编辑设计的有序序列，支持在任意位置插入和删除。
+閫傜敤浜?`RGA` 绫诲瀷鐨勫瓧娈点€俙RGA` 鏄笓涓哄崗鍚岀紪杈戣璁＄殑鏈夊簭搴忓垪锛屾敮鎸佸湪浠绘剰浣嶇疆鎻掑叆鍜屽垹闄ゃ€?
 
 ```go
-// 1. 追加到末尾
+// 1. 杩藉姞鍒版湯灏?
 table.Add(id, "comments", "First comment")
 table.Add(id, "comments", "Second comment")
-// 列表: ["First comment", "Second comment"]
+// 鍒楄〃: ["First comment", "Second comment"]
 
-// 2. 在指定元素后插入 (InsertAfter)
-// 假设我们要插在 "First comment" 后面
+// 2. 鍦ㄦ寚瀹氬厓绱犲悗鎻掑叆 (InsertAfter)
+// 鍋囪鎴戜滑瑕佹彃鍦?"First comment" 鍚庨潰
 table.InsertAfter(id, "comments", "First comment", "Reply to first")
-// 列表: ["First comment", "Reply to first", "Second comment"]
+// 鍒楄〃: ["First comment", "Reply to first", "Second comment"]
 
-// 3. 按索引位置插入 (InsertAt) - 0-based
-// 插在最前面 (索引 0)
+// 3. 鎸夌储寮曚綅缃彃鍏?(InsertAt) - 0-based
+// 鎻掑湪鏈€鍓嶉潰 (绱㈠紩 0)
 table.InsertAt(id, "comments", 0, "Top comment")
-// 列表: ["Top comment", "First comment", "Reply to first", "Second comment"]
+// 鍒楄〃: ["Top comment", "First comment", "Reply to first", "Second comment"]
 
-// 4. 按索引位置移除 (RemoveAt)
-table.RemoveAt(id, "comments", 1) // 移除索引为 1 的元素 ("First comment")
+// 4. 鎸夌储寮曚綅缃Щ闄?(RemoveAt)
+table.RemoveAt(id, "comments", 1) // 绉婚櫎绱㈠紩涓?1 鐨勫厓绱?("First comment")
 ```
 
 
-> **注意**: `InsertAfter` 需要提供锚点元素的值。如果有多个相同值的元素，它会查找第一个未被删除的匹配项。
+> **娉ㄦ剰**: `InsertAfter` 闇€瑕佹彁渚涢敋鐐瑰厓绱犵殑鍊笺€傚鏋滄湁澶氫釜鐩稿悓鍊肩殑鍏冪礌锛屽畠浼氭煡鎵剧涓€涓湭琚垹闄ょ殑鍖归厤椤广€?
 
-### 4.5 本地文件操作 (LocalFile)
+### 4.5 鏈湴鏂囦欢鎿嶄綔 (LocalFile)
 
-LocalFileCRDT 仅存储文件的元数据（Path, Size, Hash），实际文件存储在本地文件系统。
+LocalFileCRDT 浠呭瓨鍌ㄦ枃浠剁殑鍏冩暟鎹紙Path, Size, Hash锛夛紝瀹為檯鏂囦欢瀛樺偍鍦ㄦ湰鍦版枃浠剁郴缁熴€?
 
 
 ```go
-// 插入本地文件 (自动导入)
-// 数据库会自动将 /tmp/img.png 复制到 <FileStorageDir>/images/avatar.png
-// 并自动计算哈希和文件大小
+// 鎻掑叆鏈湴鏂囦欢 (鑷姩瀵煎叆)
+// 鏁版嵁搴撲細鑷姩灏?/tmp/img.png 澶嶅埗鍒?<FileStorageDir>/images/avatar.png
+// 骞惰嚜鍔ㄨ绠楀搱甯屽拰鏂囦欢澶у皬
 err = table.Set(id, map[string]any{
     "avatar": db.FileImport{
         LocalPath:    "/tmp/img.png",
@@ -241,17 +241,17 @@ err = table.Set(id, map[string]any{
     },
 })
 
-// 读取文件 (必须使用 FindCRDTs 获取强类型对象)
+// 璇诲彇鏂囦欢 (蹇呴』浣跨敤 FindCRDTs 鑾峰彇寮虹被鍨嬪璞?
 rows, _ := table.Where("id", db.OpEq, id).FindCRDTs()
 for _, row := range rows {
     if file, err := row.GetLocalFile("avatar"); err == nil {
-        // 读取全部内容 -> []byte
+        // 璇诲彇鍏ㄩ儴鍐呭 -> []byte
         content, _ := file.ReadAll()
         
-        // 随机读取 (offset, length) -> []byte
+        // 闅忔満璇诲彇 (offset, length) -> []byte
         header, _ := file.ReadAt(0, 100)
         
-        // 获取元数据
+        // 鑾峰彇鍏冩暟鎹?
         meta := file.Value().(crdt.FileMetadata)
         fmt.Println("File Size:", meta.Size)
     }
@@ -260,95 +260,95 @@ for _, row := range rows {
 
 ---
 
-## 5. 数据查询 (Query Builder)
+## 5. 鏁版嵁鏌ヨ (Query Builder)
 
-Yep CRDT 提供了类似 SQL 的 Fluent API 查询构建器。它会自动根据 `Where` 条件选择最佳索引（最长前缀匹配算法）。
+Yep CRDT 鎻愪緵浜嗙被浼?SQL 鐨?Fluent API 鏌ヨ鏋勫缓鍣ㄣ€傚畠浼氳嚜鍔ㄦ牴鎹?`Where` 鏉′欢閫夋嫨鏈€浣崇储寮曪紙鏈€闀垮墠缂€鍖归厤绠楁硶锛夈€?
 
-### 5.1 简单查询 (Get)
+### 5.1 绠€鍗曟煡璇?(Get)
 
 ```go
-// 根据 ID 获取单行数据
+// 鏍规嵁 ID 鑾峰彇鍗曡鏁版嵁
 row, err := table.Get(id)
-// row 是 map[string]any 类型
+// row 鏄?map[string]any 绫诲瀷
 if row != nil {
     fmt.Println("Title:", row["title"])
 }
 ```
 
-### 5.1.1 获取单行原始 CRDT (GetCRDT)
+### 5.1.1 鑾峰彇鍗曡鍘熷 CRDT (GetCRDT)
 
-如果你需要访问单行的原始 CRDT 结构（例如为了获取 RGA 的迭代器），即可以使用 `GetCRDT`。它返回 `crdt.ReadOnlyMap` 接口。
+濡傛灉浣犻渶瑕佽闂崟琛岀殑鍘熷 CRDT 缁撴瀯锛堜緥濡備负浜嗚幏鍙?RGA 鐨勮凯浠ｅ櫒锛夛紝鍗冲彲浠ヤ娇鐢?`GetCRDT`銆傚畠杩斿洖 `crdt.ReadOnlyMap` 鎺ュ彛銆?
 
 ```go
-// 返回 crdt.ReadOnlyMap
+// 杩斿洖 crdt.ReadOnlyMap
 crdtRow, err := table.GetCRDT(id)
 if err == nil && crdtRow != nil {
-    // 使用只读接口安全访问嵌套 CRDT
+    // 浣跨敤鍙鎺ュ彛瀹夊叏璁块棶宓屽 CRDT
     if rSet, _ := crdtRow.GetSetString("tags"); rSet != nil {
         fmt.Println("Tags:", rSet.Elements())
     }
 }
 ```
 
-### 5.2 条件查询 (Where/And)
+### 5.2 鏉′欢鏌ヨ (Where/And)
 
-支持的运算符：
-*   `db.OpEq` (`=`): 等于
-*   `db.OpNe` (`!=`): 不等于
-*   `db.OpGt` (`>`): 大于
-*   `db.OpGte` (`>=`): 大于等于
-*   `db.OpLt` (`<`): 小于
-*   `db.OpLte` (`<=`): 小于等于
-*   `db.OpIn` (`IN`): 包含于数组
+鏀寔鐨勮繍绠楃锛?
+*   `db.OpEq` (`=`): 绛変簬
+*   `db.OpNe` (`!=`): 涓嶇瓑浜?
+*   `db.OpGt` (`>`): 澶т簬
+*   `db.OpGte` (`>=`): 澶т簬绛変簬
+*   `db.OpLt` (`<`): 灏忎簬
+*   `db.OpLte` (`<=`): 灏忎簬绛変簬
+*   `db.OpIn` (`IN`): 鍖呭惈浜庢暟缁?
 
 ```go
-// 查询价格 > 50 的书
+// 鏌ヨ浠锋牸 > 50 鐨勪功
 results, err := table.Where("price", db.OpGt, 50).Find()
 
-// 组合条件 (AND)
-// 查询价格 > 50 且 浏览量 < 1000 的书
-// 这将自动利用复合索引 `idx_title_price` (如果条件匹配索引前缀) 或者回退到表扫描
+// 缁勫悎鏉′欢 (AND)
+// 鏌ヨ浠锋牸 > 50 涓?娴忚閲?< 1000 鐨勪功
+// 杩欏皢鑷姩鍒╃敤澶嶅悎绱㈠紩 `idx_title_price` (濡傛灉鏉′欢鍖归厤绱㈠紩鍓嶇紑) 鎴栬€呭洖閫€鍒拌〃鎵弿
 results, err := table.Where("price", db.OpGt, 50).
                       And("views", db.OpLt, 1000).
                       Find()
 
-// IN 查询
+// IN 鏌ヨ
 results, err := table.Where("title", db.OpIn, []any{"Go Guide", "Rust Guide"}).Find()
 ```
 
-### 5.3 排序与分页 (OrderBy/Limit/Offset)
+### 5.3 鎺掑簭涓庡垎椤?(OrderBy/Limit/Offset)
 
 ```go
 results, err := table.Where("price", db.OpGt, 0).
-                      OrderBy("price", true). // true = 降序 (DESC), false = 升序 (ASC)
-                      Offset(10).             // 跳过前 10 条 (Pagination)
-                      Limit(5).               // 最多取 5 条
+                      OrderBy("price", true). // true = 闄嶅簭 (DESC), false = 鍗囧簭 (ASC)
+                      Offset(10).             // 璺宠繃鍓?10 鏉?(Pagination)
+                      Limit(5).               // 鏈€澶氬彇 5 鏉?
                       Find()
 ```
 
-### 5.4 高级查询：获取 CRDT 对象 (FindCRDTs)
+### 5.4 楂樼骇鏌ヨ锛氳幏鍙?CRDT 瀵硅薄 (FindCRDTs)
 
-默认的 `Find()` 方法返回 `[]map[string]any`，即数据的 JSON 友好快照。如果你需要遍历大型 RGA 列表，或者需要高性能访问，可以使用 `FindCRDTs()`。
+榛樿鐨?`Find()` 鏂规硶杩斿洖 `[]map[string]any`锛屽嵆鏁版嵁鐨?JSON 鍙嬪ソ蹇収銆傚鏋滀綘闇€瑕侀亶鍘嗗ぇ鍨?RGA 鍒楄〃锛屾垨鑰呴渶瑕侀珮鎬ц兘璁块棶锛屽彲浠ヤ娇鐢?`FindCRDTs()`銆?
 
-`FindCRDTs()` 返回 `[]crdt.ReadOnlyMap` 接口，允许你在不反序列化整个对象的情况下访问部分数据，但是是只读的。
+`FindCRDTs()` 杩斿洖 `[]crdt.ReadOnlyMap` 鎺ュ彛锛屽厑璁镐綘鍦ㄤ笉鍙嶅簭鍒楀寲鏁翠釜瀵硅薄鐨勬儏鍐典笅璁块棶閮ㄥ垎鏁版嵁锛屼絾鏄槸鍙鐨勩€?
 
 ```go
-// 返回 []crdt.ReadOnlyMap
+// 杩斿洖 []crdt.ReadOnlyMap
 docs, err := table.Where("id", db.OpEq, id).FindCRDTs()
 
 for _, doc := range docs {
-    // 1. 高效获取 LWW 字段
+    // 1. 楂樻晥鑾峰彇 LWW 瀛楁
     if title, ok := doc.GetString("title"); ok {
         fmt.Println("Title:", title)
     }
 
-    // 2. 高效获取 RGA 迭代器，避免一次性加载整个切片
-    // 这对于含有成千上万条记录的列表非常有用
+    // 2. 楂樻晥鑾峰彇 RGA 杩唬鍣紝閬垮厤涓€娆℃€у姞杞芥暣涓垏鐗?
+    // 杩欏浜庡惈鏈夋垚鍗冧笂涓囨潯璁板綍鐨勫垪琛ㄩ潪甯告湁鐢?
     rga, _ := doc.GetRGAString("comments")
     if rga != nil {
         iter := rga.Iterator()
         for {
-            val, ok := iter() // 每次调用返回下一个元素
+            val, ok := iter() // 姣忔璋冪敤杩斿洖涓嬩竴涓厓绱?
             if !ok { break }
             fmt.Println("Comment:", val)
         }
@@ -358,267 +358,271 @@ for _, doc := range docs {
 
 ---
 
-## 6. 垃圾回收 (Garbage Collection)
+## 6. 鍨冨溇鍥炴敹 (Garbage Collection)
 
-Yep CRDT 提供了强大的垃圾回收机制，用于清理 CRDT 操作产生的墓碑数据（TMD），防止元数据无限膨胀。垃圾回收器基于混合逻辑时钟（HLC）和 Safe Timestamp 机制。
+Yep CRDT 鎻愪緵浜嗗己澶х殑鍨冨溇鍥炴敹鏈哄埗锛岀敤浜庢竻鐞?CRDT 鎿嶄綔浜х敓鐨勫纰戞暟鎹紙TMD锛夛紝闃叉鍏冩暟鎹棤闄愯啫鑳€銆傚瀮鍦惧洖鏀跺櫒鍩轰簬娣峰悎閫昏緫鏃堕挓锛圚LC锛夊拰 Safe Timestamp 鏈哄埗銆?
 
-### 6.1 核心概念
+### 6.1 鏍稿績姒傚康
 
 #### Safe Timestamp
-**Safe Timestamp** 是一个时间点，系统保证在该时间点之前的所有操作都已同步到所有节点。它通常通过以下方式计算：
-- **最小时钟值**：所有节点当前时钟值的最小值（需要全局同步）
-- **保守估计**：当前时间减去网络延迟容差（如 `currentTime - 5s`）
-- **确认协议**：使用一致性协议（如 Raft）记录的确认时间戳
+**Safe Timestamp** 鏄竴涓椂闂寸偣锛岀郴缁熶繚璇佸湪璇ユ椂闂寸偣涔嬪墠鐨勬墍鏈夋搷浣滈兘宸插悓姝ュ埌鎵€鏈夎妭鐐广€傚畠閫氬父閫氳繃浠ヤ笅鏂瑰紡璁＄畻锛?
+- **鏈€灏忔椂閽熷€?*锛氭墍鏈夎妭鐐瑰綋鍓嶆椂閽熷€肩殑鏈€灏忓€硷紙闇€瑕佸叏灞€鍚屾锛?
+- **淇濆畧浼拌**锛氬綋鍓嶆椂闂村噺鍘荤綉缁滃欢杩熷宸紙濡?`currentTime - 5s`锛?
+- **纭鍗忚**锛氫娇鐢ㄤ竴鑷存€у崗璁紙濡?Raft锛夎褰曠殑纭鏃堕棿鎴?
 
-#### 为什么需要 GC？
-在 CRDT 系统中，删除操作不会立即删除数据，而是标记为已删除（Tombstone）。这确保了：
-- **分布式一致性**：即使网络延迟或分区，所有节点都能正确处理删除
-- **无冲突合并**：延迟删除的元素不会被错误地恢复
+#### 涓轰粈涔堥渶瑕?GC锛?
+鍦?CRDT 绯荤粺涓紝鍒犻櫎鎿嶄綔涓嶄細绔嬪嵆鍒犻櫎鏁版嵁锛岃€屾槸鏍囪涓哄凡鍒犻櫎锛圱ombstone锛夈€傝繖纭繚浜嗭細
+- **鍒嗗竷寮忎竴鑷存€?*锛氬嵆浣跨綉缁滃欢杩熸垨鍒嗗尯锛屾墍鏈夎妭鐐归兘鑳芥纭鐞嗗垹闄?
+- **鏃犲啿绐佸悎骞?*锛氬欢杩熷垹闄ょ殑鍏冪礌涓嶄細琚敊璇湴鎭㈠
 
-但这也导致：
-- **内存增长**：Tombstones 持续积累，占用内存
-- **存储膨胀**：序列化数据包含所有墓碑，增加存储成本
+浣嗚繖涔熷鑷达細
+- **鍐呭瓨澧為暱**锛歍ombstones 鎸佺画绉疮锛屽崰鐢ㄥ唴瀛?
+- **瀛樺偍鑶ㄨ儉**锛氬簭鍒楀寲鏁版嵁鍖呭惈鎵€鏈夊纰戯紝澧炲姞瀛樺偍鎴愭湰
 
-因此需要定期执行 GC 来清理过期的墓碑。
+鍥犳闇€瑕佸畾鏈熸墽琛?GC 鏉ユ竻鐞嗚繃鏈熺殑澧撶銆?
 
-### 6.2 数据库级别的 GC API
+### 6.2 鏁版嵁搴撶骇鍒殑 GC API
 
-Yep CRDT 提供了数据库级别的统一 GC 接口，可以一次性清理所有表的墓碑数据。
+Yep CRDT 鎻愪緵浜嗘暟鎹簱绾у埆鐨勭粺涓€ GC 鎺ュ彛锛屽彲浠ヤ竴娆℃€ф竻鐞嗘墍鏈夎〃鐨勫纰戞暟鎹€?
 
 ```go
 import "time"
 
-// 获取当前时间戳
+// 鑾峰彇褰撳墠鏃堕棿鎴?
 currentTime := myDB.Now()
 
-// 计算 safeTimestamp（例如：5 秒前的数据可以安全清理）
-safeTimestamp := currentTime - 5000 // 5000 毫秒 = 5 秒
+// 璁＄畻 safeTimestamp锛堜緥濡傦細5 绉掑墠鐨勬暟鎹彲浠ュ畨鍏ㄦ竻鐞嗭級
+safeTimestamp := currentTime - 5000 // 5000 姣 = 5 绉?
 
-// 执行 GC
+// 鎵ц GC
 result := myDB.GC(safeTimestamp)
 
-// 检查结果
-fmt.Printf("扫描表数量: %d\n", result.TablesScanned)
-fmt.Printf("扫描行数量: %d\n", result.RowsScanned)
-fmt.Printf("清理的墓碑数量: %d\n", result.TombstonesRemoved)
+// 妫€鏌ョ粨鏋?
+fmt.Printf("鎵弿琛ㄦ暟閲? %d\n", result.TablesScanned)
+fmt.Printf("鎵弿琛屾暟閲? %d\n", result.RowsScanned)
+fmt.Printf("娓呯悊鐨勫纰戞暟閲? %d\n", result.TombstonesRemoved)
 
 if len(result.Errors) > 0 {
     for _, err := range result.Errors {
-        log.Printf("GC 错误: %v\n", err)
+        log.Printf("GC 閿欒: %v\n", err)
     }
 }
 ```
 
-#### GCByTimeOffset（推荐）
+#### GCByTimeOffset锛堟帹鑽愶級
 
-更方便的方法是使用 `GCByTimeOffset`，它会自动计算 `safeTimestamp`。
+鏇存柟渚跨殑鏂规硶鏄娇鐢?`GCByTimeOffset`锛屽畠浼氳嚜鍔ㄨ绠?`safeTimestamp`銆?
 
 ```go
-// 清理 1 分钟前的数据
+// 娓呯悊 1 鍒嗛挓鍓嶇殑鏁版嵁
 result := myDB.GCByTimeOffset(1 * time.Minute)
 
-fmt.Printf("清理了 %d 个墓碑\n", result.TombstonesRemoved)
+fmt.Printf("娓呯悊浜?%d 涓纰慭n", result.TombstonesRemoved)
 ```
 
-### 6.3 表级别的 GC API
+### 6.3 琛ㄧ骇鍒殑 GC API
 
-如果只需要清理特定表的墓碑，可以使用表级别的 GC。
+濡傛灉鍙渶瑕佹竻鐞嗙壒瀹氳〃鐨勫纰戯紝鍙互浣跨敤琛ㄧ骇鍒殑 GC銆?
 
 ```go
 table := myDB.Table("users")
 
-// 执行表级 GC
+// 鎵ц琛ㄧ骇 GC
 result := table.GC(safeTimestamp)
 
-fmt.Printf("扫描行: %d\n", result.RowsScanned)
-fmt.Printf("清理墓碑: %d\n", result.TombstonesRemoved)
+fmt.Printf("鎵弿琛? %d\n", result.RowsScanned)
+fmt.Printf("娓呯悊澧撶: %d\n", result.TombstonesRemoved)
 ```
 
-### 6.4 定期 GC 策略（推荐）
+### 6.4 瀹氭湡 GC 绛栫暐锛堟帹鑽愶級
 
-在生产环境中，建议启动定期 GC 的后台 goroutine。
+鍦ㄧ敓浜х幆澧冧腑锛屽缓璁惎鍔ㄥ畾鏈?GC 鐨勫悗鍙?goroutine銆?
 
 ```go
-// 策略 1: 固定间隔 GC
+// 绛栫暐 1: 鍥哄畾闂撮殧 GC
 func startPeriodicGC(database *db.DB, interval time.Duration, offset time.Duration) {
     ticker := time.NewTicker(interval)
     go func() {
         for range ticker.C {
             result := database.GCByTimeOffset(offset)
             if result.TombstonesRemoved > 0 {
-                log.Printf("GC: 清理了 %d 个墓碑", result.TombstonesRemoved)
+                log.Printf("GC: 娓呯悊浜?%d 涓纰?, result.TombstonesRemoved)
             }
         }
     }()
 }
 
-// 使用
+// 浣跨敤
 startPeriodicGC(myDB, 1 * time.Minute, 30 * time.Second)
 ```
 
 ```go
-// 策略 2: 基于数量的自适应 GC
+// 绛栫暐 2: 鍩轰簬鏁伴噺鐨勮嚜閫傚簲 GC
 func startAdaptiveGC(database *db.DB, interval time.Duration, threshold int) {
     ticker := time.NewTicker(interval)
     go func() {
         for range ticker.C {
-            // 检查最近的操作数量或内存使用
-            // 如果超过阈值，使用更保守的 offset
+            // 妫€鏌ユ渶杩戠殑鎿嶄綔鏁伴噺鎴栧唴瀛樹娇鐢?
+            // 濡傛灉瓒呰繃闃堝€硷紝浣跨敤鏇翠繚瀹堢殑 offset
             offset := 30 * time.Second
             if shouldPerformAggressiveGC() {
                 offset = 5 * time.Second
             }
             
             result := database.GCByTimeOffset(offset)
-            log.Printf("Adaptive GC: 清理 %d, 扫描 %d 行", 
+            log.Printf("Adaptive GC: 娓呯悊 %d, 鎵弿 %d 琛?, 
                 result.TombstonesRemoved, result.RowsScanned)
         }
     }()
 }
 ```
 
-### 6.5 GC 结果统计
+### 6.5 GC 缁撴灉缁熻
 
-GC 操作返回详细的结果统计，便于监控和调试。
+GC 鎿嶄綔杩斿洖璇︾粏鐨勭粨鏋滅粺璁★紝渚夸簬鐩戞帶鍜岃皟璇曘€?
 
 ```go
 type GCResult struct {
-    TablesScanned     int      // 扫描的表数量
-    RowsScanned       int      // 扫描的行数量
-    TombstonesRemoved int      // 移除的墓碑数量
-    Errors           []error  // 遇到的错误列表
+    TablesScanned     int      // 鎵弿鐨勮〃鏁伴噺
+    RowsScanned       int      // 鎵弿鐨勮鏁伴噺
+    TombstonesRemoved int      // 绉婚櫎鐨勫纰戞暟閲?
+    Errors           []error  // 閬囧埌鐨勯敊璇垪琛?
 }
 
 type TableGCResult struct {
-    RowsScanned       int      // 扫描的行数量
-    TombstonesRemoved int      // 移除的墓碑数量
-    Errors           []error  // 遇到的错误列表
+    RowsScanned       int      // 鎵弿鐨勮鏁伴噺
+    TombstonesRemoved int      // 绉婚櫎鐨勫纰戞暟閲?
+    Errors           []error  // 閬囧埌鐨勯敊璇垪琛?
 }
 ```
 
-### 6.6 注意事项
+### 6.6 娉ㄦ剰浜嬮」
 
-#### Safe Timestamp 的计算
-- **保守为上**：宁可保留更多墓碑，也不要过早清理
-- **网络分区**：考虑节点长期离线的情况，`safeTimestamp` 可能被拖慢
-- **全量同步**：离线节点重新上线时，应强制全量同步，避免"僵尸数据"复活
+#### Safe Timestamp 鐨勮绠?
+- **淇濆畧涓轰笂**锛氬畞鍙繚鐣欐洿澶氬纰戯紝涔熶笉瑕佽繃鏃╂竻鐞?
+- **缃戠粶鍒嗗尯**锛氳€冭檻鑺傜偣闀挎湡绂荤嚎鐨勬儏鍐碉紝`safeTimestamp` 鍙兘琚嫋鎱?
+- **鍏ㄩ噺鍚屾**锛氱绾胯妭鐐归噸鏂颁笂绾挎椂锛屽簲寮哄埗鍏ㄩ噺鍚屾锛岄伩鍏?鍍靛案鏁版嵁"澶嶆椿
 
-#### 性能影响
-- **扫描开销**：GC 会扫描所有行，可能影响性能
-- **低峰期执行**：建议在系统负载低时执行 GC
-- **批量处理**：GC 使用事务批量更新，减少 I/O 开销
+#### 鎬ц兘褰卞搷
+- **鎵弿寮€閿€**锛欸C 浼氭壂鎻忔墍鏈夎锛屽彲鑳藉奖鍝嶆€ц兘
+- **浣庡嘲鏈熸墽琛?*锛氬缓璁湪绯荤粺璐熻浇浣庢椂鎵ц GC
+- **鎵归噺澶勭悊**锛欸C 浣跨敤浜嬪姟鎵归噺鏇存柊锛屽噺灏?I/O 寮€閿€
 
-#### 错误处理
-- **不中断执行**：单个行的错误不会中断整个 GC 操作
-- **收集错误**：所有错误都被收集在结果中，便于后续分析
+#### 閿欒澶勭悊
+- **涓嶄腑鏂墽琛?*锛氬崟涓鐨勯敊璇笉浼氫腑鏂暣涓?GC 鎿嶄綔
+- **鏀堕泦閿欒**锛氭墍鏈夐敊璇兘琚敹闆嗗湪缁撴灉涓紝渚夸簬鍚庣画鍒嗘瀽
 
 ---
 
-## 7. 事务 (Transactions)
+## 7. 浜嬪姟 (Transactions)
 
-Yep CRDT 支持 ACID 事务。你可以将多个操作打包在一个事务中原子执行。这在需要同时更新多个表或多行数据时非常重要。
+Yep CRDT 鏀寔 ACID 浜嬪姟銆備綘鍙互灏嗗涓搷浣滄墦鍖呭湪涓€涓簨鍔′腑鍘熷瓙鎵ц銆傝繖鍦ㄩ渶瑕佸悓鏃舵洿鏂板涓〃鎴栧琛屾暟鎹椂闈炲父閲嶈銆?
 
 ```go
 err := myDB.Update(func(tx *db.Tx) error {
     t := tx.Table("products")
 
-    // 步骤 1: 修改产品 A 的浏览量
+    // 姝ラ 1: 淇敼浜у搧 A 鐨勬祻瑙堥噺
     if err := t.Add(idA, "views", 1); err != nil {
-        return err // 返回错误将导致整个事务回滚
+        return err // 杩斿洖閿欒灏嗗鑷存暣涓簨鍔″洖婊?
     }
 
-    // 步骤 2: 修改产品 B 的价格
+    // 姝ラ 2: 淇敼浜у搧 B 鐨勪环鏍?
     if err := t.Set(idB, map[string]any{"price": 100}); err != nil {
         return err
     }
 
-    // 如果返回 nil，事务自动提交
+    // 濡傛灉杩斿洖 nil锛屼簨鍔¤嚜鍔ㄦ彁浜?
     return nil
 })
 ```
 
-只读事务可以使用 `myDB.View(...)`，通常比 `Update` 稍微快一些且不占用写锁。
+鍙浜嬪姟鍙互浣跨敤 `myDB.View(...)`锛岄€氬父姣?`Update` 绋嶅井蹇竴浜涗笖涓嶅崰鐢ㄥ啓閿併€?
 
 ---
 
-## 7. 分布式与同步 (Distributed & Sync)
+## 7. 鍒嗗竷寮忎笌鍚屾 (Distributed & Sync)
 
-Yep CRDT 内置了强大的分布式同步引擎 (`pkg/sync`)，旨在让构建“本地优先 (Local-First)”应用变得极其简单。
+Yep CRDT 鍐呯疆浜嗗己澶х殑鍒嗗竷寮忓悓姝ュ紩鎿?(`pkg/sync`)锛屾棬鍦ㄨ鏋勫缓鈥滄湰鍦颁紭鍏?(Local-First)鈥濆簲鐢ㄥ彉寰楁瀬鍏剁畝鍗曘€?
 
-### 7.1 核心架构
+### 7.1 鏍稿績鏋舵瀯
 
-Yep CRDT 的同步层基于 TCP 长连接和 Gossip 协议（部分理念），实现了全自动的 P2P 同步。
+Yep CRDT 鐨勫悓姝ュ眰鍩轰簬 TCP 闀胯繛鎺ュ拰 Gossip 鍗忚锛堥儴鍒嗙悊蹇碉級锛屽疄鐜颁簡鍏ㄨ嚜鍔ㄧ殑 P2P 鍚屾銆?
 
-*   **Node Identity (节点身份)**: 每个数据库实例在初始化时会生成一个基于 UUIDv7 的唯一 `NodeID`，并持久化存储。
-*   **Version Vector (版本向量)**: 系统使用混合逻辑时钟 (HLC) 和版本向量来跟踪数据的因果关系，精确识别哪些数据需要同步。
-*   **Automatic Discovery (自动发现)**: 节点间通过 TCP 互联后，会自动交换节点列表，形成网状拓扑。
+*   **Node Identity (鑺傜偣韬唤)**: 姣忎釜鏁版嵁搴撳疄渚嬪湪鍒濆鍖栨椂浼氱敓鎴愪竴涓熀浜?UUIDv7 鐨勫敮涓€ `NodeID`锛屽苟鎸佷箙鍖栧瓨鍌ㄣ€?
+*   **Version Vector (鐗堟湰鍚戦噺)**: 绯荤粺浣跨敤娣峰悎閫昏緫鏃堕挓 (HLC) 鍜岀増鏈悜閲忔潵璺熻釜鏁版嵁鐨勫洜鏋滃叧绯伙紝绮剧‘璇嗗埆鍝簺鏁版嵁闇€瑕佸悓姝ャ€?
+*   **Automatic Discovery (鑷姩鍙戠幇)**: 鑺傜偣闂撮€氳繃 TCP 浜掕仈鍚庯紝浼氳嚜鍔ㄤ氦鎹㈣妭鐐瑰垪琛紝褰㈡垚缃戠姸鎷撴墤銆?
 
-### 7.2 启用同步
+### 7.2 鍚敤鍚屾
 
-使用 `sync.EnableSync` 一键启用同步。不需要额外部署中心化服务器（如 Redis 或 Kafka）。
+浣跨敤 `sync.EnableSync` 涓€閿惎鐢ㄥ悓姝ャ€備笉闇€瑕侀澶栭儴缃蹭腑蹇冨寲鏈嶅姟鍣紙濡?Redis 鎴?Kafka锛夈€?
 
 ```go
 import "github.com/shinyes/yep_crdt/pkg/sync"
 
 engine, err := sync.EnableSync(myDB, db.SyncConfig{
-    // 网络配置
-    ListenPort: 8080,        // 本地监听端口
-    ConnectTo:  "seed-node:8080", // 种子节点地址
+    // 缃戠粶閰嶇疆
+    ListenPort: 8080,        // 鏈湴鐩戝惉绔彛
+    ConnectTo:  "seed-node:8080", // 绉嶅瓙鑺傜偣鍦板潃
     
-    // 安全配置
-    Password: "cluster-secret", // 预共享密钥 (PSK) 防止未授权访问
+    // 瀹夊叏閰嶇疆
+    Password: "cluster-secret", // 棰勫叡浜瘑閽?(PSK) 闃叉鏈巿鏉冭闂?
     
-    // 调试
-    Debug: true, // 打印详细的同步日志
+    // 璋冭瘯
+    Debug: true, // 鎵撳嵃璇︾粏鐨勫悓姝ユ棩蹇?
 })
 ```
 
 ### 7.3 同步机制原理
 
-Yep CRDT 实现了三种层级的同步机制，自动智能切换：
+Yep CRDT 当前采用三层机制协同：
 
 #### 1. 实时广播 (Real-time Broadcast)
-当本地发生数据写入 (`table.Set`, `table.Add` 等) 时，变更操作会被立即封装并通过长连接广播给所有活跃的对等节点。
-*   **延迟**: 毫秒级
-*   **触发**: 写入即触发
+本地写入成功后（`Set/Add/Remove/InsertAt/InsertAfter/RemoveAt`），同步引擎会立即广播变更：
+*   **优先列级增量**：广播 `MsgTypeRawDelta`，携带 `columns` 与部分 `MapCRDT` 状态。
+*   **自动回退整行**：若无法生成列级载荷，则回退为 `MsgTypeRawData`（整行状态）。
+*   **特点**：低延迟、低带宽，适合在线节点实时收敛。
 
-#### 2. 增量同步 (Incremental Sync)
-当两个节点建立连接（或重连）时，它们会交换各自的 **Version Vector (版本向量)**。
-*   **流程**: 节点 A 告诉节点 B：“我拥有 Node X 的数据直到时间 T1”。节点 B 计算差异，只发送 A 缺失的数据补丁。
-*   **优势**: 极大节省带宽，仅传输断连期间产生的差异数据。
+#### 2. 版本摘要差异同步 (Digest Diff)
+节点连接后会交换 `MsgTypeVersionDigest`（每表行级 hash 摘要）：
+*   比较本地与远端的行摘要差异。
+*   仅发送有差异的行（`SendRawData`），避免无效全量传输。
+*   适用于短暂断连后的快速补齐。
 
-#### 3. 差异检测 (Anti-Entropy / Full Sync)
-为了处理极端情况（如完全陌生节点加入），系统支持基于 Merkle Tree 思想的表级指纹 (Table Digest) 比对。
-*   **流程**: 定期（或在握手时）比对表的 Hash 摘要。如果发现不一致，则拉取差异数据。
+#### 3. 全量同步 (Full Sync)
+当节点长时间离线、时钟偏差过大或需要强制修复时：
+*   发起 `MsgTypeFetchRawRequest`。
+*   远端逐行返回 `MsgTypeFetchRawResponse`。
+*   本地逐行执行 `Table.MergeRawRow()` 完成合并。
 
 ### 7.4 冲突解决
 
 基于 CRDT (Conflict-free Replicated Data Types) 数学理论，Yep CRDT 保证所有副本的数据 **最终强一致 (Strong Eventual Consistency)**。
 
-*   **LWW (Last-Write-Wins)**: 基于 HLC 时间戳，时间戳大的覆盖小的。HLC 保证了即使在物理时钟略有偏差的情况下，因果关系也能被正确保留。
-*   **ORSet / RGA / Counter**: 通过保留操作历史或元数据，自动合并并发修改，不会丢失数据。
+*   **LWW (Last-Write-Wins)**: 基于 HLC 时间戳，时间戳较大的值胜出。
+*   **ORSet / RGA / Counter**: 通过保留必要元数据自动合并并发修改，不丢失操作。
+### 7.5 缃戠粶鎷撴墤涓庨槻鐏
 
-### 7.5 网络拓扑与防火墙
+*   **P2P Mesh**: 鑺傜偣闂村舰鎴愮綉鐘剁粨鏋勶紝涓嶉渶瑕佹墍鏈夎妭鐐逛袱涓や簰鑱斻€傛秷鎭彲浠ラ€氳繃涓棿鑺傜偣杞彂锛圙ossip 浼犳挱锛夈€?
+*   **绌块€忔€?*: 鐩墠涓昏鏀寔鐩磋繛銆傚鏋滃湪 NAT 鍚庯紝闇€瑕佺‘淇濈鍙ｆ槧灏勬垨浣跨敤 VPN/Overlay 缃戠粶锛堝 Tailscale锛夈€?
 
-*   **P2P Mesh**: 节点间形成网状结构，不需要所有节点两两互联。消息可以通过中间节点转发（Gossip 传播）。
-*   **穿透性**: 目前主要支持直连。如果在 NAT 后，需要确保端口映射或使用 VPN/Overlay 网络（如 Tailscale）。
+---
+
+## 8. 闄勫綍锛氭暟鎹被鍨嬪弬鑰冭〃
+
+| Schema 绫诲瀷 | 瀵瑰簲鐨?Go 绫诲瀷 | 鎻忚堪 |
+| :--- | :--- | :--- |
+| `ColTypeString` | `string` | 鏂囨湰瀛楃涓?|
+| `ColTypeInt` | `int`, `int64` | 鏁存暟 |
+| `ColTypeBool` | `bool` | 甯冨皵鍊?|
+
+| CRDT 绫诲瀷 | 鎿嶄綔鏂规硶 | 閫傜敤鍦烘櫙 |
+| :--- | :--- | :--- |
+| **CrdtLWW** | `Set` | 鐢ㄦ埛鍚嶃€佺姸鎬併€侀厤缃」 (Last-Write-Wins) |
+| **CrdtCounter** | `Add`, `Remove` | 璁℃暟鍣ㄣ€佺粺璁℃暟鎹?(PN-Counter) |
+| **CrdtORSet** | `Add`, `Remove` | 鏍囩銆佸垎绫汇€両D 闆嗗悎 (Observed-Remove Set) |
+| **CrdtRGA** | `Add`, `InsertAt`, `InsertAfter`, `Remove`, `RemoveAt` | 鏂囨湰缂栬緫銆佸嵆鏃堕€氳娑堟伅娴併€佷换鍔″垪琛?(RGA) |
+| **LocalFile** | `Set` (via `FileMetadata`), `ReadAll`, `ReadAt` (read-only) | 鍥剧墖銆侀檮浠躲€佸ぇ鏂囦欢寮曠敤 |
 
 ---
 
-## 8. 附录：数据类型参考表
-
-| Schema 类型 | 对应的 Go 类型 | 描述 |
-| :--- | :--- | :--- |
-| `ColTypeString` | `string` | 文本字符串 |
-| `ColTypeInt` | `int`, `int64` | 整数 |
-| `ColTypeBool` | `bool` | 布尔值 |
-
-| CRDT 类型 | 操作方法 | 适用场景 |
-| :--- | :--- | :--- |
-| **CrdtLWW** | `Set` | 用户名、状态、配置项 (Last-Write-Wins) |
-| **CrdtCounter** | `Add`, `Remove` | 计数器、统计数据 (PN-Counter) |
-| **CrdtORSet** | `Add`, `Remove` | 标签、分类、ID 集合 (Observed-Remove Set) |
-| **CrdtRGA** | `Add`, `InsertAt`, `InsertAfter`, `Remove`, `RemoveAt` | 文本编辑、即时通讯消息流、任务列表 (RGA) |
-| **LocalFile** | `Set` (via `FileMetadata`), `ReadAll`, `ReadAt` (read-only) | 图片、附件、大文件引用 |
-
----
