@@ -86,12 +86,14 @@ func (m *MultiTenantManager) StartTenant(ctx context.Context, database *db.DB) (
 		multitenancy: m,
 	}
 
-	// 触发连接回调
+	// 通过 TenantNetwork 注册回调，避免覆盖内部回调。
 	if m.OnTenantConnected != nil {
-		network.tunnel.OnPeerConnected(func(peerID string) {
+		network.AddPeerConnectedHandler(func(peerID string) {
 			m.OnTenantConnected(tenantID, peerID)
 		})
-		network.tunnel.OnPeerDisconnected(func(peerID string) {
+	}
+	if m.OnTenantDisconnected != nil {
+		network.AddPeerDisconnectedHandler(func(peerID string) {
 			m.OnTenantDisconnected(tenantID, peerID)
 		})
 	}

@@ -504,6 +504,10 @@ func (m *MockNetwork) BroadcastRawData(table string, key string, rawData []byte,
 	return nil
 }
 
+func (m *MockNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
+	return nil
+}
+
 func (m *MockNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
 	// 从节点1导出数据
 	if sourceNodeID == "node-1" {

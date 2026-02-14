@@ -79,14 +79,14 @@ func (e *Engine) Start(ctx context.Context) error {
 		},
 	})
 
-	// 注册节点连接回调（触发版本沟通）
-	e.network.tunnel.OnPeerConnected(func(peerID string) {
+	// 通过 TenantNetwork 注册回调，避免覆盖内部回调。
+	e.network.AddPeerConnectedHandler(func(peerID string) {
 		log.Printf("[Engine:%s] 节点连接: %s，开始版本沟通", e.db.DatabaseID, peerID[:8])
 		e.nodeMgr.OnHeartbeat(peerID, 0) // 注册节点
 		go e.vs.OnPeerConnected(peerID)  // 异步发送版本摘要
 	})
 
-	e.network.tunnel.OnPeerDisconnected(func(peerID string) {
+	e.network.AddPeerDisconnectedHandler(func(peerID string) {
 		log.Printf("[Engine:%s] 节点断开: %s", e.db.DatabaseID, peerID[:8])
 	})
 

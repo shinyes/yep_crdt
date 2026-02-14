@@ -9,14 +9,13 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// VersionSync 版本沟通组件。
-// 当新节点连接时，交换版本摘要，发现差异后补发数据。
+// VersionSync exchanges per-table digests when peers connect.
 type VersionSync struct {
 	db      *db.DB
 	nodeMgr *NodeManager
 }
 
-// NewVersionSync 创建版本沟通组件
+// NewVersionSync creates a VersionSync component.
 func NewVersionSync(database *db.DB, nodeMgr *NodeManager) *VersionSync {
 	return &VersionSync{
 		db:      database,
@@ -24,38 +23,39 @@ func NewVersionSync(database *db.DB, nodeMgr *NodeManager) *VersionSync {
 	}
 }
 
-// OnPeerConnected 新节点连接时触发版本沟通。
-// 构建本地版本摘要并发送给对方。
+// OnPeerConnected builds and sends local digest to a peer.
 func (vs *VersionSync) OnPeerConnected(peerID string) {
+	if vs.nodeMgr.network == nil {
+		return
+	}
+
 	digest := vs.BuildDigest()
 	if digest == nil {
 		return
 	}
 
-	// 序列化摘要
 	digestBytes, err := json.Marshal(digest)
 	if err != nil {
-		log.Printf("[VersionSync] 序列化摘要失败: %v", err)
+		log.Printf("[VersionSync] marshal digest failed: %v", err)
 		return
 	}
 
-	// 发送版本摘要消息
 	msg := &NetworkMessage{
-		Type:    MsgTypeVersionDigest,
-		NodeID:  vs.nodeMgr.localNodeID,
-		RawData: digestBytes,
+		Type:      MsgTypeVersionDigest,
+		NodeID:    vs.nodeMgr.localNodeID,
+		RawData:   digestBytes,
+		Timestamp: vs.db.Clock().Now(),
 	}
 
-	if err := vs.nodeMgr.network.SendRawData(peerID, "_version_digest", "", digestBytes, vs.db.Clock().Now()); err != nil {
-		log.Printf("[VersionSync] 发送版本摘要失败: %v", err)
+	if err := vs.nodeMgr.network.SendMessage(peerID, msg); err != nil {
+		log.Printf("[VersionSync] send digest failed: %v", err)
 		return
 	}
 
-	log.Printf("[VersionSync] 已发送版本摘要到 %s, tables=%d", peerID[:8], len(digest.Tables))
-	_ = msg // msg 变量仅用于文档说明
+	log.Printf("[VersionSync] sent digest to %s, tables=%d", shortPeerID(peerID), len(digest.Tables))
 }
 
-// BuildDigest 构建本地所有表的版本摘要
+// BuildDigest builds digest for all local tables.
 func (vs *VersionSync) BuildDigest() *VersionDigest {
 	tableNames := vs.db.TableNames()
 	if len(tableNames) == 0 {
@@ -73,9 +73,8 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 			continue
 		}
 
-		// 扫描表的行摘要
 		var rowDigests []db.RowDigest
-		vs.db.View(func(tx *db.Tx) error {
+		_ = vs.db.View(func(tx *db.Tx) error {
 			t := tx.Table(tableName)
 			if t != nil {
 				rowDigests, _ = t.ScanRowDigest()
@@ -97,37 +96,31 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 	return digest
 }
 
-// OnReceiveDigest 处理收到的远程版本摘要。
-// 比较本地和远程数据，将本地有但远端缺少或不同的行发送过去。
+// OnReceiveDigest compares remote digest and sends local diffs.
 func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
-	// 解析版本摘要
 	var remoteDigest VersionDigest
 	if err := json.Unmarshal(msg.RawData, &remoteDigest); err != nil {
-		log.Printf("[VersionSync] 解析远程摘要失败: %v", err)
+		log.Printf("[VersionSync] unmarshal remote digest failed: %v", err)
 		return
 	}
 
-	log.Printf("[VersionSync] 收到 %s 的版本摘要, tables=%d", peerID[:8], len(remoteDigest.Tables))
+	log.Printf("[VersionSync] received digest from %s, tables=%d", shortPeerID(peerID), len(remoteDigest.Tables))
 
-	// 构建远程摘要的索引: tableName -> { key -> hash }
 	remoteIndex := make(map[string]map[string]uint32)
 	for _, td := range remoteDigest.Tables {
 		remoteIndex[td.TableName] = td.RowKeys
 	}
 
-	// 比较本地数据与远程摘要，找出差异
 	var diffCount int
 	tableNames := vs.db.TableNames()
-
 	for _, tableName := range tableNames {
 		table := vs.db.Table(tableName)
 		if table == nil {
 			continue
 		}
 
-		// 获取本地摘要
 		var localDigests []db.RowDigest
-		vs.db.View(func(tx *db.Tx) error {
+		_ = vs.db.View(func(tx *db.Tx) error {
 			t := tx.Table(tableName)
 			if t != nil {
 				localDigests, _ = t.ScanRowDigest()
@@ -136,7 +129,6 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 		})
 
 		remoteRows := remoteIndex[tableName]
-
 		for _, ld := range localDigests {
 			keyStr := ld.Key.String()
 			remoteHash, existsInRemote := uint32(0), false
@@ -144,7 +136,6 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 				remoteHash, existsInRemote = remoteRows[keyStr]
 			}
 
-			// 远端缺少该行，或哈希不同 → 发送过去
 			if !existsInRemote || remoteHash != ld.Hash {
 				vs.sendRow(peerID, tableName, ld.Key)
 				diffCount++
@@ -152,19 +143,18 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 		}
 	}
 
-	log.Printf("[VersionSync] 向 %s 补发了 %d 行差异数据", peerID[:8], diffCount)
+	log.Printf("[VersionSync] sent %d diff rows to %s", diffCount, shortPeerID(peerID))
 
-	// 同时发送自己的版本摘要让对方也比较（双向同步）
-	// 只在对方先发送摘要时才回发，避免无限循环
+	// Echo back local digest only when the remote digest comes from another node.
 	if msg.NodeID != vs.nodeMgr.localNodeID {
-		go vs.OnPeerConnected(peerID) // 发送自己的摘要
+		go vs.OnPeerConnected(peerID)
 	}
 }
 
-// sendRow 发送单行数据到指定节点
+// sendRow sends one local row to a peer.
 func (vs *VersionSync) sendRow(peerID string, tableName string, key uuid.UUID) {
 	var rawData []byte
-	vs.db.View(func(tx *db.Tx) error {
+	_ = vs.db.View(func(tx *db.Tx) error {
 		table := tx.Table(tableName)
 		if table != nil {
 			rawData, _ = table.GetRawRow(key)
@@ -178,18 +168,24 @@ func (vs *VersionSync) sendRow(peerID string, tableName string, key uuid.UUID) {
 
 	timestamp := vs.db.Clock().Now()
 	if err := vs.nodeMgr.network.SendRawData(peerID, tableName, key.String(), rawData, timestamp); err != nil {
-		log.Printf("[VersionSync] 发送行数据失败: table=%s, key=%s, err=%v",
-			tableName, key.String()[:8], err)
+		log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
+			tableName, shortPeerID(key.String()), err)
 	}
 }
 
-// CompareAndSync 主动与指定节点进行版本比较并同步差异。
-// 这是手动触发的版本，OnPeerConnected 会自动调用。
+// CompareAndSync triggers a digest exchange with one peer.
 func (vs *VersionSync) CompareAndSync(peerID string) error {
 	if vs.nodeMgr.network == nil {
-		return fmt.Errorf("网络未注册")
+		return fmt.Errorf("network not registered")
 	}
 
 	vs.OnPeerConnected(peerID)
 	return nil
+}
+
+func shortPeerID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
