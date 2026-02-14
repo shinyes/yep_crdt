@@ -90,12 +90,13 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	e.network.AddPeerConnectedHandler(func(peerID string) {
 		log.Printf("[Engine:%s] peer connected: %s", e.db.DatabaseID, shortPeerID(peerID))
-		e.nodeMgr.OnHeartbeat(peerID, 0)
+		e.nodeMgr.OnPeerConnected(peerID)
 		go e.vs.OnPeerConnected(peerID)
 	})
 
 	e.network.AddPeerDisconnectedHandler(func(peerID string) {
 		log.Printf("[Engine:%s] peer disconnected: %s", e.db.DatabaseID, shortPeerID(peerID))
+		e.nodeMgr.OnPeerDisconnected(peerID)
 	})
 
 	e.changeQ = make(chan db.ChangeEvent, engineChangeQueueSize)
@@ -232,9 +233,6 @@ func (e *Engine) handleMessage(peerID string, msg NetworkMessage) {
 	switch msg.Type {
 	case MsgTypeHeartbeat:
 		e.nodeMgr.OnHeartbeat(peerID, msg.Clock)
-		if msg.Clock > 0 {
-			e.nodeMgr.UpdateLocalClock(msg.Clock)
-		}
 
 	case MsgTypeRawData:
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {

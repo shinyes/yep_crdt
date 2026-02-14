@@ -7,26 +7,25 @@ import (
 	"time"
 )
 
-// HeartbeatMonitor tracks peer liveness via periodic heartbeat broadcast/check.
+// HeartbeatMonitor periodically broadcasts heartbeat for clock sync.
+// Peer online/offline state is managed by transport connect/disconnect events.
 type HeartbeatMonitor struct {
 	nm       *NodeManager
 	interval time.Duration
-	timeout  time.Duration
 	ctx      context.Context
 	cancel   context.CancelFunc
 	mu       sync.Mutex
 }
 
 // NewHeartbeatMonitor creates a heartbeat monitor.
-func NewHeartbeatMonitor(nm *NodeManager, interval time.Duration, timeout time.Duration) *HeartbeatMonitor {
+func NewHeartbeatMonitor(nm *NodeManager, interval time.Duration) *HeartbeatMonitor {
 	return &HeartbeatMonitor{
 		nm:       nm,
 		interval: interval,
-		timeout:  timeout,
 	}
 }
 
-// Start starts heartbeat loop.
+// Start starts heartbeat broadcast loop.
 func (hm *HeartbeatMonitor) Start(ctx context.Context) {
 	hm.mu.Lock()
 	hm.ctx, hm.cancel = context.WithCancel(ctx)
@@ -39,16 +38,15 @@ func (hm *HeartbeatMonitor) Start(ctx context.Context) {
 		for {
 			select {
 			case <-hm.ctx.Done():
-				log.Println("🛑 心跳监控已停止")
+				log.Println("heartbeat monitor stopped")
 				return
 			case <-ticker.C:
 				hm.broadcastHeartbeat()
-				hm.checkHeartbeats()
 			}
 		}
 	}()
 
-	log.Printf("✅ 心跳监控已启动: 间隔=%v, 超时=%v", hm.interval, hm.timeout)
+	log.Printf("heartbeat monitor started: interval=%v", hm.interval)
 }
 
 // OnHeartbeat handles inbound heartbeat from one peer.
@@ -57,7 +55,6 @@ func (hm *HeartbeatMonitor) OnHeartbeat(nodeID string, clock int64) {
 	defer hm.nm.mu.Unlock()
 
 	now := time.Now()
-
 	nodeInfo, exists := hm.nm.nodes[nodeID]
 	if !exists {
 		nodeInfo = &NodeInfo{
@@ -68,7 +65,7 @@ func (hm *HeartbeatMonitor) OnHeartbeat(nodeID string, clock int64) {
 			LastSyncTime:   now,
 		}
 		hm.nm.nodes[nodeID] = nodeInfo
-		log.Printf("✨ 新节点加入: %s, 时钟: %d", nodeID, clock)
+		log.Printf("peer discovered via heartbeat: %s clock=%d", nodeID, clock)
 	} else {
 		wasOffline := !nodeInfo.IsOnline
 		nodeInfo.LastHeartbeat = now
@@ -76,7 +73,7 @@ func (hm *HeartbeatMonitor) OnHeartbeat(nodeID string, clock int64) {
 		nodeInfo.IsOnline = true
 
 		if wasOffline {
-			log.Printf("✅ 节点 %s 重新上线", nodeID)
+			log.Printf("peer rejoined: %s", nodeID)
 			hm.nm.clockSync.HandleNodeRejoin(nodeID, clock)
 		}
 	}
@@ -97,37 +94,6 @@ func (hm *HeartbeatMonitor) broadcastHeartbeat() {
 	}
 }
 
-// checkHeartbeats checks all peers and marks timeout peers offline.
-func (hm *HeartbeatMonitor) checkHeartbeats() {
-	hm.nm.mu.Lock()
-	defer hm.nm.mu.Unlock()
-
-	now := time.Now()
-	newTimeouts := 0
-
-	for nodeID, nodeInfo := range hm.nm.nodes {
-		if nodeID == hm.nm.localNodeID {
-			continue
-		}
-
-		elapsed := now.Sub(nodeInfo.LastHeartbeat)
-		if elapsed <= hm.timeout {
-			continue
-		}
-
-		// Only report once when online->offline transitions.
-		if nodeInfo.IsOnline {
-			log.Printf("⚠️ 节点 %s 超时 (%v)，标记为离线", nodeID, elapsed)
-			newTimeouts++
-		}
-		nodeInfo.IsOnline = false
-	}
-
-	if newTimeouts > 0 {
-		log.Printf("📊 检测到 %d 个节点超时", newTimeouts)
-	}
-}
-
 // Stop stops heartbeat monitor.
 func (hm *HeartbeatMonitor) Stop() {
 	hm.mu.Lock()
@@ -135,6 +101,6 @@ func (hm *HeartbeatMonitor) Stop() {
 
 	if hm.cancel != nil {
 		hm.cancel()
-		log.Println("🛑 心跳监控已停止")
+		log.Println("heartbeat monitor stopped")
 	}
 }

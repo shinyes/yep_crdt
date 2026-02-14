@@ -39,7 +39,7 @@ func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager
 		network:     &DefaultNetwork{},
 	}
 
-	nm.heartbeat = NewHeartbeatMonitor(nm, config.HeartbeatInterval, config.TimeoutThreshold)
+	nm.heartbeat = NewHeartbeatMonitor(nm, config.HeartbeatInterval)
 	nm.gc = NewGCManager(nm, config.GCInterval, config.GCTimeOffset)
 	nm.dataSync = NewDataSyncManager(database, nodeID)
 	nm.clockSync = NewClockSync(nm, config.ClockThreshold)
@@ -67,6 +67,42 @@ func (nm *NodeManager) OnHeartbeat(nodeID string, clock int64) {
 	nm.heartbeat.OnHeartbeat(nodeID, clock)
 }
 
+// OnPeerConnected marks a peer online from transport-level connect event.
+func (nm *NodeManager) OnPeerConnected(nodeID string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	now := time.Now()
+	localClock := nm.db.Clock().Now()
+	nodeInfo, exists := nm.nodes[nodeID]
+	if !exists {
+		nm.nodes[nodeID] = &NodeInfo{
+			ID:             nodeID,
+			LastHeartbeat:  now,
+			IsOnline:       true,
+			LastKnownClock: localClock,
+			LastSyncTime:   now,
+		}
+		return
+	}
+
+	nodeInfo.LastHeartbeat = now
+	nodeInfo.IsOnline = true
+	if nodeInfo.LastKnownClock <= 0 {
+		nodeInfo.LastKnownClock = localClock
+	}
+}
+
+// OnPeerDisconnected marks a peer offline from transport-level disconnect event.
+func (nm *NodeManager) OnPeerDisconnected(nodeID string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	if nodeInfo, exists := nm.nodes[nodeID]; exists {
+		nodeInfo.IsOnline = false
+	}
+}
+
 // MarkPeerSeen updates liveness based on any inbound peer traffic.
 // It intentionally avoids clock-sync side effects and full-rejoin handling.
 func (nm *NodeManager) MarkPeerSeen(nodeID string) {
@@ -74,19 +110,24 @@ func (nm *NodeManager) MarkPeerSeen(nodeID string) {
 	defer nm.mu.Unlock()
 
 	now := time.Now()
+	localClock := nm.db.Clock().Now()
 	nodeInfo, exists := nm.nodes[nodeID]
 	if !exists {
 		nm.nodes[nodeID] = &NodeInfo{
-			ID:            nodeID,
-			LastHeartbeat: now,
-			IsOnline:      true,
-			LastSyncTime:  now,
+			ID:             nodeID,
+			LastHeartbeat:  now,
+			IsOnline:       true,
+			LastKnownClock: localClock,
+			LastSyncTime:   now,
 		}
 		return
 	}
 
 	nodeInfo.LastHeartbeat = now
 	nodeInfo.IsOnline = true
+	if nodeInfo.LastKnownClock <= 0 {
+		nodeInfo.LastKnownClock = localClock
+	}
 }
 
 // GetNodeInfo returns one node record.
@@ -135,6 +176,9 @@ func (nm *NodeManager) CalculateSafeTimestamp() int64 {
 			continue
 		}
 		if nodeInfo.ID == nm.localNodeID {
+			continue
+		}
+		if nodeInfo.LastKnownClock <= 0 {
 			continue
 		}
 		if first || nodeInfo.LastKnownClock < minClock {

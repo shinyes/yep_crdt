@@ -32,6 +32,7 @@ func TestNodeManager_Basic(t *testing.T) {
 	nm.Start(ctx)
 
 	node2ID := "node-2"
+	nm.OnPeerConnected(node2ID)
 	nm.OnHeartbeat(node2ID, 1000)
 
 	time.Sleep(2 * time.Second)
@@ -39,9 +40,9 @@ func TestNodeManager_Basic(t *testing.T) {
 		t.Error("node-2 should be online")
 	}
 
-	time.Sleep(5 * time.Second)
+	nm.OnPeerDisconnected(node2ID)
 	if nm.IsNodeOnline(node2ID) {
-		t.Error("node-2 should be offline after timeout")
+		t.Error("node-2 should be offline after disconnect")
 	}
 }
 
