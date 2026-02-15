@@ -184,8 +184,7 @@ func (r *RGA[T]) Apply(op Op) error {
 		}
 
 		r.Vertices[v.ID] = v
-		r.edges[o.AnchorID] = append(r.edges[o.AnchorID], v)
-		sortChildren(r.edges[o.AnchorID])
+		r.edges[o.AnchorID] = insertChildSorted(r.edges[o.AnchorID], v)
 
 		anchor := r.Vertices[o.AnchorID]
 		v.Next = anchor.Next
@@ -215,6 +214,24 @@ func sortChildren[T any](children []*RGAVertex[T]) {
 		}
 		return children[i].ID > children[j].ID
 	})
+}
+
+func childComesBefore[T any](left *RGAVertex[T], right *RGAVertex[T]) bool {
+	if left.Timestamp != right.Timestamp {
+		return left.Timestamp > right.Timestamp
+	}
+	return left.ID > right.ID
+}
+
+// insertChildSorted inserts one child into a DESC-sorted sibling list.
+func insertChildSorted[T any](children []*RGAVertex[T], v *RGAVertex[T]) []*RGAVertex[T] {
+	idx := sort.Search(len(children), func(i int) bool {
+		return childComesBefore(v, children[i])
+	})
+	children = append(children, nil)
+	copy(children[idx+1:], children[idx:])
+	children[idx] = v
+	return children
 }
 
 // traverseRightMost finds the right-most node in the subtree rooted at node.
@@ -264,8 +281,18 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	localHeadVertex.Deleted = true
 	localHeadVertex.DeletedAt = 0
 
+	nonHeadCount := len(o.Vertices) - 1
+	if nonHeadCount <= 0 {
+		r.Vertices = map[string]*RGAVertex[T]{localHead: localHeadVertex}
+		r.edges = make(map[string][]*RGAVertex[T])
+		return
+	}
+
 	clonedVertices := make(map[string]*RGAVertex[T], len(o.Vertices))
 	clonedVertices[localHead] = localHeadVertex
+
+	storage := make([]RGAVertex[T], nonHeadCount)
+	nextIndex := 0
 
 	for id, vRemote := range o.Vertices {
 		if id == o.Head {
@@ -281,7 +308,9 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 			next = localHead
 		}
 
-		clonedVertices[id] = &RGAVertex[T]{
+		cloned := &storage[nextIndex]
+		nextIndex++
+		*cloned = RGAVertex[T]{
 			ID:        vRemote.ID,
 			Value:     deepCopyValue(vRemote.Value),
 			Origin:    origin,
@@ -290,6 +319,7 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 			Deleted:   vRemote.Deleted,
 			DeletedAt: vRemote.DeletedAt,
 		}
+		clonedVertices[id] = cloned
 	}
 
 	r.Vertices = clonedVertices
