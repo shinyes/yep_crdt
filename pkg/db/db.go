@@ -65,7 +65,7 @@ type DB struct {
 	// 如果为空，LocalFileCRDT.ReadAll 等操作将失败。
 	FileStorageDir string
 
-	// 同步引擎（通过 EnableSync 启动）
+	// 同步引擎（由 sync 模块注入）
 	syncEngine SyncEngine
 
 	// 变更回调（数据写入时通知）

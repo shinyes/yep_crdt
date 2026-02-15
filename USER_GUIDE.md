@@ -38,11 +38,13 @@ Yep CRDT 需要一个本地目录来存储数据（基于 BadgerDB）。
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/store"
+	"github.com/shinyes/yep_crdt/pkg/sync"
 )
 
 func main() {
@@ -67,7 +69,7 @@ func main() {
 
 	// 4. [NEW] 开启自动同步
 	// 仅需一行代码，即可加入 P2P 网络
-	engine, err := sync.EnableSync(myDB, db.SyncConfig{
+	engine, err := sync.EnableMultiTenantSync([]*db.DB{myDB}, db.SyncConfig{
 		ListenPort: 8001,       // 本地监听端口 (0 表示随机)
 		ConnectTo:  "192.168.1.100:8001", // (可选) 初始连接节点
 		Password:   "my-secret-password", // 集群密码
@@ -555,12 +557,12 @@ Yep CRDT 的同步层基于 TCP 长连接和 Gossip 协议（部分理念），�
 
 ### 7.2 启用同步
 
-使用 `sync.EnableSync` 一键启用同步。不需要额外部署中心化服务器（如 Redis 或 Kafka）。
+使用 `sync.EnableMultiTenantSync` 一键启用同步。不需要额外部署中心化服务器（如 Redis 或 Kafka）。
 
 ```go
 import "github.com/shinyes/yep_crdt/pkg/sync"
 
-engine, err := sync.EnableSync(myDB, db.SyncConfig{
+engine, err := sync.EnableMultiTenantSync([]*db.DB{myDB}, db.SyncConfig{
     // 网络配置
     ListenPort: 8080,        // 本地监听端口
     ConnectTo:  "seed-node:8080", // 种子节点地址
@@ -652,13 +654,16 @@ _ = network
 
 ### 9.3 运行时统计（可观测性）
 
-`Engine` 提供 `Stats()` 快照：
+`MultiEngine` 提供 `TenantStats(tenantID)` 快照：
 
 - 引擎侧：`ChangeEnqueued` / `ChangeProcessed` / `ChangeBackpressure` / `ChangeQueueDepth`
 - 网络侧：`FetchRequests` / `FetchSuccess` / `FetchTimeouts` / `FetchPartialTimeouts` / `FetchOverflows` / `DroppedResponses`
 
 ```go
-stats := engine.Stats()
+stats, ok := engine.TenantStats("tenant-1")
+if !ok {
+    log.Fatal("tenant not started")
+}
 
 fmt.Printf("sync queue depth=%d, enqueued=%d, processed=%d, backpressure=%d\n",
     stats.ChangeQueueDepth,

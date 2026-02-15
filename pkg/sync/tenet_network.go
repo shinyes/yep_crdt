@@ -32,6 +32,7 @@ type TenantNetwork struct {
 	mu               sync.RWMutex
 	peerHandlers     map[string]PeerMessageHandler
 	broadcastHandler PeerMessageHandler
+	tenantHandlers   map[string]PeerMessageHandler
 	responseChannels map[string]pendingResponse // requestID -> waiter
 	onPeerConnected  []func(peerID string)
 	onPeerDropped    []func(peerID string)
@@ -46,6 +47,7 @@ type TenetConfig struct {
 	RelayNodes               []string
 	EnableDebug              bool
 	IdentityPath             string
+	ChannelIDs               []string
 	FetchResponseBuffer      int
 	FetchResponseIdleTimeout time.Duration
 }
@@ -125,7 +127,11 @@ func (tn *TenantNetwork) currentLocalID() string {
 }
 
 func (tn *TenantNetwork) sendValue(peerID string, msg NetworkMessage) error {
-	msg.TenantID = tn.tenantID
+	channelID := msg.TenantID
+	if channelID == "" {
+		channelID = tn.tenantID
+	}
+	msg.TenantID = channelID
 	msg.NodeID = tn.currentLocalID()
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
@@ -136,11 +142,15 @@ func (tn *TenantNetwork) sendValue(peerID string, msg NetworkMessage) error {
 		return err
 	}
 
-	return tn.tunnel.Send(tn.tenantID, peerID, payload)
+	return tn.tunnel.Send(channelID, peerID, payload)
 }
 
 func (tn *TenantNetwork) broadcastValue(msg NetworkMessage) (int, error) {
-	msg.TenantID = tn.tenantID
+	channelID := msg.TenantID
+	if channelID == "" {
+		channelID = tn.tenantID
+	}
+	msg.TenantID = channelID
 	msg.NodeID = tn.currentLocalID()
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
@@ -151,7 +161,7 @@ func (tn *TenantNetwork) broadcastValue(msg NetworkMessage) (int, error) {
 		return 0, err
 	}
 
-	return tn.tunnel.Broadcast(tn.tenantID, payload)
+	return tn.tunnel.Broadcast(channelID, payload)
 }
 
 // NewTenantNetwork creates a tenet network for one tenant.
@@ -165,7 +175,9 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 	opts := []api.Option{
 		api.WithPassword(cfg.Password),
 		api.WithListenPort(cfg.ListenPort),
-		api.WithChannelID(tenantID),
+	}
+	for _, channelID := range uniqueChannelIDs(tenantID, cfg.ChannelIDs) {
+		opts = append(opts, api.WithChannelID(channelID))
 	}
 
 	if cfg.IdentityPath != "" {
@@ -206,6 +218,7 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 		cancel:           cancel,
 		peerHandlers:     make(map[string]PeerMessageHandler),
 		broadcastHandler: PeerMessageHandler{},
+		tenantHandlers:   make(map[string]PeerMessageHandler),
 		responseChannels: make(map[string]pendingResponse),
 	}
 	if localID := tunnel.LocalID(); localID != "" {
@@ -218,6 +231,28 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 
 	tn.setupCallbacks()
 	return tn, nil
+}
+
+func uniqueChannelIDs(primary string, channels []string) []string {
+	seen := make(map[string]struct{}, len(channels)+1)
+	result := make([]string, 0, len(channels)+1)
+
+	add := func(ch string) {
+		if ch == "" {
+			return
+		}
+		if _, exists := seen[ch]; exists {
+			return
+		}
+		seen[ch] = struct{}{}
+		result = append(result, ch)
+	}
+
+	add(primary)
+	for _, ch := range channels {
+		add(ch)
+	}
+	return result
 }
 
 func persistIdentityJSON(path string, tunnel *api.Tunnel) error {
@@ -349,12 +384,20 @@ func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 		}
 	}
 
+	tenantID := msg.TenantID
+	if tenantID == "" {
+		tenantID = tn.tenantID
+	}
+
 	tn.mu.RLock()
 	handler, ok := tn.peerHandlers[peerID]
 	broadcastHandler := tn.broadcastHandler
+	tenantHandler, hasTenantHandler := tn.tenantHandlers[tenantID]
 	tn.mu.RUnlock()
 
-	if ok && handler.OnReceive != nil {
+	if hasTenantHandler && tenantHandler.OnReceive != nil {
+		tenantHandler.OnReceive(peerID, msg)
+	} else if ok && handler.OnReceive != nil {
 		handler.OnReceive(peerID, msg)
 	} else if broadcastHandler.OnReceive != nil {
 		broadcastHandler.OnReceive(peerID, msg)
@@ -423,6 +466,26 @@ func (tn *TenantNetwork) SetPeerHandler(peerID string, handler PeerMessageHandle
 func (tn *TenantNetwork) SetBroadcastHandler(handler PeerMessageHandler) {
 	tn.mu.Lock()
 	tn.broadcastHandler = handler
+	tn.mu.Unlock()
+}
+
+// SetTenantBroadcastHandler sets a handler for one tenant/channel.
+func (tn *TenantNetwork) SetTenantBroadcastHandler(tenantID string, handler PeerMessageHandler) {
+	if tenantID == "" {
+		return
+	}
+	tn.mu.Lock()
+	tn.tenantHandlers[tenantID] = handler
+	tn.mu.Unlock()
+}
+
+// RemoveTenantBroadcastHandler removes tenant-specific handler.
+func (tn *TenantNetwork) RemoveTenantBroadcastHandler(tenantID string) {
+	if tenantID == "" {
+		return
+	}
+	tn.mu.Lock()
+	delete(tn.tenantHandlers, tenantID)
 	tn.mu.Unlock()
 }
 
@@ -605,14 +668,23 @@ func (tn *TenantNetwork) BroadcastRawDelta(table string, key string, columns []s
 
 // FetchRawTableData fetches raw table data with default timeout.
 func (tn *TenantNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
-	return tn.FetchRawTableDataWithTimeout(sourceNodeID, tableName, 30*time.Second)
+	return tn.fetchRawTableDataWithTenant(sourceNodeID, tableName, tn.tenantID, 30*time.Second)
 }
 
 // FetchRawTableDataWithTimeout fetches raw table data with timeout.
 func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, tableName string, timeout time.Duration) ([]RawRowData, error) {
+	return tn.fetchRawTableDataWithTenant(sourceNodeID, tableName, tn.tenantID, timeout)
+}
+
+func (tn *TenantNetwork) fetchRawTableDataWithTenant(sourceNodeID string, tableName string, tenantID string, timeout time.Duration) ([]RawRowData, error) {
+	if tenantID == "" {
+		tenantID = tn.tenantID
+	}
+
 	requestID := tn.nextRequestID()
 	msg := NetworkMessage{
 		Type:      MsgTypeFetchRawRequest,
+		TenantID:  tenantID,
 		RequestID: requestID,
 		Table:     tableName,
 		Timestamp: time.Now().UnixMilli(),
@@ -648,7 +720,7 @@ func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, table
 	if err == nil {
 		atomic.AddUint64(&tn.stats.fetchSuccess, 1)
 		stdlog.Printf("[TenantNetwork:%s] fetch raw done: peer=%s, table=%s, request_id=%s, rows=%d, duration=%s",
-			tn.tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start))
+			tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start))
 		return rows, nil
 	}
 
@@ -666,7 +738,7 @@ func (tn *TenantNetwork) FetchRawTableDataWithTimeout(sourceNodeID string, table
 	}
 
 	stdlog.Printf("[TenantNetwork:%s] fetch raw failed: peer=%s, table=%s, request_id=%s, rows=%d, duration=%s, err=%v",
-		tn.tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start), err)
+		tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start), err)
 	return rows, err
 }
 

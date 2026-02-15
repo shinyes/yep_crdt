@@ -20,81 +20,80 @@ import (
 )
 
 type app struct {
-	database *db.DB
 	table    *db.Table
-	engine   *ysync.Engine
+	engine   *ysync.MultiEngine
+	tenantID string
 }
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	listenPort := flag.Int("port", 9001, "本地监听端口")
-	connectTo := flag.String("connect", "", "可选：种子节点地址，例如 127.0.0.1:9001")
-	password := flag.String("password", "demo-sync-password", "集群密码")
-	tenantID := flag.String("tenant", "demo-tenant", "租户/数据库 ID")
-	dataRoot := flag.String("data", "./tmp/demo_manual", "数据根目录")
-	reset := flag.Bool("reset", false, "启动前重置本地数据目录")
-	debug := flag.Bool("debug", false, "开启同步调试日志")
+	listenPort := flag.Int("port", 9001, "local listen port")
+	connectTo := flag.String("connect", "", "optional seed address, e.g. 127.0.0.1:9001")
+	password := flag.String("password", "demo-sync-password", "cluster password")
+	dataRoot := flag.String("data", "./tmp/demo_manual", "data root directory")
+	createDB := flag.String("create-db", "", "create a simple tenant db before startup (tenant id)")
+	reset := flag.Bool("reset", false, "reset local data before startup")
+	debug := flag.Bool("debug", false, "enable sync debug logs")
 	flag.Parse()
+
+	preferredTenantID := strings.TrimSpace(*createDB)
+	if preferredTenantID != "" {
+		if err := createSimpleTenantDB(*dataRoot, preferredTenantID); err != nil {
+			return err
+		}
+	}
 
 	if !*debug {
 		log.SetOutput(io.Discard)
 	}
 
-	nodeDir := filepath.Join(*dataRoot, fmt.Sprintf("%s_%d", *tenantID, *listenPort))
-	identityPath := filepath.Join(*dataRoot, "_tenet_identity", fmt.Sprintf("%s_%d.json", *tenantID, *listenPort))
-	if *reset {
-		if err := os.RemoveAll(nodeDir); err != nil {
-			return err
-		}
-		if err := os.Remove(identityPath); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if err := os.MkdirAll(nodeDir, 0o755); err != nil {
-		return err
-	}
-
-	kv, err := store.NewBadgerStore(nodeDir)
-	if err != nil {
-		return err
-	}
-
-	database := db.Open(kv, *tenantID)
-	defer database.Close()
-
-	if err := ensureSchema(database); err != nil {
-		return err
-	}
-
-	engine, err := ysync.EnableSync(database, db.SyncConfig{
+	node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+		DataRoot:     *dataRoot,
 		ListenPort:   *listenPort,
 		ConnectTo:    *connectTo,
 		Password:     *password,
 		Debug:        *debug,
-		IdentityPath: identityPath,
+		Reset:        *reset,
+		EnsureSchema: ensureSchema,
 	})
 	if err != nil {
 		return err
 	}
+	defer node.Close()
 
-	notes := database.Table("notes")
+	engine := node.Engine()
+	tenantIDs := node.TenantIDs()
+	if len(tenantIDs) == 0 {
+		return fmt.Errorf("no tenant discovered under data root: %s", *dataRoot)
+	}
+
+	selectedTenantID := tenantIDs[0]
+	if preferredTenantID != "" {
+		selectedTenantID = preferredTenantID
+	}
+	selectedDB, ok := engine.TenantDatabase(selectedTenantID)
+	if !ok || selectedDB == nil {
+		return fmt.Errorf("tenant not started: %s", selectedTenantID)
+	}
+
+	notes := selectedDB.Table("notes")
 	if notes == nil {
-		return fmt.Errorf("未找到 notes 表")
+		return fmt.Errorf("table notes not found")
 	}
 
 	application := &app{
-		database: database,
 		table:    notes,
 		engine:   engine,
+		tenantID: selectedTenantID,
 	}
 
-	printBanner(application, nodeDir)
+	printBanner(application, *dataRoot, tenantIDs)
 	printHelp()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -111,7 +110,7 @@ func run() error {
 
 		quit, err := handleCommand(application, line)
 		if err != nil {
-			fmt.Printf("错误: %v\n", err)
+			fmt.Printf("error: %v\n", err)
 		}
 		if quit {
 			break
@@ -134,16 +133,39 @@ func ensureSchema(database *db.DB) error {
 	})
 }
 
-func printBanner(application *app, nodeDir string) {
-	fmt.Println("yep_crdt 简易交互 Demo")
-	fmt.Printf("节点 ID:   %s\n", application.engine.LocalID())
-	fmt.Printf("监听地址:  %s\n", application.engine.LocalAddr())
-	fmt.Printf("数据目录:  %s\n", nodeDir)
-	fmt.Println("请在另一个终端启动节点并连接到本节点，验证同步效果")
+func createSimpleTenantDB(dataRoot string, tenantID string) error {
+	if strings.TrimSpace(tenantID) == "" {
+		return fmt.Errorf("create-db tenant id cannot be empty")
+	}
+
+	tenantPath := filepath.Join(dataRoot, tenantID)
+	if err := os.MkdirAll(tenantPath, 0o755); err != nil {
+		return err
+	}
+
+	kv, err := store.NewBadgerStore(tenantPath)
+	if err != nil {
+		return err
+	}
+
+	database := db.Open(kv, tenantID)
+	defer database.Close()
+
+	return ensureSchema(database)
+}
+
+func printBanner(application *app, dataRoot string, tenantIDs []string) {
+	fmt.Println("yep_crdt manual demo")
+	fmt.Printf("node id:      %s\n", application.engine.LocalID())
+	fmt.Printf("listen addr:  %s\n", application.engine.LocalAddr())
+	fmt.Printf("data root:    %s\n", dataRoot)
+	fmt.Printf("demo tenant:  %s\n", application.tenantID)
+	fmt.Printf("all tenants:  %s\n", strings.Join(tenantIDs, ", "))
+	fmt.Println("tip: use API engine.TenantDatabase(tenantID) to access any tenant")
 }
 
 func printHelp() {
-	fmt.Println("\n命令：")
+	fmt.Println("\nCommands:")
 	fmt.Println("  help")
 	fmt.Println("  new <title>")
 	fmt.Println("  set <uuid> <title>")
@@ -154,8 +176,8 @@ func printHelp() {
 	fmt.Println("  peers")
 	fmt.Println("  stats")
 	fmt.Println("  quit")
-	fmt.Println("\n快速开始（两个终端）：")
-	fmt.Println("  1) go run ./cmd/demo -port 9001 -reset")
+	fmt.Println("\nQuick start with 2 terminals:")
+	fmt.Println("  1) go run ./cmd/demo -port 9001 -create-db demo-tenant -reset")
 	fmt.Println("  2) go run ./cmd/demo -port 9002 -connect 127.0.0.1:9001 -reset")
 }
 
@@ -175,7 +197,7 @@ func handleCommand(application *app, line string) (bool, error) {
 	case "new":
 		title := strings.TrimSpace(strings.Join(parts[1:], " "))
 		if title == "" {
-			return false, fmt.Errorf("用法: new <title>")
+			return false, fmt.Errorf("usage: new <title>")
 		}
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -184,12 +206,12 @@ func handleCommand(application *app, line string) (bool, error) {
 		if err := application.table.Set(id, map[string]any{"title": title}); err != nil {
 			return false, err
 		}
-		fmt.Printf("已创建: %s\n", id)
+		fmt.Printf("created: %s\n", id)
 		return false, nil
 
 	case "set":
 		if len(parts) < 3 {
-			return false, fmt.Errorf("用法: set <uuid> <title>")
+			return false, fmt.Errorf("usage: set <uuid> <title>")
 		}
 		id, err := parseUUID(parts[1])
 		if err != nil {
@@ -197,12 +219,12 @@ func handleCommand(application *app, line string) (bool, error) {
 		}
 		title := strings.TrimSpace(strings.Join(parts[2:], " "))
 		if title == "" {
-			return false, fmt.Errorf("title 不能为空")
+			return false, fmt.Errorf("title cannot be empty")
 		}
 		if err := application.table.Set(id, map[string]any{"title": title}); err != nil {
 			return false, err
 		}
-		fmt.Println("成功")
+		fmt.Println("ok")
 		return false, nil
 
 	case "inc":
@@ -213,7 +235,7 @@ func handleCommand(application *app, line string) (bool, error) {
 		if err := application.table.Add(id, "views", delta); err != nil {
 			return false, err
 		}
-		fmt.Println("成功")
+		fmt.Println("ok")
 		return false, nil
 
 	case "dec":
@@ -224,12 +246,12 @@ func handleCommand(application *app, line string) (bool, error) {
 		if err := application.table.Remove(id, "views", delta); err != nil {
 			return false, err
 		}
-		fmt.Println("成功")
+		fmt.Println("ok")
 		return false, nil
 
 	case "show":
 		if len(parts) < 2 {
-			return false, fmt.Errorf("用法: show <uuid>")
+			return false, fmt.Errorf("usage: show <uuid>")
 		}
 		id, err := parseUUID(parts[1])
 		if err != nil {
@@ -247,21 +269,24 @@ func handleCommand(application *app, line string) (bool, error) {
 
 	case "peers":
 		peers := application.engine.Peers()
-		fmt.Printf("节点数 (%d):\n", len(peers))
+		fmt.Printf("peers (%d):\n", len(peers))
 		for _, peerID := range peers {
 			fmt.Printf("  %s\n", peerID)
 		}
 		return false, nil
 
 	case "stats":
-		stats := application.engine.Stats()
-		fmt.Printf("队列深度=%d, 入队=%d, 已处理=%d, 背压=%d\n",
+		stats, ok := application.engine.TenantStats(application.tenantID)
+		if !ok {
+			return false, fmt.Errorf("tenant not started: %s", application.tenantID)
+		}
+		fmt.Printf("queue depth=%d, enqueued=%d, processed=%d, backpressure=%d\n",
 			stats.ChangeQueueDepth,
 			stats.ChangeEnqueued,
 			stats.ChangeProcessed,
 			stats.ChangeBackpressure,
 		)
-		fmt.Printf("拉取 请求=%d 成功=%d 超时=%d 部分超时=%d 溢出=%d 丢弃=%d 进行中=%d\n",
+		fmt.Printf("fetch req=%d ok=%d timeout=%d partial=%d overflow=%d dropped=%d inflight=%d\n",
 			stats.Network.FetchRequests,
 			stats.Network.FetchSuccess,
 			stats.Network.FetchTimeouts,
@@ -276,7 +301,7 @@ func handleCommand(application *app, line string) (bool, error) {
 		return true, nil
 
 	default:
-		return false, fmt.Errorf("未知命令: %s", cmd)
+		return false, fmt.Errorf("unknown command: %s", cmd)
 	}
 }
 
@@ -305,7 +330,7 @@ func listNotes(table *db.Table) error {
 	})
 
 	if len(rows) == 0 {
-		fmt.Println("(空)")
+		fmt.Println("(empty)")
 		return nil
 	}
 
@@ -318,14 +343,14 @@ func listNotes(table *db.Table) error {
 func parseUUID(raw string) (uuid.UUID, error) {
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("无效 UUID: %w", err)
+		return uuid.UUID{}, fmt.Errorf("invalid UUID: %w", err)
 	}
 	return id, nil
 }
 
 func parseCounterArgs(parts []string, usage string) (uuid.UUID, int, error) {
 	if len(parts) < 2 {
-		return uuid.UUID{}, 0, fmt.Errorf("用法: %s", usage)
+		return uuid.UUID{}, 0, fmt.Errorf("usage: %s", usage)
 	}
 	id, err := parseUUID(parts[1])
 	if err != nil {
@@ -335,10 +360,10 @@ func parseCounterArgs(parts []string, usage string) (uuid.UUID, int, error) {
 	if len(parts) >= 3 {
 		delta, err = strconv.Atoi(parts[2])
 		if err != nil {
-			return uuid.UUID{}, 0, fmt.Errorf("无效数字: %w", err)
+			return uuid.UUID{}, 0, fmt.Errorf("invalid number: %w", err)
 		}
 		if delta <= 0 {
-			return uuid.UUID{}, 0, fmt.Errorf("n 必须大于 0")
+			return uuid.UUID{}, 0, fmt.Errorf("n must be > 0")
 		}
 	}
 	return id, delta, nil

@@ -76,7 +76,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	engine, err := ysync.EnableSync(myDB, db.SyncConfig{
+	engine, err := ysync.EnableMultiTenantSync([]*db.DB{myDB}, db.SyncConfig{
 		ListenPort:   8001,
 		ConnectTo:    "127.0.0.1:8002", // 可选
 		Password:     "secret",          // 必填
@@ -170,6 +170,38 @@ _ = err
 - HLC 驱动的因果一致时序
 - 网络层连接状态作为在线/离线判定来源（应用层不再单独做离线超时判定）
 
+### 本地多租户一键启动（简化版）
+
+`sync.StartLocalNode` 会自动探测 `DataRoot` 下租户目录，并启动所有租户频道：
+
+- `tenant_port` 形式（例如 `tenant-a_9001`、`tenant-b_9001`）：会优先按当前 `ListenPort` 发现
+- 纯租户目录形式（例如 `tenant-a/`、`tenant-b/`，目录内已有 Badger `MANIFEST`）
+
+```go
+node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+	DataRoot:   "./tmp/demo_manual",
+	ListenPort: 9001,
+	ConnectTo:  "127.0.0.1:9002",
+	Password:   "cluster-secret",
+	Reset:      false,
+	EnsureSchema: func(d *db.DB) error {
+		// 可选：统一建表/迁移
+		return nil
+	},
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer node.Close()
+engine := node.Engine()
+
+// 启动后按 tenantID 获取任意租户（唯一入口）
+tenantDB, ok := engine.TenantDatabase("tenant-b")
+if ok {
+	_ = tenantDB
+}
+```
+
 ### 关键配置（2026-02）
 
 `sync.TenetConfig` 新增流控参数：
@@ -192,10 +224,13 @@ _ = network
 _ = err
 ```
 
-### 可观测性（`engine.Stats()`）
+### 可观测性（`engine.TenantStats()`）
 
 ```go
-stats := engine.Stats()
+stats, ok := engine.TenantStats("tenant-1")
+if !ok {
+	log.Fatal("tenant not started")
+}
 fmt.Printf("queue depth=%d enqueued=%d processed=%d backpressure=%d\n",
 	stats.ChangeQueueDepth,
 	stats.ChangeEnqueued,
@@ -264,7 +299,7 @@ _ = result2
 ## 性能建议
 
 - 大列表（RGA）读取：优先 `FindCRDTs()` + `Iterator()`
-- 高频写入场景：关注 `engine.Stats().ChangeBackpressure`
+- 高频写入场景：关注 `engine.TenantStats(tenantID).ChangeBackpressure`
 - 全量同步场景：根据网络条件调整 `FetchResponseBuffer` 与 `FetchResponseIdleTimeout`
 
 ## 项目结构
