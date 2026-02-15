@@ -132,4 +132,108 @@ func TestOpenBadgerWithConfig_Validation(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("expected invalid badger value log file size to fail")
 	}
+
+	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       filepath.Join(t.TempDir(), "tenant-c"),
+		DatabaseID: "tenant-c",
+		Schemas: []*meta.TableSchema{
+			{
+				Name: "users",
+				Columns: []meta.ColumnSchema{
+					{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+					{Name: "name", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
+				},
+			},
+		},
+	}); err == nil {
+		t.Fatalf("expected duplicate schema column to fail")
+	}
+}
+
+func TestOpenBadgerWithConfig_DatabaseIDMismatchReturnsError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tenant-id-mismatch")
+
+	database, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-a",
+	})
+	if err != nil {
+		t.Fatalf("first open failed: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+
+	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-b",
+	}); err == nil {
+		t.Fatalf("expected database id mismatch to return error")
+	}
+
+	// Ensure mismatch path does not leak open handles/locks.
+	database, err = OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-a",
+	})
+	if err != nil {
+		t.Fatalf("reopen with original database id should succeed: %v", err)
+	}
+	defer database.Close()
+}
+
+func TestOpenBadgerWithConfig_SchemaConflictReturnsError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tenant-schema-conflict")
+
+	database, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-z",
+		Schemas: []*meta.TableSchema{
+			{
+				Name: "users",
+				Columns: []meta.ColumnSchema{
+					{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("first open failed: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+
+	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-z",
+		Schemas: []*meta.TableSchema{
+			{
+				Name: "users",
+				Columns: []meta.ColumnSchema{
+					{Name: "name", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
+				},
+			},
+		},
+	}); err == nil {
+		t.Fatalf("expected schema conflict to fail")
+	}
+
+	// Ensure conflict path closes resources.
+	database, err = OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:       dbPath,
+		DatabaseID: "tenant-z",
+		Schemas: []*meta.TableSchema{
+			{
+				Name: "users",
+				Columns: []meta.ColumnSchema{
+					{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reopen with matching schema should succeed: %v", err)
+	}
+	defer database.Close()
 }
