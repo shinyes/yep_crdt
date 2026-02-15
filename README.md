@@ -13,7 +13,8 @@ Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库�
 ## 快速导航
 
 - [安装](#安装)
-- [5 分钟上手](#5-分钟上手)
+- [快速开始（推荐）](#快速开始推荐)
+- [初始化方式对比](#初始化方式对比)
 - [CRDT 列类型速查](#crdt-列类型速查)
 - [查询与事务速查](#查询与事务速查)
 - [分布式同步](#分布式同步)
@@ -30,9 +31,9 @@ go get github.com/shinyes/yep_crdt
 
 建议使用与 `go.mod` 一致的 Go 版本（当前为 `1.25.5`）。
 
-## 5 分钟上手
+## 快速开始（推荐）
 
-以下示例覆盖：初始化、建表、写入、查询、开启同步。
+以下示例覆盖：一站式初始化、建表、写入、查询。
 
 ```go
 package main
@@ -40,58 +41,38 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
-	"github.com/shinyes/yep_crdt/pkg/store"
-	ysync "github.com/shinyes/yep_crdt/pkg/sync"
 )
 
 func main() {
-	dbPath := "./tmp/my_db"
-	if err := os.MkdirAll(dbPath, 0o755); err != nil {
-		log.Fatal(err)
-	}
-
-	s, err := store.NewBadgerStore(
-		dbPath,
-		store.WithBadgerValueLogFileSize(256*1024*1024), // 256MB vlog 文件
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer s.Close()
-
-	myDB := db.Open(s, "tenant-1")
-	defer myDB.Close()
-	myDB.SetFileStorageDir("./data/files")
-
-	if err := myDB.DefineTable(&meta.TableSchema{
-		Name: "users",
-		Columns: []meta.ColumnSchema{
-			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
-			{Name: "views", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
-			{Name: "tags", Type: meta.ColTypeString, CrdtType: meta.CrdtORSet},
+	database, err := db.OpenBadgerWithConfig(db.BadgerOpenConfig{
+		Path:                   "./tmp/my_db",
+		DatabaseID:             "tenant-1",
+		BadgerValueLogFileSize: 256 * 1024 * 1024,
+		Schemas: []*meta.TableSchema{
+			{
+				Name: "users",
+				Columns: []meta.ColumnSchema{
+					{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+					{Name: "views", Type: meta.ColTypeInt, CrdtType: meta.CrdtCounter},
+					{Name: "tags", Type: meta.ColTypeString, CrdtType: meta.CrdtORSet},
+				},
+			},
 		},
-	}); err != nil {
-		log.Fatal(err)
-	}
-
-	engine, err := ysync.EnableMultiTenantSync([]*db.DB{myDB}, db.SyncConfig{
-		ListenPort:   8001,
-		ConnectTo:    "127.0.0.1:8002", // 可选
-		Password:     "secret",          // 必填
-		Debug:        false,
-		IdentityPath: "./tmp/_tenet_identity/tenant-1-8001.json", // 推荐：持久化节点网络身份
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("node=%s addr=%s\n", engine.LocalID(), engine.LocalAddr())
+	defer database.Close()
 
-	users := myDB.Table("users")
+	users := database.Table("users")
+	if users == nil {
+		log.Fatal("table users not found")
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		log.Fatal(err)
@@ -103,9 +84,6 @@ func main() {
 	if err := users.Add(id, "views", 1); err != nil {
 		log.Fatal(err)
 	}
-	if err := users.Add(id, "tags", "developer"); err != nil {
-		log.Fatal(err)
-	}
 
 	rows, err := users.Where("views", db.OpGt, 0).
 		OrderBy("views", true).
@@ -115,6 +93,48 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(rows)
+}
+```
+
+可选：如果需要统一迁移逻辑，可以在 `BadgerOpenConfig` 里提供 `EnsureSchema`。
+
+## 初始化方式对比
+
+| 方式 | 推荐场景 | 特点 |
+| :--- | :--- | :--- |
+| `db.OpenBadgerWithConfig` | 大多数业务场景 | 一步完成目录创建、Badger 打开、`db.Open`、建表与初始化钩子，失败自动清理 |
+| `store.NewBadgerStore` + `db.Open` | 需要完全控制底层初始化细节 | 更灵活，但调用方要自己处理目录、参数拼装、错误回滚 |
+
+细粒度控制示例：
+
+```go
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/shinyes/yep_crdt/pkg/store"
+)
+
+func main() {
+	dbPath := "./tmp/my_db"
+	if err := os.MkdirAll(dbPath, 0o755); err != nil {
+		log.Fatal(err)
+	}
+
+	s, err := store.NewBadgerStore(
+		dbPath,
+		store.WithBadgerValueLogFileSize(256*1024*1024),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "tenant-1")
+	defer database.Close()
 }
 ```
 
@@ -149,7 +169,7 @@ rows, err := users.Where("name", db.OpEq, "Alice").
 rows2, err := users.Where("views", db.OpIn, []any{100, 200, 300}).Find()
 
 // 事务写入
-err = myDB.Update(func(tx *db.Tx) error {
+err = database.Update(func(tx *db.Tx) error {
 	t := tx.Table("users")
 	if err := t.Add(id1, "views", 100); err != nil {
 		return err
@@ -180,6 +200,7 @@ _ = err
 - `tenant_port` 形式（例如 `tenant-a_9001`、`tenant-b_9001`）：会优先按当前 `ListenPort` 发现
 - 纯租户目录形式（例如 `tenant-a/`、`tenant-b/`，目录内已有 Badger `MANIFEST`）
 
+StartLocalNode 会自动从 DataRoot 目录中寻找租户，并启动 tenet 网络及租户对应的频道进行同步。
 ```go
 node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
 	DataRoot:   "./tmp/demo_manual",
@@ -206,7 +227,7 @@ if ok {
 }
 ```
 
-### 关键配置（2026-02）
+### 关键配置
 
 `sync.TenetConfig` 新增流控参数：
 

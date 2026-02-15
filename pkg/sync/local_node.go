@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
-	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
 // LocalNodeOptions configures local filesystem based multi-tenant startup.
@@ -89,28 +88,15 @@ func StartLocalNode(opts LocalNodeOptions) (*LocalNode, error) {
 
 	for _, tenantID := range tenantIDs {
 		nodeDir := tenantPaths[tenantID]
-		if err := os.MkdirAll(nodeDir, 0o755); err != nil {
-			closeDatabases(openOrder)
-			return nil, err
-		}
-
-		badgerOptions := make([]store.BadgerOption, 0, 1)
-		if opts.BadgerValueLogFileSize > 0 {
-			badgerOptions = append(badgerOptions, store.WithBadgerValueLogFileSize(opts.BadgerValueLogFileSize))
-		}
-		kv, err := store.NewBadgerStore(nodeDir, badgerOptions...)
+		database, err := db.OpenBadgerWithConfig(db.BadgerOpenConfig{
+			Path:                   nodeDir,
+			DatabaseID:             tenantID,
+			BadgerValueLogFileSize: opts.BadgerValueLogFileSize,
+			EnsureSchema:           opts.EnsureSchema,
+		})
 		if err != nil {
 			closeDatabases(openOrder)
 			return nil, err
-		}
-
-		database := db.Open(kv, tenantID)
-		if opts.EnsureSchema != nil {
-			if err := opts.EnsureSchema(database); err != nil {
-				_ = database.Close()
-				closeDatabases(openOrder)
-				return nil, err
-			}
 		}
 
 		databases[tenantID] = database

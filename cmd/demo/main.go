@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
-	"github.com/shinyes/yep_crdt/pkg/store"
 	ysync "github.com/shinyes/yep_crdt/pkg/sync"
 )
 
@@ -145,23 +144,18 @@ func createSimpleTenantDB(dataRoot string, tenantID string, vlogFileSizeBytes in
 	}
 
 	tenantPath := filepath.Join(dataRoot, tenantID)
-	if err := os.MkdirAll(tenantPath, 0o755); err != nil {
-		return err
-	}
-
-	badgerOptions := make([]store.BadgerOption, 0, 1)
-	if vlogFileSizeBytes > 0 {
-		badgerOptions = append(badgerOptions, store.WithBadgerValueLogFileSize(vlogFileSizeBytes))
-	}
-	kv, err := store.NewBadgerStore(tenantPath, badgerOptions...)
+	database, err := db.OpenBadgerWithConfig(db.BadgerOpenConfig{
+		Path:                   tenantPath,
+		DatabaseID:             tenantID,
+		BadgerValueLogFileSize: vlogFileSizeBytes,
+		EnsureSchema:           ensureSchema,
+	})
 	if err != nil {
 		return err
 	}
-
-	database := db.Open(kv, tenantID)
 	defer database.Close()
 
-	return ensureSchema(database)
+	return nil
 }
 
 func printBanner(application *app, dataRoot string, tenantIDs []string) {
