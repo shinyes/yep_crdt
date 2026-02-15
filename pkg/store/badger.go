@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -10,12 +11,43 @@ type BadgerStore struct {
 	db *badger.DB
 }
 
-// NewBadgerStore 创建一个新的 BadgerStore 实例。
-func NewBadgerStore(path string) (*BadgerStore, error) {
+const defaultBadgerValueLogFileSize = 128 * 1024 * 1024 // 128MB
+
+type badgerConfig struct {
+	valueLogFileSize int64
+}
+
+// BadgerOption customizes how Badger is opened.
+type BadgerOption func(*badgerConfig) error
+
+// WithBadgerValueLogFileSize sets max bytes per value log (vlog) file.
+func WithBadgerValueLogFileSize(sizeBytes int64) BadgerOption {
+	return func(cfg *badgerConfig) error {
+		if sizeBytes <= 0 {
+			return fmt.Errorf("badger value log file size must be > 0, got %d", sizeBytes)
+		}
+		cfg.valueLogFileSize = sizeBytes
+		return nil
+	}
+}
+
+// NewBadgerStore creates a Badger-backed store.
+func NewBadgerStore(path string, options ...BadgerOption) (*BadgerStore, error) {
+	cfg := badgerConfig{
+		valueLogFileSize: defaultBadgerValueLogFileSize,
+	}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(&cfg); err != nil {
+			return nil, err
+		}
+	}
+
 	opts := badger.DefaultOptions(path)
-	// 如果需要，优化低内存使用率，或者为了性能保持默认值。
-	// 对于多租户场景，我们可能需要进一步调整。
-	opts.Logger = nil // 暂时禁用默认日志记录器
+	opts = opts.WithValueLogFileSize(cfg.valueLogFileSize)
+	opts.Logger = nil
 
 	db, err := badger.Open(opts)
 	if err != nil {
@@ -48,7 +80,7 @@ func (s *BadgerStore) Update(fn func(Tx) error) error {
 	return s.RunTx(true, fn)
 }
 
-// BadgerTx 实现 Tx 接口
+// BadgerTx implements Tx.
 type BadgerTx struct {
 	txn *badger.Txn
 }
@@ -81,14 +113,11 @@ func (tx *BadgerTx) NewIterator(opts IteratorOptions) Iterator {
 	bOpts := badger.DefaultIteratorOptions
 	bOpts.Reverse = opts.Reverse
 	bOpts.Prefix = opts.Prefix
-	// 我们可能默认获取值，因为迭代器通常需要它们。
-	// PrefetchSize 可以调整。
-
 	it := tx.txn.NewIterator(bOpts)
 	return &BadgerIterator{it: it}
 }
 
-// BadgerIterator 实现 Iterator 接口
+// BadgerIterator implements Iterator.
 type BadgerIterator struct {
 	it *badger.Iterator
 }

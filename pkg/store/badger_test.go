@@ -9,7 +9,7 @@ import (
 func setupBadgerStore(t *testing.T) *BadgerStore {
 	// Create a temporary directory for the test database
 	tmpDir := filepath.Join(os.TempDir(), "badger-test-"+t.Name())
-	
+
 	// Clean up any existing directory
 	os.RemoveAll(tmpDir)
 
@@ -38,6 +38,16 @@ func TestBadgerStore_Close(t *testing.T) {
 	err := store.Close()
 	if err != nil {
 		t.Fatalf("Close() failed: %v", err)
+	}
+}
+
+func TestBadgerStore_InvalidValueLogFileSize(t *testing.T) {
+	tmpDir := filepath.Join(os.TempDir(), "badger-test-invalid-vlog-"+t.Name())
+	defer os.RemoveAll(tmpDir)
+
+	_, err := NewBadgerStore(tmpDir, WithBadgerValueLogFileSize(0))
+	if err == nil {
+		t.Fatal("expected error when value log file size is 0")
 	}
 }
 
@@ -309,33 +319,33 @@ func TestBadgerStore_IteratorForward(t *testing.T) {
 	err = store.View(func(tx Tx) error {
 		it := tx.NewIterator(IteratorOptions{})
 		defer it.Close()
-		
+
 		it.Rewind()
-		
+
 		expectedKeys := keys
 		for i, expectedKey := range expectedKeys {
 			if !it.Valid() {
 				t.Errorf("Iterator invalid at position %d", i)
 				break
 			}
-			
+
 			key, value, err := it.Item()
 			if err != nil {
 				t.Errorf("Item() failed at position %d: %v", i, err)
 				break
 			}
-			
+
 			if string(key) != expectedKey {
 				t.Errorf("At position %d: got key %s, want %s", i, string(key), expectedKey)
 			}
-			
+
 			if string(value) != "value" {
 				t.Errorf("At position %d: got value %s, want 'value'", i, string(value))
 			}
-			
+
 			it.Next()
 		}
-		
+
 		return nil
 	})
 	if err != nil {
@@ -365,33 +375,33 @@ func TestBadgerStore_IteratorReverse(t *testing.T) {
 	err = store.View(func(tx Tx) error {
 		it := tx.NewIterator(IteratorOptions{Reverse: true})
 		defer it.Close()
-		
+
 		it.Rewind()
-		
+
 		expectedKeys := []string{"d", "c", "b", "a"}
 		for i, expectedKey := range expectedKeys {
 			if !it.Valid() {
 				t.Errorf("Iterator invalid at position %d", i)
 				break
 			}
-			
+
 			key, value, err := it.Item()
 			if err != nil {
 				t.Errorf("Item() failed at position %d: %v", i, err)
 				break
 			}
-			
+
 			if string(key) != expectedKey {
 				t.Errorf("At position %d: got key %s, want %s", i, string(key), expectedKey)
 			}
-			
+
 			if string(value) != "value" {
 				t.Errorf("At position %d: got value %s, want 'value'", i, string(value))
 			}
-			
+
 			it.Next()
 		}
-		
+
 		return nil
 	})
 	if err != nil {
@@ -421,44 +431,44 @@ func TestBadgerStore_IteratorSeek(t *testing.T) {
 	err = store.View(func(tx Tx) error {
 		it := tx.NewIterator(IteratorOptions{})
 		defer it.Close()
-		
+
 		it.Seek([]byte("c"))
-		
+
 		if !it.Valid() {
 			t.Error("Iterator invalid after Seek")
 			return nil
 		}
-		
+
 		key, value, err := it.Item()
 		if err != nil {
 			t.Fatalf("Item() failed: %v", err)
 		}
-		
+
 		if string(key) != "c" {
 			t.Errorf("Got key %s, want 'c'", string(key))
 		}
-		
+
 		if string(value) != "value" {
 			t.Errorf("Got value %s, want 'value'", string(value))
 		}
-		
+
 		// Move to next
 		it.Next()
-		
+
 		if !it.Valid() {
 			t.Error("Iterator invalid after Next")
 			return nil
 		}
-		
+
 		key, value, err = it.Item()
 		if err != nil {
 			t.Fatalf("Item() failed: %v", err)
 		}
-		
+
 		if string(key) != "d" {
 			t.Errorf("Got key %s, want 'd'", string(key))
 		}
-		
+
 		return nil
 	})
 	if err != nil {
@@ -488,9 +498,9 @@ func TestBadgerStore_IteratorPrefix(t *testing.T) {
 	err = store.View(func(tx Tx) error {
 		it := tx.NewIterator(IteratorOptions{Prefix: []byte("a")})
 		defer it.Close()
-		
+
 		it.Rewind()
-		
+
 		count := 0
 		expectedKeys := []string{"a1", "a2", "a3"}
 		for i, expectedKey := range expectedKeys {
@@ -498,25 +508,25 @@ func TestBadgerStore_IteratorPrefix(t *testing.T) {
 				t.Errorf("Iterator invalid at position %d", i)
 				break
 			}
-			
+
 			key, _, err := it.Item()
 			if err != nil {
 				t.Errorf("Item() failed at position %d: %v", i, err)
 				break
 			}
-			
+
 			if string(key) != expectedKey {
 				t.Errorf("At position %d: got key %s, want %s", i, string(key), expectedKey)
 			}
-			
+
 			count++
 			it.Next()
 		}
-		
+
 		if count != 3 {
 			t.Errorf("Iterated %d keys, want 3", count)
 		}
-		
+
 		return nil
 	})
 	if err != nil {
@@ -526,28 +536,28 @@ func TestBadgerStore_IteratorPrefix(t *testing.T) {
 
 func TestBadgerStore_Persistence(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "badger-test-persist")
-	
+
 	// Clean up any existing directory
 	os.RemoveAll(tmpDir)
-	
+
 	// Create store and add data
 	store1, err := NewBadgerStore(tmpDir)
 	if err != nil {
 		t.Fatalf("Failed to create BadgerStore: %v", err)
 	}
-	
+
 	err = store1.Update(func(tx Tx) error {
 		return tx.Set([]byte("key1"), []byte("value1"), 0)
 	})
 	if err != nil {
 		t.Fatalf("Update() failed: %v", err)
 	}
-	
+
 	err = store1.Close()
 	if err != nil {
 		t.Fatalf("Close() failed: %v", err)
 	}
-	
+
 	// Open the store again and verify data
 	store2, err := NewBadgerStore(tmpDir)
 	if err != nil {
@@ -557,7 +567,7 @@ func TestBadgerStore_Persistence(t *testing.T) {
 		store2.Close()
 		os.RemoveAll(tmpDir)
 	}()
-	
+
 	err = store2.View(func(tx Tx) error {
 		val, err := tx.Get([]byte("key1"))
 		if err != nil {

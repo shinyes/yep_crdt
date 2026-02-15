@@ -53,7 +53,10 @@ func main() {
 	os.MkdirAll(dbPath, 0755)
 
 	// 2. 初始化 BadgerDB 存储后端
-	s, err := store.NewBadgerStore(dbPath)
+	s, err := store.NewBadgerStore(
+		dbPath,
+		store.WithBadgerValueLogFileSize(256*1024*1024), // 256MB vlog 文件
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

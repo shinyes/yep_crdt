@@ -22,7 +22,9 @@ type LocalNodeOptions struct {
 	Debug        bool
 	Reset        bool
 	IdentityPath string
-	EnsureSchema func(*db.DB) error
+	// BadgerValueLogFileSize sets max bytes per Badger vlog file. 0 means store default (128MB).
+	BadgerValueLogFileSize int64
+	EnsureSchema           func(*db.DB) error
 }
 
 // LocalNode represents a started local multi-tenant node.
@@ -92,7 +94,11 @@ func StartLocalNode(opts LocalNodeOptions) (*LocalNode, error) {
 			return nil, err
 		}
 
-		kv, err := store.NewBadgerStore(nodeDir)
+		badgerOptions := make([]store.BadgerOption, 0, 1)
+		if opts.BadgerValueLogFileSize > 0 {
+			badgerOptions = append(badgerOptions, store.WithBadgerValueLogFileSize(opts.BadgerValueLogFileSize))
+		}
+		kv, err := store.NewBadgerStore(nodeDir, badgerOptions...)
 		if err != nil {
 			closeDatabases(openOrder)
 			return nil, err

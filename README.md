@@ -55,7 +55,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	s, err := store.NewBadgerStore(dbPath)
+	s, err := store.NewBadgerStore(
+		dbPath,
+		store.WithBadgerValueLogFileSize(256*1024*1024), // 256MB vlog 文件
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -184,6 +187,7 @@ node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
 	ConnectTo:  "127.0.0.1:9002",
 	Password:   "cluster-secret",
 	Reset:      false,
+	BadgerValueLogFileSize: 256 * 1024 * 1024, // 可选：vlog 大小
 	EnsureSchema: func(d *db.DB) error {
 		// 可选：统一建表/迁移
 		return nil

@@ -40,11 +40,16 @@ func run() error {
 	createDB := flag.String("create-db", "", "create a simple tenant db before startup (tenant id)")
 	reset := flag.Bool("reset", false, "reset local data before startup")
 	debug := flag.Bool("debug", false, "enable sync debug logs")
+	vlogFileSizeMB := flag.Int64("vlog-size-mb", 128, "badger vlog file size in MB (0 = store default 128MB)")
 	flag.Parse()
 
 	preferredTenantID := strings.TrimSpace(*createDB)
+	if *vlogFileSizeMB < 0 {
+		return fmt.Errorf("vlog-size-mb must be >= 0")
+	}
+	vlogFileSizeBytes := *vlogFileSizeMB * 1024 * 1024
 	if preferredTenantID != "" {
-		if err := createSimpleTenantDB(*dataRoot, preferredTenantID); err != nil {
+		if err := createSimpleTenantDB(*dataRoot, preferredTenantID, vlogFileSizeBytes); err != nil {
 			return err
 		}
 	}
@@ -54,13 +59,14 @@ func run() error {
 	}
 
 	node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
-		DataRoot:     *dataRoot,
-		ListenPort:   *listenPort,
-		ConnectTo:    *connectTo,
-		Password:     *password,
-		Debug:        *debug,
-		Reset:        *reset,
-		EnsureSchema: ensureSchema,
+		DataRoot:               *dataRoot,
+		ListenPort:             *listenPort,
+		ConnectTo:              *connectTo,
+		Password:               *password,
+		Debug:                  *debug,
+		Reset:                  *reset,
+		BadgerValueLogFileSize: vlogFileSizeBytes,
+		EnsureSchema:           ensureSchema,
 	})
 	if err != nil {
 		return err
@@ -133,7 +139,7 @@ func ensureSchema(database *db.DB) error {
 	})
 }
 
-func createSimpleTenantDB(dataRoot string, tenantID string) error {
+func createSimpleTenantDB(dataRoot string, tenantID string, vlogFileSizeBytes int64) error {
 	if strings.TrimSpace(tenantID) == "" {
 		return fmt.Errorf("create-db tenant id cannot be empty")
 	}
@@ -143,7 +149,11 @@ func createSimpleTenantDB(dataRoot string, tenantID string) error {
 		return err
 	}
 
-	kv, err := store.NewBadgerStore(tenantPath)
+	badgerOptions := make([]store.BadgerOption, 0, 1)
+	if vlogFileSizeBytes > 0 {
+		badgerOptions = append(badgerOptions, store.WithBadgerValueLogFileSize(vlogFileSizeBytes))
+	}
+	kv, err := store.NewBadgerStore(tenantPath, badgerOptions...)
 	if err != nil {
 		return err
 	}
