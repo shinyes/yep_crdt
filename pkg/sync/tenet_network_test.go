@@ -82,6 +82,45 @@ func TestTenantNetworkHandleReceive_ResponseRoutesToWaiter(t *testing.T) {
 	}
 }
 
+func TestTenantNetworkHandleReceive_ResponseRoutesToFetchWaiter(t *testing.T) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+
+	responseCh := make(chan fetchRawResponseLite, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", fetchCh: responseCh}
+
+	payload, err := msgpack.Marshal(&NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: "req-1",
+		Key:       "k1",
+		RawData:   []byte("v1"),
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	tn.handleReceive("peer-1", payload)
+
+	select {
+	case got := <-responseCh:
+		if got.Type != MsgTypeFetchRawResponse {
+			t.Fatalf("unexpected response type: %s", got.Type)
+		}
+		if got.Key != "k1" {
+			t.Fatalf("unexpected response key: %s", got.Key)
+		}
+		if string(got.RawData) != "v1" {
+			t.Fatalf("unexpected raw data: %s", string(got.RawData))
+		}
+	default:
+		t.Fatal("response should be routed into fetch waiter channel")
+	}
+}
+
 func TestTenantNetworkHandleReceive_ResponseFromUnexpectedPeerIgnored(t *testing.T) {
 	tn := &TenantNetwork{
 		tenantID:         "tenant-1",
@@ -226,6 +265,51 @@ func TestCollectFetchRawResponses_PeerDisconnected(t *testing.T) {
 	}
 }
 
+func TestCollectFetchRawResponsesLite_WithDoneMarker(t *testing.T) {
+	ch := make(chan fetchRawResponseLite, 4)
+	ch <- fetchRawResponseLite{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k1",
+		RawData: []byte("v1"),
+	}
+	ch <- fetchRawResponseLite{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k2",
+		RawData: []byte("v2"),
+	}
+	ch <- fetchRawResponseLite{
+		Type: MsgTypeFetchRawResponse,
+		Key:  fetchRawResponseDoneKey,
+	}
+
+	rows, err := collectFetchRawResponsesLite(ch, nil, 2*time.Second, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("collect failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0].Key != "k1" || string(rows[0].Data) != "v1" {
+		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+	if rows[1].Key != "k2" || string(rows[1].Data) != "v2" {
+		t.Fatalf("unexpected second row: %+v", rows[1])
+	}
+}
+
+func TestCollectFetchRawResponsesLite_PeerDisconnected(t *testing.T) {
+	ch := make(chan fetchRawResponseLite, 1)
+	ch <- fetchRawResponseLite{Type: internalMsgTypePeerDisconnected}
+
+	_, err := collectFetchRawResponsesLite(ch, nil, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected peer disconnected error")
+	}
+	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
+		t.Fatalf("expected peer-disconnected classification, got: %v", err)
+	}
+}
+
 func TestTenantNetworkNextRequestID_SequentialWithoutTunnel(t *testing.T) {
 	tn := &TenantNetwork{}
 	first := tn.nextRequestID()
@@ -265,6 +349,36 @@ func TestTenantNetworkRemovePeerHandler_NotifiesPendingWaiter(t *testing.T) {
 		}
 	default:
 		t.Fatal("pending waiter should be notified")
+	}
+}
+
+func TestTenantNetworkRemovePeerHandler_NotifiesPendingFetchWaiter(t *testing.T) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+
+	ch := make(chan fetchRawResponseLite, 1)
+	tn.responseChannels["req-1"] = pendingResponse{
+		peerID:  "peer-1",
+		fetchCh: ch,
+	}
+
+	tn.RemovePeerHandler("peer-1")
+
+	if _, exists := tn.responseChannels["req-1"]; exists {
+		t.Fatal("pending response should be removed for peer")
+	}
+
+	select {
+	case msg := <-ch:
+		if msg.Type != internalMsgTypePeerDisconnected {
+			t.Fatalf("expected disconnect notification, got %+v", msg)
+		}
+	default:
+		t.Fatal("pending fetch waiter should be notified")
 	}
 }
 
@@ -367,6 +481,34 @@ func BenchmarkTenantNetworkHandleReceive_ResponseRouting(b *testing.B) {
 	}
 	ch := make(chan NetworkMessage, 1)
 	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: ch}
+
+	payload, err := msgpack.Marshal(&NetworkMessage{
+		Type:      MsgTypeFetchRawResponse,
+		RequestID: "req-1",
+		Key:       "k1",
+		RawData:   []byte("v1"),
+	})
+	if err != nil {
+		b.Fatalf("marshal failed: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tn.handleReceive("peer-1", payload)
+		<-ch
+	}
+}
+
+func BenchmarkTenantNetworkHandleReceive_ResponseRouting_FetchLiteChannel(b *testing.B) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+	ch := make(chan fetchRawResponseLite, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", fetchCh: ch}
 
 	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,

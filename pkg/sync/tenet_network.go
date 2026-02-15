@@ -60,7 +60,15 @@ type PeerMessageHandler struct {
 type pendingResponse struct {
 	peerID     string
 	ch         chan NetworkMessage
+	fetchCh    chan fetchRawResponseLite
 	overflowCh chan struct{}
+}
+
+type fetchRawResponseLite struct {
+	Type      string
+	RequestID string
+	Key       string
+	RawData   []byte
 }
 
 const internalMsgTypePeerDisconnected = "__peer_disconnected__"
@@ -326,9 +334,17 @@ func (tn *TenantNetwork) dropPendingResponsesForPeerLocked(peerID string, notify
 		if !notify {
 			continue
 		}
-		select {
-		case waiter.ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}:
-		default:
+		if waiter.ch != nil {
+			select {
+			case waiter.ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}:
+			default:
+			}
+		}
+		if waiter.fetchCh != nil {
+			select {
+			case waiter.fetchCh <- fetchRawResponseLite{Type: internalMsgTypePeerDisconnected}:
+			default:
+			}
 		}
 	}
 }
@@ -339,49 +355,112 @@ func (tn *TenantNetwork) dropAllPendingResponsesLocked(notify bool) {
 		if !notify {
 			continue
 		}
-		select {
-		case waiter.ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}:
-		default:
+		if waiter.ch != nil {
+			select {
+			case waiter.ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}:
+			default:
+			}
+		}
+		if waiter.fetchCh != nil {
+			select {
+			case waiter.fetchCh <- fetchRawResponseLite{Type: internalMsgTypePeerDisconnected}:
+			default:
+			}
 		}
 	}
 }
 
+func (tn *TenantNetwork) signalWaiterOverflow(waiter pendingResponse) {
+	if waiter.overflowCh == nil {
+		return
+	}
+	select {
+	case waiter.overflowCh <- struct{}{}:
+	default:
+	}
+}
+
+func (tn *TenantNetwork) routeResponseToWaiter(waiter pendingResponse, msg NetworkMessage, peerID string) {
+	if waiter.ch == nil {
+		atomic.AddUint64(&tn.stats.droppedResponses, 1)
+		stdlog.Printf("[TenantNetwork:%s] response channel missing: request_id=%s peer=%s", tn.tenantID, msg.RequestID, peerID)
+		tn.signalWaiterOverflow(waiter)
+		return
+	}
+
+	select {
+	case waiter.ch <- msg:
+		atomic.AddUint64(&tn.stats.routedResponses, 1)
+	default:
+		atomic.AddUint64(&tn.stats.droppedResponses, 1)
+		stdlog.Printf("[TenantNetwork:%s] response channel is full: request_id=%s peer=%s", tn.tenantID, msg.RequestID, peerID)
+		tn.signalWaiterOverflow(waiter)
+	}
+}
+
+func (tn *TenantNetwork) routeFetchRawResponseToWaiter(waiter pendingResponse, msg fetchRawResponseLite, peerID string) {
+	if waiter.fetchCh != nil {
+		select {
+		case waiter.fetchCh <- msg:
+			atomic.AddUint64(&tn.stats.routedResponses, 1)
+		default:
+			atomic.AddUint64(&tn.stats.droppedResponses, 1)
+			stdlog.Printf("[TenantNetwork:%s] fetch response channel is full: request_id=%s peer=%s",
+				tn.tenantID, msg.RequestID, peerID)
+			tn.signalWaiterOverflow(waiter)
+		}
+		return
+	}
+
+	tn.routeResponseToWaiter(waiter, NetworkMessage{
+		Type:      msg.Type,
+		RequestID: msg.RequestID,
+		Key:       msg.Key,
+		RawData:   msg.RawData,
+	}, peerID)
+}
+
 func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
-	var msg NetworkMessage
-	if err := msgpack.Unmarshal(data, &msg); err != nil {
+	var lite fetchRawResponseLite
+	if err := msgpack.Unmarshal(data, &lite); err != nil {
 		stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
 		return
 	}
 
 	// Route only matched request IDs to in-flight waiters.
-	if msg.RequestID != "" {
+	if lite.RequestID != "" {
 		tn.mu.RLock()
-		waiter, ok := tn.responseChannels[msg.RequestID]
+		waiter, ok := tn.responseChannels[lite.RequestID]
 		tn.mu.RUnlock()
 
 		if ok {
 			if waiter.peerID != "" && waiter.peerID != peerID {
 				atomic.AddUint64(&tn.stats.unexpectedPeerResponses, 1)
 				stdlog.Printf("[TenantNetwork:%s] ignore response from unexpected peer: request_id=%s expected=%s got=%s",
-					tn.tenantID, msg.RequestID, waiter.peerID, peerID)
+					tn.tenantID, lite.RequestID, waiter.peerID, peerID)
 				return
 			}
 
-			select {
-			case waiter.ch <- msg:
-				atomic.AddUint64(&tn.stats.routedResponses, 1)
-			default:
-				atomic.AddUint64(&tn.stats.droppedResponses, 1)
-				stdlog.Printf("[TenantNetwork:%s] response channel is full: request_id=%s peer=%s", tn.tenantID, msg.RequestID, peerID)
-				if waiter.overflowCh != nil {
-					select {
-					case waiter.overflowCh <- struct{}{}:
-					default:
-					}
-				}
+			// Hot path: fetch raw responses only need a subset of fields.
+			if lite.Type == MsgTypeFetchRawResponse {
+				tn.routeFetchRawResponseToWaiter(waiter, lite, peerID)
+				return
 			}
+
+			var msg NetworkMessage
+			if err := msgpack.Unmarshal(data, &msg); err != nil {
+				stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
+				return
+			}
+			tn.routeResponseToWaiter(waiter, msg, peerID)
 			return
 		}
+	}
+
+	var msg NetworkMessage
+	if err := msgpack.Unmarshal(data, &msg); err != nil {
+		stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
+		return
 	}
 
 	tenantID := msg.TenantID
@@ -693,12 +772,12 @@ func (tn *TenantNetwork) fetchRawTableDataWithTenant(sourceNodeID string, tableN
 	start := time.Now()
 	atomic.AddUint64(&tn.stats.fetchRequests, 1)
 
-	responseCh := make(chan NetworkMessage, tn.config.FetchResponseBuffer)
+	responseCh := make(chan fetchRawResponseLite, tn.config.FetchResponseBuffer)
 	overflowCh := make(chan struct{}, 1)
 	tn.mu.Lock()
 	tn.responseChannels[requestID] = pendingResponse{
 		peerID:     sourceNodeID,
-		ch:         responseCh,
+		fetchCh:    responseCh,
 		overflowCh: overflowCh,
 	}
 	tn.mu.Unlock()
@@ -714,7 +793,7 @@ func (tn *TenantNetwork) fetchRawTableDataWithTenant(sourceNodeID string, tableN
 		return nil, err
 	}
 
-	rows, err := collectFetchRawResponses(responseCh, overflowCh, timeout, tn.config.FetchResponseIdleTimeout)
+	rows, err := collectFetchRawResponsesLite(responseCh, overflowCh, timeout, tn.config.FetchResponseIdleTimeout)
 	atomic.AddUint64(&tn.stats.fetchRowsReceived, uint64(len(rows)))
 
 	if err == nil {
@@ -740,6 +819,92 @@ func (tn *TenantNetwork) fetchRawTableDataWithTenant(sourceNodeID string, tableN
 	stdlog.Printf("[TenantNetwork:%s] fetch raw failed: peer=%s, table=%s, request_id=%s, rows=%d, duration=%s, err=%v",
 		tenantID, shortPeerID(sourceNodeID), tableName, requestID, len(rows), time.Since(start), err)
 	return rows, err
+}
+
+func collectFetchRawResponsesLite(responseCh <-chan fetchRawResponseLite, overflowCh <-chan struct{}, timeout time.Duration, idleTimeout time.Duration) ([]RawRowData, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if idleTimeout <= 0 {
+		idleTimeout = defaultFetchResponseIdleTimeout
+	}
+
+	overallTimer := time.NewTimer(timeout)
+	defer overallTimer.Stop()
+
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	stopIdle := func() {
+		if idleTimer == nil {
+			return
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+	}
+	defer stopIdle()
+
+	resetIdle := func() {
+		if idleTimer == nil {
+			idleTimer = time.NewTimer(idleTimeout)
+			idleC = idleTimer.C
+			return
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(idleTimeout)
+	}
+
+	rows := make([]RawRowData, 0, cap(responseCh))
+	for {
+		select {
+		case msg, ok := <-responseCh:
+			if !ok {
+				if len(rows) > 0 {
+					return rows, nil
+				}
+				return nil, fmt.Errorf("%w", ErrResponseChannelClosed)
+			}
+			if msg.Type == internalMsgTypePeerDisconnected {
+				return nil, fmt.Errorf("%w", ErrPeerDisconnectedBeforeResponse)
+			}
+			if msg.Type != MsgTypeFetchRawResponse {
+				continue
+			}
+			if msg.Key == fetchRawResponseDoneKey {
+				return rows, nil
+			}
+			if msg.Key == "" || msg.RawData == nil {
+				continue
+			}
+
+			rows = append(rows, RawRowData{
+				Key:  msg.Key,
+				Data: msg.RawData,
+			})
+			resetIdle()
+
+		case <-idleC:
+			// Backward compatibility: old peers may not send done marker.
+			return rows, nil
+
+		case <-overflowCh:
+			return nil, fmt.Errorf("%w", ErrResponseOverflow)
+
+		case <-overallTimer.C:
+			if len(rows) > 0 {
+				return rows, fmt.Errorf("%w: received %d rows", ErrTimeoutWaitingResponseCompletion, len(rows))
+			}
+			return nil, fmt.Errorf("%w", ErrTimeoutWaitingResponse)
+		}
+	}
 }
 
 func collectFetchRawResponses(responseCh <-chan NetworkMessage, overflowCh <-chan struct{}, timeout time.Duration, idleTimeout time.Duration) ([]RawRowData, error) {

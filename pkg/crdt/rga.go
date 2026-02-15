@@ -69,7 +69,11 @@ func (r *RGA[T]) Value() any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var res []T
+	capHint := 0
+	if len(r.Vertices) > 1 {
+		capHint = len(r.Vertices) - 1
+	}
+	res := make([]T, 0, capHint)
 	curr := r.Head
 	for curr != "" {
 		v := r.Vertices[curr]
@@ -90,21 +94,26 @@ func (r *RGA[T]) Iterator() func() (T, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// 创建快照以避免在迭代期间持有锁
+	capHint := 0
+	if len(r.Vertices) > 1 {
+		capHint = len(r.Vertices) - 1
+	}
+
+	// 创建顶点指针快照：相比复制 T 值，通常能减少分配和拷贝开销。
 	currID := r.Head
-	snapshot := make([]T, 0)
+	snapshot := make([]*RGAVertex[T], 0, capHint)
 	for currID != "" {
 		v := r.Vertices[currID]
 		currID = v.Next
 		if !v.Deleted && v.ID != r.Head {
-			snapshot = append(snapshot, v.Value)
+			snapshot = append(snapshot, v)
 		}
 	}
 
 	index := 0
 	return func() (T, bool) {
 		if index < len(snapshot) {
-			val := snapshot[index]
+			val := snapshot[index].Value
 			index++
 			return val, true
 		}
@@ -284,16 +293,9 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	}
 
 	r.Vertices = clonedVertices
-	r.edges = make(map[string][]*RGAVertex[T], len(clonedVertices))
-	for id, v := range r.Vertices {
-		if id == localHead {
-			continue
-		}
-		r.edges[v.Origin] = append(r.edges[v.Origin], v)
-	}
-	for _, children := range r.edges {
-		sortChildren(children)
-	}
+	// Build edges lazily in ensureEdges(). This avoids heavy allocations on
+	// merge-into-empty hot paths while keeping behavior unchanged.
+	r.edges = make(map[string][]*RGAVertex[T])
 }
 
 // Merge merges another RGA state using incremental updates.
@@ -433,6 +435,8 @@ func (r *RGA[T]) Merge(other CRDT) error {
 func (r *RGA[T]) GC(safeTimestamp int64) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.ensureEdges()
 
 	count := 0
 	prevID := r.Head
