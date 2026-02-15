@@ -419,47 +419,30 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 使用临时 map 先序列化，确保原子性
-	tempEntries := make(map[string]*Entry, len(m.Entries))
-
-	// 先复制现有的 Entries
-	for k, e := range m.Entries {
-		tempEntries[k] = &Entry{
-			Type:     e.Type,
-			Data:     make([]byte, len(e.Data)),
-			TypeHint: e.TypeHint,
-		}
-		copy(tempEntries[k].Data, e.Data)
-	}
-
-	// Flush Cache to tempEntries
+	// Flush cache into Entries in place, then serialize snapshot directly.
 	for k, c := range m.cache {
 		b, err := c.Bytes()
 		if err != nil {
 			return nil, fmt.Errorf("%w: 序列化键 '%s' 失败: %v", ErrSerialization, k, err)
 		}
-		// Update Entry in tempEntries
-		if existing, ok := tempEntries[k]; ok {
+		if existing, ok := m.Entries[k]; ok {
 			existing.Data = b
+			existing.Type = c.Type()
 		} else {
-			tempEntries[k] = &Entry{Type: c.Type(), Data: b}
+			m.Entries[k] = &Entry{Type: c.Type(), Data: b}
 		}
 	}
 
-	// 创建临时结构体用于序列化（避免序列化锁和 lruKeys）
-	temp := &struct {
-		Entries map[string]*Entry
+	state := &struct {
+		Entries map[string]*Entry `json:"entries"`
 	}{
-		Entries: tempEntries,
+		Entries: m.Entries,
 	}
 
-	data, err := json.Marshal(temp)
+	data, err := json.Marshal(state)
 	if err != nil {
 		return nil, fmt.Errorf("%w: JSON 序列化失败: %v", ErrSerialization, err)
 	}
-
-	// 成功后更新真实的 Entries
-	m.Entries = tempEntries
 	return data, nil
 }
 

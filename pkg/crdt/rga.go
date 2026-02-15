@@ -1,13 +1,13 @@
 package crdt
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // RGA 实现复制可增长数组 (Replicated Growable Array)。
@@ -164,7 +164,11 @@ func (r *RGA[T]) Apply(op Op) error {
 
 	switch o := op.(type) {
 	case OpRGAInsert[T]:
-		newID := uuid.NewString()
+		id, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("generate uuidv7: %w", err)
+		}
+		newID := id.String()
 		var ts int64
 		if r.Clock != nil {
 			ts = r.Clock.Now()
@@ -519,35 +523,32 @@ func (r *RGA[T]) Bytes() ([]byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// 创建临时结构体用于序列化，避免锁被 JSON 序列化期间持有
-	tempVertices := make(map[string]*RGAVertex[T], len(r.Vertices))
-	for k, v := range r.Vertices {
-		tempVertices[k] = &RGAVertex[T]{
-			ID:        v.ID,
-			Value:     v.Value,
-			Origin:    v.Origin,
-			Next:      v.Next,
-			Timestamp: v.Timestamp,
-			Deleted:   v.Deleted,
-			DeletedAt: v.DeletedAt,
-		}
-	}
-
-	temp := &struct {
-		Vertices map[string]*RGAVertex[T]
-		Head     string
+	state := &struct {
+		Vertices map[string]*RGAVertex[T] `msgpack:"vertices"`
+		Head     string                   `msgpack:"head"`
 	}{
-		Vertices: tempVertices,
+		Vertices: r.Vertices,
 		Head:     r.Head,
 	}
 
-	return json.Marshal(temp)
+	return msgpack.Marshal(state)
 }
 
 func FromBytesRGA[T any](data []byte) (*RGA[T], error) {
-	r := &RGA[T]{}
-	if err := json.Unmarshal(data, r); err != nil {
+	state := &struct {
+		Vertices map[string]*RGAVertex[T] `msgpack:"vertices"`
+		Head     string                   `msgpack:"head"`
+	}{}
+
+	if err := msgpack.Unmarshal(data, state); err != nil {
 		return nil, err
 	}
-	return r, nil
+	if state.Vertices == nil {
+		state.Vertices = make(map[string]*RGAVertex[T])
+	}
+	return &RGA[T]{
+		Vertices: state.Vertices,
+		Head:     state.Head,
+		edges:    make(map[string][]*RGAVertex[T]),
+	}, nil
 }
