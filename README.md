@@ -6,6 +6,7 @@ Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库�
 - SQL-Like 查询：`Where` / `And` / `OrderBy` / `Limit` / `Offset` / `IN`
 - 自动索引与查询规划（Longest Prefix Match）
 - 分布式自动同步（增量、全量补齐、重连）
+- `gc_floor` 安全栅栏（落后节点自动全量追平）
 - 面向多节点场景的手动 GC 协商与可观测性
 
 完整说明见 `USER_GUIDE.md`。
@@ -190,6 +191,9 @@ _ = err
 - 自动广播本地变更
 - 自动重连
 - 增量同步 + 全量同步补齐
+- `gc_floor` 落地持久化与传播（心跳/控制消息携带）
+- peer `gc_floor` 与本地不一致时，按 peer 级别阻断增量
+- peer `gc_floor` 领先本地时自动触发 full sync 追平
 - HLC 驱动的因果一致时序
 - 网络层连接状态作为在线/离线判定来源（应用层不再单独做离线超时判定）
 
@@ -344,21 +348,22 @@ _ = result2
 ### 多节点协商 GC（推荐）
 
 ```go
-// 通过 LocalNode 触发（内部会执行 prepare -> commit 两阶段协商）
+// 通过 LocalNode 触发（内部会执行 prepare -> commit -> execute，必要时 abort）
 gcResult, err := node.ManualGCTenant("tenant-1", 15*time.Second)
 if err != nil {
 	log.Fatal(err)
 }
 
-fmt.Printf("safeTs=%d prepared=%d committed=%d localRemoved=%d\n",
+fmt.Printf("safeTs=%d prepared=%d committed=%d executed=%d localRemoved=%d\n",
 	gcResult.SafeTimestamp,
 	len(gcResult.PreparedPeers),
 	len(gcResult.CommittedPeers),
+	len(gcResult.ExecutedPeers),
 	gcResult.LocalResult.TombstonesRemoved,
 )
 ```
 
-也可直接调用：
+也可调用 engine 对象的 `ManualGC` 方法：
 
 ```go
 gcResult, err := engine.ManualGC("tenant-1", 15*time.Second)
@@ -369,7 +374,11 @@ _ = err
 说明：
 
 - 协调器先向在线节点收集各自 `safeTimestamp`，取最小值作为本轮 `safeTimestamp`
-- 所有参与节点确认后才进入 commit 并执行 GC
+- `commit` 阶段仅做可执行确认，不执行 GC
+- 所有参与节点确认后才进入 `execute` 阶段执行 GC
+- 任一阶段失败时会触发 `abort` 清理远端 pending 状态（尽力而为）
+- 节点在本地 `execute` 成功后会更新并持久化 `gc_floor`
+- `gc_floor` 不一致的 peer 不参与增量同步；peer floor 领先本地时会先 full sync 追平
 - `timeout <= 0` 时会使用默认超时（当前实现为 10 秒）
 
 ## 性能建议

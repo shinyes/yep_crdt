@@ -12,7 +12,7 @@
 *   **自动索引**: 基于 Schema 定义自动维护二级索引，查询速度快。
 *   **类型安全**: 核心 API 支持泛型，减少运行时错误。
 *   **高性能**: 底层使用 BadgerDB KV 存储，结合 LSM Tree 提供高吞吐量的读写。
-*   **垃圾回收 (GC)**: 支持数据库级与表级 GC，并提供多节点手动协商 GC 能力（Safe Timestamp 协商）。
+*   **垃圾回收 (GC)**: 支持数据库级与表级 GC，并提供多节点手动协商 GC 能力（prepare/commit/execute）与 `gc_floor` 安全栅栏。
 
 ---
 
@@ -24,7 +24,7 @@
 go get github.com/shinyes/yep_crdt
 ```
 
-确保你的 Go 版本 >= 1.20。
+建议使用与仓库 `go.mod` 一致的 Go 版本（当前为 `1.25.5`）。
 
 ---
 
@@ -378,7 +378,8 @@ Yep CRDT 通过 GC 清理 CRDT 操作产生的墓碑（Tombstone），防止元�
 
 - 每个参与节点先计算自己的 `safeTimestamp`
 - 协调者取所有节点返回值的最小值，作为本轮最终 `safeTimestamp`
-- 所有参与节点确认后，再统一执行 GC
+- `commit` 阶段只做可执行确认，不执行 GC
+- `execute` 阶段才真正执行 GC
 
 #### 为什么需要 GC？
 在 CRDT 系统中，删除操作不会立即删除数据，而是标记为已删除（Tombstone）。这确保了：
@@ -446,7 +447,7 @@ fmt.Printf("清理墓碑: %d\n", result.TombstonesRemoved)
 
 ### 6.4 多节点手动协商 GC（推荐）
 
-同步层提供 `prepare -> commit` 两阶段协商流程，建议通过 `LocalNode` 或 `MultiEngine` 触发。
+同步层提供 `prepare -> commit -> execute` 协商流程（失败时会发送 `abort` 清理 pending 状态），建议通过 `LocalNode` 或 `MultiEngine` 触发。
 
 ```go
 // LocalNode 入口（推荐）
@@ -455,10 +456,11 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("safeTs=%d prepared=%d committed=%d localRemoved=%d\n",
+fmt.Printf("safeTs=%d prepared=%d committed=%d executed=%d localRemoved=%d\n",
     gcResult.SafeTimestamp,
     len(gcResult.PreparedPeers),
     len(gcResult.CommittedPeers),
+    len(gcResult.ExecutedPeers),
     gcResult.LocalResult.TombstonesRemoved,
 )
 ```
@@ -476,7 +478,9 @@ _ = gcResult
 
 - `prepare`：收集参与节点 `safeTimestamp`
 - 协调者取最小值
-- `commit`：向参与节点下发最终 `safeTimestamp` 并执行 GC
+- `commit`：向参与节点下发最终 `safeTimestamp`，仅确认可执行
+- `execute`：在所有参与节点确认后执行 GC
+- `abort`：任一阶段失败时清理远端 pending 状态（尽力而为）
 
 实现备注：
 
@@ -739,21 +743,33 @@ _ = rows
 - `node.ManualGCTenant(tenantID, timeout)`
 - `engine.ManualGC(tenantID, timeout)`
 
-执行流程为 `prepare -> commit` 两阶段：
+执行流程为 `prepare -> commit -> execute` 三阶段（失败时带 `abort`）：
 
 1. 协调者向在线节点发送 `gc_prepare`，收集各节点 `safeTimestamp`
 2. 协调者取最小值作为最终 `safeTimestamp`
-3. 协调者发送 `gc_commit`，参与节点确认并执行 `db.GC(safeTimestamp)`
+3. 协调者发送 `gc_commit`，参与节点仅确认可执行
+4. 协调者发送 `gc_execute`，参与节点执行 `db.GC(safeTimestamp)`
+5. 任一阶段失败时发送 `gc_abort` 清理远端 pending 状态（尽力而为）
 
 ```go
 gcResult, err := node.ManualGCTenant("tenant-1", 15*time.Second)
 if err != nil {
     log.Fatal(err)
 }
-fmt.Printf("safeTs=%d prepared=%d committed=%d removed=%d\n",
+fmt.Printf("safeTs=%d prepared=%d committed=%d executed=%d removed=%d\n",
     gcResult.SafeTimestamp,
     len(gcResult.PreparedPeers),
     len(gcResult.CommittedPeers),
+    len(gcResult.ExecutedPeers),
     gcResult.LocalResult.TombstonesRemoved,
 )
 ```
+
+### 9.6 `gc_floor` 安全栅栏（新增）
+
+每个节点持久化本地 `gc_floor`（已成功执行 GC 的最大 `safeTimestamp`），并在心跳/控制消息里传播。
+
+- 若 `peer.gc_floor != local.gc_floor`，该 peer 的增量同步会被阻断（发送与接收都按 peer 门控）
+- 若 `peer.gc_floor > local.gc_floor`，本地会自动从该 peer 触发 full sync 追平
+- full sync 成功后本地提升 `gc_floor`，恢复与该 peer 的增量同步
+- 该机制用于防止“落后节点误参与增量同步导致缺历史上下文”的风险
