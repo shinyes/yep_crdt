@@ -3,6 +3,7 @@ package sync
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,46 @@ func TestTenantNetworkHandleReceive_ResponseFromUnexpectedPeerIgnored(t *testing
 	case msg := <-responseCh:
 		t.Fatalf("unexpected routed response: %+v", msg)
 	default:
+	}
+}
+
+func TestTenantNetworkHandleReceive_RequestWithRequestIDNotRoutedToWaiter(t *testing.T) {
+	tn := &TenantNetwork{
+		tenantID:         "tenant-1",
+		peerHandlers:     make(map[string]PeerMessageHandler),
+		broadcastHandler: PeerMessageHandler{},
+		responseChannels: make(map[string]pendingResponse),
+	}
+
+	responseCh := make(chan NetworkMessage, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: responseCh}
+
+	broadcastCalled := false
+	tn.SetBroadcastHandler(PeerMessageHandler{OnReceive: func(peerID string, msg NetworkMessage) {
+		broadcastCalled = true
+		if msg.Type != MsgTypeGCPrepare {
+			t.Fatalf("unexpected message type: %s", msg.Type)
+		}
+	}})
+
+	payload, err := msgpack.Marshal(&NetworkMessage{
+		Type:      MsgTypeGCPrepare,
+		RequestID: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	tn.handleReceive("peer-1", payload)
+
+	select {
+	case msg := <-responseCh:
+		t.Fatalf("request should not be routed into waiter channel: %+v", msg)
+	default:
+	}
+
+	if !broadcastCalled {
+		t.Fatal("request message should fall through to broadcast handler")
 	}
 }
 
@@ -322,6 +363,33 @@ func TestTenantNetworkNextRequestID_SequentialWithoutTunnel(t *testing.T) {
 	}
 }
 
+func TestTenantNetworkNextRequestID_WithLocalIDPrefix(t *testing.T) {
+	tn := &TenantNetwork{}
+	tn.localNodeID.Store("node-a")
+
+	first := tn.nextRequestID()
+	second := tn.nextRequestID()
+	if first == second {
+		t.Fatalf("request IDs should be unique, got first=%s second=%s", first, second)
+	}
+
+	if !strings.HasPrefix(first, "node-a-") || !strings.HasPrefix(second, "node-a-") {
+		t.Fatalf("request IDs should include local prefix, got first=%s second=%s", first, second)
+	}
+
+	firstSeq := strings.TrimPrefix(first, "node-a-")
+	secondSeq := strings.TrimPrefix(second, "node-a-")
+	if firstSeq == first || secondSeq == second {
+		t.Fatalf("request IDs should contain numeric suffix, got first=%s second=%s", first, second)
+	}
+	if _, err := strconv.ParseUint(firstSeq, 10, 64); err != nil {
+		t.Fatalf("first request ID suffix is not numeric: %q (%v)", first, err)
+	}
+	if _, err := strconv.ParseUint(secondSeq, 10, 64); err != nil {
+		t.Fatalf("second request ID suffix is not numeric: %q (%v)", second, err)
+	}
+}
+
 func TestTenantNetworkRemovePeerHandler_NotifiesPendingWaiter(t *testing.T) {
 	tn := &TenantNetwork{
 		tenantID:         "tenant-1",
@@ -466,7 +534,11 @@ func BenchmarkTenantNetworkNextRequestID_WithLocalIDCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		id := tn.nextRequestID()
-		if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		parts := strings.SplitN(id, "-", 2)
+		if len(parts) != 2 {
+			b.Fatalf("invalid prefixed request ID format %q", id)
+		}
+		if _, err := strconv.ParseUint(parts[1], 10, 64); err != nil {
 			b.Fatalf("invalid request ID %q: %v", id, err)
 		}
 	}

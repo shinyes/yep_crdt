@@ -322,7 +322,20 @@ func (tn *TenantNetwork) setupCallbacks() {
 
 func (tn *TenantNetwork) nextRequestID() string {
 	seq := atomic.AddUint64(&tn.requestCounter, 1)
-	return strconv.FormatUint(seq, 10)
+	localID := tn.currentLocalID()
+	if localID == "" {
+		return strconv.FormatUint(seq, 10)
+	}
+	return localID + "-" + strconv.FormatUint(seq, 10)
+}
+
+func isWaiterResponseType(msgType string) bool {
+	switch msgType {
+	case MsgTypeFetchRawResponse, MsgTypeGCPrepareAck, MsgTypeGCCommitAck, MsgTypeFetchResponse:
+		return true
+	default:
+		return false
+	}
 }
 
 func (tn *TenantNetwork) dropPendingResponsesForPeerLocked(peerID string, notify bool) {
@@ -427,13 +440,13 @@ func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 		return
 	}
 
-	// Route only matched request IDs to in-flight waiters.
+	// Route only matched response messages to in-flight waiters.
 	if lite.RequestID != "" {
 		tn.mu.RLock()
 		waiter, ok := tn.responseChannels[lite.RequestID]
 		tn.mu.RUnlock()
 
-		if ok {
+		if ok && isWaiterResponseType(lite.Type) {
 			if waiter.peerID != "" && waiter.peerID != peerID {
 				atomic.AddUint64(&tn.stats.unexpectedPeerResponses, 1)
 				stdlog.Printf("[TenantNetwork:%s] ignore response from unexpected peer: request_id=%s expected=%s got=%s",
