@@ -27,11 +27,13 @@ func (s NodeStatus) String() string {
 
 // NodeInfo stores runtime metadata for one peer.
 type NodeInfo struct {
-	ID             string
-	LastHeartbeat  time.Time
-	IsOnline       bool
-	LastKnownClock int64
-	LastSyncTime   time.Time
+	ID                 string
+	LastHeartbeat      time.Time
+	IsOnline           bool
+	LastKnownClock     int64
+	LastKnownGCFloor   int64
+	IncrementalBlocked bool
+	LastSyncTime       time.Time
 }
 
 // Config controls sync runtime behavior.
@@ -122,11 +124,17 @@ const (
 
 	// Manual GC coordination flow:
 	// 1) gc_prepare -> gc_prepare_ack
-	// 2) gc_commit  -> gc_commit_ack
+	// 2) gc_commit  -> gc_commit_ack   (confirm only, no GC execution)
+	// 3) gc_execute -> gc_execute_ack  (actual GC execution)
+	// 4) gc_abort   -> gc_abort_ack    (best-effort pending cleanup)
 	MsgTypeGCPrepare    = "gc_prepare"
 	MsgTypeGCPrepareAck = "gc_prepare_ack"
 	MsgTypeGCCommit     = "gc_commit"
 	MsgTypeGCCommitAck  = "gc_commit_ack"
+	MsgTypeGCExecute    = "gc_execute"
+	MsgTypeGCExecuteAck = "gc_execute_ack"
+	MsgTypeGCAbort      = "gc_abort"
+	MsgTypeGCAbortAck   = "gc_abort_ack"
 )
 
 const (
@@ -148,6 +156,7 @@ type NetworkMessage struct {
 
 	Timestamp int64 `json:"timestamp"`
 	Clock     int64 `json:"clock,omitempty"`
+	GCFloor   int64 `json:"gc_floor,omitempty"`
 
 	// Manual GC control fields.
 	SafeTimestamp int64  `json:"safe_timestamp,omitempty"`

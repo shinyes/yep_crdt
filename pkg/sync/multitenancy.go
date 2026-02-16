@@ -172,13 +172,20 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 	switch msg.Type {
 	case MsgTypeHeartbeat:
 		// 更新节点心跳
-		tnm.nodeMgr.OnHeartbeat(peerID, msg.Clock)
+		tnm.nodeMgr.OnHeartbeat(peerID, msg.Clock, msg.GCFloor)
 		// 更新本地时钟
 		if msg.Clock > 0 {
 			tnm.nodeMgr.UpdateLocalClock(msg.Clock)
 		}
 
 	case MsgTypeRawData:
+		if msg.GCFloor > 0 {
+			tnm.nodeMgr.ObservePeerGCFloor(peerID, msg.GCFloor)
+		}
+		if !tnm.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			stdlog.Printf("[MultiTenantManager:%s] skip raw data from blocked incremental peer: from=%s", tenantID, shortPeerID(peerID))
+			return
+		}
 		// 处理原始 CRDT 字节同步
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			stdlog.Printf("[MultiTenantManager:%s] 收到原始数据: table=%s, key=%s, from=%s", tenantID, msg.Table, msg.Key, shortPeerID(peerID))
@@ -191,6 +198,13 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 		}
 
 	case MsgTypeRawDelta:
+		if msg.GCFloor > 0 {
+			tnm.nodeMgr.ObservePeerGCFloor(peerID, msg.GCFloor)
+		}
+		if !tnm.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			stdlog.Printf("[MultiTenantManager:%s] skip raw delta from blocked incremental peer: from=%s", tenantID, shortPeerID(peerID))
+			return
+		}
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			stdlog.Printf("[MultiTenantManager:%s] received delta data: table=%s, key=%s, cols=%v, from=%s",
 				tenantID, msg.Table, msg.Key, msg.Columns, shortPeerID(peerID))
@@ -211,6 +225,12 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 
 	case MsgTypeGCCommit:
 		tnm.nodeMgr.HandleManualGCCommit(peerID, msg)
+
+	case MsgTypeGCExecute:
+		tnm.nodeMgr.HandleManualGCExecute(peerID, msg)
+
+	case MsgTypeGCAbort:
+		tnm.nodeMgr.HandleManualGCAbort(peerID, msg)
 	}
 }
 

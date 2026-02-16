@@ -313,34 +313,58 @@ func (rt *tenantRuntime) onDataChangedDetailed(tableName string, key uuid.UUID, 
 		return
 	}
 
-	if len(columns) > 0 {
-		if err := rt.nodeMgr.dataSync.BroadcastRowDelta(tableName, key, columns); err != nil {
-			log.Printf("[MultiEngine:%s] delta broadcast failed, fallback full row: table=%s, key=%s, cols=%v, err=%v",
-				rt.tenantID, tableName, shortPeerID(key.String()), columns, err)
-			if fullErr := rt.nodeMgr.dataSync.BroadcastRow(tableName, key); fullErr != nil {
-				log.Printf("[MultiEngine:%s] fallback full broadcast failed: table=%s, key=%s, err=%v",
-					rt.tenantID, tableName, shortPeerID(key.String()), fullErr)
-			}
-		}
+	peers := rt.nodeMgr.GetOnlineNodes()
+	if len(peers) == 0 {
 		return
 	}
 
-	if err := rt.nodeMgr.dataSync.BroadcastRow(tableName, key); err != nil {
-		log.Printf("[MultiEngine:%s] full broadcast failed: table=%s, key=%s, err=%v",
-			rt.tenantID, tableName, shortPeerID(key.String()), err)
+	for _, peerID := range peers {
+		if peerID == "" || peerID == rt.nodeMgr.GetLocalNodeID() {
+			continue
+		}
+		if !rt.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			log.Printf("[MultiEngine:%s] skip incremental broadcast to blocked peer: peer=%s, table=%s, key=%s",
+				rt.tenantID, shortPeerID(peerID), tableName, shortPeerID(key.String()))
+			continue
+		}
+
+		if len(columns) > 0 {
+			if err := rt.nodeMgr.dataSync.SendRowDeltaToPeer(peerID, tableName, key, columns); err != nil {
+				log.Printf("[MultiEngine:%s] delta send failed, fallback full row: peer=%s, table=%s, key=%s, cols=%v, err=%v",
+					rt.tenantID, shortPeerID(peerID), tableName, shortPeerID(key.String()), columns, err)
+				if fullErr := rt.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, key); fullErr != nil {
+					log.Printf("[MultiEngine:%s] fallback full send failed: peer=%s, table=%s, key=%s, err=%v",
+						rt.tenantID, shortPeerID(peerID), tableName, shortPeerID(key.String()), fullErr)
+				}
+			}
+			continue
+		}
+
+		if err := rt.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, key); err != nil {
+			log.Printf("[MultiEngine:%s] full row send failed: peer=%s, table=%s, key=%s, err=%v",
+				rt.tenantID, shortPeerID(peerID), tableName, shortPeerID(key.String()), err)
+		}
 	}
 }
 
 func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 	if msg.Type != MsgTypeHeartbeat {
 		rt.nodeMgr.MarkPeerSeen(peerID)
+		if msg.GCFloor > 0 {
+			rt.nodeMgr.ObservePeerGCFloor(peerID, msg.GCFloor)
+		}
 	}
 
 	switch msg.Type {
 	case MsgTypeHeartbeat:
-		rt.nodeMgr.OnHeartbeat(peerID, msg.Clock)
+		rt.nodeMgr.OnHeartbeat(peerID, msg.Clock, msg.GCFloor)
 
 	case MsgTypeRawData:
+		if !rt.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			log.Printf("[MultiEngine:%s] skip raw row from blocked incremental peer: from=%s",
+				rt.tenantID, shortPeerID(peerID))
+			return
+		}
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			log.Printf("[MultiEngine:%s] received full row: table=%s, key=%s, from=%s",
 				rt.tenantID, msg.Table, shortPeerID(msg.Key), shortPeerID(peerID))
@@ -350,6 +374,11 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 		}
 
 	case MsgTypeRawDelta:
+		if !rt.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			log.Printf("[MultiEngine:%s] skip raw delta from blocked incremental peer: from=%s",
+				rt.tenantID, shortPeerID(peerID))
+			return
+		}
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			log.Printf("[MultiEngine:%s] received row delta: table=%s, key=%s, cols=%v, from=%s",
 				rt.tenantID, msg.Table, shortPeerID(msg.Key), msg.Columns, shortPeerID(peerID))
@@ -372,6 +401,12 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 
 	case MsgTypeGCCommit:
 		rt.nodeMgr.HandleManualGCCommit(peerID, msg)
+
+	case MsgTypeGCExecute:
+		rt.nodeMgr.HandleManualGCExecute(peerID, msg)
+
+	case MsgTypeGCAbort:
+		rt.nodeMgr.HandleManualGCAbort(peerID, msg)
 	}
 }
 

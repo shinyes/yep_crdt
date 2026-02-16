@@ -101,6 +101,38 @@ func TestRunManualGCCommitPhase_Rejected(t *testing.T) {
 	}
 }
 
+func TestRunManualGCExecutePhase_Rejected(t *testing.T) {
+	request := func(peerID string, msg *NetworkMessage, timeout time.Duration) (*NetworkMessage, error) {
+		if msg == nil || msg.Type != MsgTypeGCExecute {
+			t.Fatalf("unexpected execute message: %#v", msg)
+		}
+		if peerID == "peer-a" {
+			return &NetworkMessage{
+				Type:    MsgTypeGCExecuteAck,
+				Success: true,
+			}, nil
+		}
+		return &NetworkMessage{
+			Type:    MsgTypeGCExecuteAck,
+			Success: false,
+			Error:   "gc failed",
+		}, nil
+	}
+
+	executedPeers, err := runManualGCExecutePhase(
+		[]string{"peer-a", "peer-b"},
+		123,
+		time.Second,
+		request,
+	)
+	if err == nil {
+		t.Fatal("expected execute rejection error")
+	}
+	if len(executedPeers) != 1 || executedPeers[0] != "peer-a" {
+		t.Fatalf("unexpected executed peers: %#v", executedPeers)
+	}
+}
+
 func TestNodeManager_HandleManualGCPrepare_SendsAck(t *testing.T) {
 	s, err := store.NewBadgerStore(t.TempDir() + "/db")
 	if err != nil {
@@ -193,6 +225,135 @@ func TestNodeManager_HandleManualGCCommit_Success(t *testing.T) {
 	if !sent.Success {
 		t.Fatalf("expected commit success, got err=%s", sent.Error)
 	}
+
+	nm.mu.RLock()
+	pendingSafeTimestamp, exists := nm.manualGCPending["peer-1"]
+	nm.mu.RUnlock()
+	if !exists {
+		t.Fatal("expected commit to record pending state")
+	}
+	if pendingSafeTimestamp != safeTimestamp {
+		t.Fatalf("unexpected pending safe timestamp: want=%d got=%d", safeTimestamp, pendingSafeTimestamp)
+	}
+}
+
+func TestNodeManager_HandleManualGCExecute_RejectsWithoutCommit(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	net := &manualGCRecordNetwork{}
+	nm.RegisterNetwork(net)
+
+	safeTimestamp := nm.CalculateSafeTimestamp()
+	nm.HandleManualGCExecute("peer-1", NetworkMessage{
+		Type:          MsgTypeGCExecute,
+		RequestID:     "req-execute-no-commit",
+		SafeTimestamp: safeTimestamp,
+	})
+
+	sent := net.LastSent()
+	if sent == nil {
+		t.Fatal("expected execute ack to be sent")
+	}
+	if sent.Type != MsgTypeGCExecuteAck {
+		t.Fatalf("unexpected response type: %s", sent.Type)
+	}
+	if sent.Success {
+		t.Fatalf("expected execute rejection without commit")
+	}
+	if !strings.Contains(sent.Error, "no pending manual gc commit") {
+		t.Fatalf("unexpected rejection reason: %s", sent.Error)
+	}
+}
+
+func TestNodeManager_HandleManualGCExecute_Success(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	net := &manualGCRecordNetwork{}
+	nm.RegisterNetwork(net)
+
+	safeTimestamp := nm.CalculateSafeTimestamp()
+	nm.HandleManualGCCommit("peer-1", NetworkMessage{
+		Type:          MsgTypeGCCommit,
+		RequestID:     "req-commit-for-execute",
+		SafeTimestamp: safeTimestamp,
+	})
+
+	nm.HandleManualGCExecute("peer-1", NetworkMessage{
+		Type:          MsgTypeGCExecute,
+		RequestID:     "req-execute",
+		SafeTimestamp: safeTimestamp,
+	})
+
+	sent := net.LastSent()
+	if sent == nil {
+		t.Fatal("expected execute ack to be sent")
+	}
+	if sent.Type != MsgTypeGCExecuteAck {
+		t.Fatalf("unexpected response type: %s", sent.Type)
+	}
+	if !sent.Success {
+		t.Fatalf("expected execute success, got err=%s", sent.Error)
+	}
+
+	nm.mu.RLock()
+	_, exists := nm.manualGCPending["peer-1"]
+	nm.mu.RUnlock()
+	if exists {
+		t.Fatal("expected pending state to be cleared after execute success")
+	}
+}
+
+func TestNodeManager_HandleManualGCAbort_ClearsPending(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	net := &manualGCRecordNetwork{}
+	nm.RegisterNetwork(net)
+
+	safeTimestamp := nm.CalculateSafeTimestamp()
+	nm.HandleManualGCCommit("peer-1", NetworkMessage{
+		Type:          MsgTypeGCCommit,
+		RequestID:     "req-commit-for-abort",
+		SafeTimestamp: safeTimestamp,
+	})
+
+	nm.HandleManualGCAbort("peer-1", NetworkMessage{
+		Type:          MsgTypeGCAbort,
+		RequestID:     "req-abort",
+		SafeTimestamp: safeTimestamp,
+	})
+
+	sent := net.LastSent()
+	if sent == nil {
+		t.Fatal("expected abort ack to be sent")
+	}
+	if sent.Type != MsgTypeGCAbortAck {
+		t.Fatalf("unexpected response type: %s", sent.Type)
+	}
+	if !sent.Success {
+		t.Fatalf("expected abort success, got err=%s", sent.Error)
+	}
+
+	nm.mu.RLock()
+	_, exists := nm.manualGCPending["peer-1"]
+	nm.mu.RUnlock()
+	if exists {
+		t.Fatal("expected pending state to be cleared by abort")
+	}
 }
 
 func TestMultiEngine_ManualGC_LocalOnly(t *testing.T) {
@@ -233,6 +394,9 @@ func TestMultiEngine_ManualGC_LocalOnly(t *testing.T) {
 	}
 	if len(result.CommittedPeers) != 0 {
 		t.Fatalf("unexpected committed peers: %#v", result.CommittedPeers)
+	}
+	if len(result.ExecutedPeers) != 0 {
+		t.Fatalf("unexpected executed peers: %#v", result.ExecutedPeers)
 	}
 }
 

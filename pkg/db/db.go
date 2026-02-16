@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/index"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
+)
+
+const (
+	sysKeyDatabaseID = "_sys/database_id"
+	sysKeyNodeID     = "_sys/node_id"
+	sysKeyGCFloor    = "_sys/gc_floor"
 )
 
 // SyncConfig 同步配置
@@ -96,7 +103,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	// 1. Check Database ID
 	var storedDBID string
 	err := s.View(func(txn store.Tx) error {
-		val, err := txn.Get([]byte("_sys/database_id"))
+		val, err := txn.Get([]byte(sysKeyDatabaseID))
 		if err == nil {
 			storedDBID = string(val)
 			return nil
@@ -114,7 +121,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	} else {
 		// First time, store it
 		if err := s.Update(func(txn store.Tx) error {
-			return txn.Set([]byte("_sys/database_id"), []byte(databaseID), 0)
+			return txn.Set([]byte(sysKeyDatabaseID), []byte(databaseID), 0)
 		}); err != nil {
 			panic(fmt.Sprintf("存储 Database ID 失败: %v", err))
 		}
@@ -123,7 +130,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	// 2. Load or generate NodeID
 	var nodeID string
 	err = s.View(func(txn store.Tx) error {
-		val, err := txn.Get([]byte("_sys/node_id"))
+		val, err := txn.Get([]byte(sysKeyNodeID))
 		if err == nil {
 			nodeID = string(val)
 			return nil
@@ -137,7 +144,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 	if nodeID == "" || err == store.ErrKeyNotFound {
 		nodeID = "node-" + uuid.NewString()
 		if err := s.Update(func(txn store.Tx) error {
-			return txn.Set([]byte("_sys/node_id"), []byte(nodeID), 0)
+			return txn.Set([]byte(sysKeyNodeID), []byte(nodeID), 0)
 		}); err != nil {
 			panic(fmt.Sprintf("存储 Node ID 失败: %v", err))
 		}
@@ -348,6 +355,64 @@ func (db *DB) GC(safeTimestamp int64) *GCResult {
 func (db *DB) GCByTimeOffset(offset time.Duration) *GCResult {
 	safeTimestamp := db.clock.Now() - offset.Milliseconds()
 	return db.GC(safeTimestamp)
+}
+
+// GCFloor returns the persisted GC floor (max executed safe timestamp).
+// If never set, returns 0.
+func (db *DB) GCFloor() int64 {
+	var floor int64
+	if db == nil || db.store == nil {
+		return 0
+	}
+
+	err := db.store.View(func(txn store.Tx) error {
+		val, err := txn.Get([]byte(sysKeyGCFloor))
+		if err == store.ErrKeyNotFound {
+			floor = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		parsed, parseErr := strconv.ParseInt(string(val), 10, 64)
+		if parseErr != nil {
+			return parseErr
+		}
+		floor = parsed
+		return nil
+	})
+	if err != nil {
+		return 0
+	}
+	return floor
+}
+
+// SetGCFloor persists monotonic GC floor.
+// The stored floor is max(current floor, floor).
+func (db *DB) SetGCFloor(floor int64) error {
+	if db == nil || db.store == nil || floor <= 0 {
+		return nil
+	}
+
+	return db.store.Update(func(txn store.Tx) error {
+		currentFloor := int64(0)
+		val, err := txn.Get([]byte(sysKeyGCFloor))
+		if err != nil && err != store.ErrKeyNotFound {
+			return err
+		}
+		if err == nil {
+			parsed, parseErr := strconv.ParseInt(string(val), 10, 64)
+			if parseErr != nil {
+				return parseErr
+			}
+			currentFloor = parsed
+		}
+
+		if floor <= currentFloor {
+			return nil
+		}
+		return txn.Set([]byte(sysKeyGCFloor), []byte(strconv.FormatInt(floor, 10)), 0)
+	})
 }
 
 // TableNames 返回所有已注册的表名。

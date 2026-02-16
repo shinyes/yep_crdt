@@ -35,7 +35,7 @@ func TestNodeManager_Basic(t *testing.T) {
 
 	node2ID := "node-2"
 	nm.OnPeerConnected(node2ID)
-	nm.OnHeartbeat(node2ID, 1000)
+	nm.OnHeartbeat(node2ID, 1000, 0)
 
 	time.Sleep(2 * time.Second)
 	if !nm.IsNodeOnline(node2ID) {
@@ -70,7 +70,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	}
 
 	node2Clock := baseTime - 10000
-	nm.OnHeartbeat("node-2", node2Clock)
+	nm.OnHeartbeat("node-2", node2Clock, 0)
 
 	safeTs = nm.CalculateSafeTimestamp()
 	expectedSafeTs = node2Clock - safetyOffset
@@ -79,7 +79,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	}
 
 	node3Clock := baseTime - 20000
-	nm.OnHeartbeat("node-3", node3Clock)
+	nm.OnHeartbeat("node-3", node3Clock, 0)
 
 	safeTs = nm.CalculateSafeTimestamp()
 	expectedSafeTs = node3Clock - safetyOffset
@@ -116,7 +116,7 @@ func TestNodeManager_Rejoin(t *testing.T) {
 	database.Clock().Update(localClock)
 
 	node2FirstClock := int64(95000)
-	nm.OnHeartbeat("node-2", node2FirstClock)
+	nm.OnHeartbeat("node-2", node2FirstClock, 0)
 	if !nm.IsNodeOnline("node-2") {
 		t.Error("node-2 should be online")
 	}
@@ -128,7 +128,7 @@ func TestNodeManager_Rejoin(t *testing.T) {
 
 	node2RejoinClock := int64(95000)
 	clockDiff := advancedLocalClock - node2RejoinClock
-	nm.OnHeartbeat("node-2", node2RejoinClock)
+	nm.OnHeartbeat("node-2", node2RejoinClock, 0)
 
 	if clockDiff > 8000 {
 		t.Logf("clock gap is large, should trigger performFullSync")
@@ -167,7 +167,7 @@ func TestNodeManager_Rejoin_LongOfflineRequiresFullSync(t *testing.T) {
 	nm.RegisterNetwork(net)
 
 	peerClock := database.Clock().Now()
-	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnHeartbeat("node-2", peerClock, 0)
 	nm.OnPeerDisconnected("node-2")
 
 	time.Sleep(70 * time.Millisecond)
@@ -204,7 +204,7 @@ func TestNodeManager_Rejoin_ShortOfflineNoForcedFullSync(t *testing.T) {
 	nm.RegisterNetwork(net)
 
 	peerClock := database.Clock().Now()
-	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnHeartbeat("node-2", peerClock, 0)
 	nm.OnPeerDisconnected("node-2")
 
 	time.Sleep(30 * time.Millisecond)
@@ -243,15 +243,102 @@ func TestNodeManager_Rejoin_IncrementalOnlyMode_NoFullSync(t *testing.T) {
 	nm.RegisterNetwork(net)
 
 	peerClock := database.Clock().Now()
-	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnHeartbeat("node-2", peerClock, 0)
 	nm.OnPeerDisconnected("node-2")
 
 	time.Sleep(120 * time.Millisecond)
 	// stale clock to simulate large clock gap, still should not trigger full sync in incremental-only mode
-	nm.OnHeartbeat("node-2", peerClock-1_000_000)
+	nm.OnHeartbeat("node-2", peerClock-1_000_000, 0)
 
 	if got := net.FetchCalls(); got != 0 {
 		t.Fatalf("expected no full sync in incremental-only mode, got fetch calls=%d", got)
+	}
+}
+
+func TestNodeManager_GCFloorLag_TriggersFullSyncAndCatchesUp(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "test-node")
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+	if err := database.SetGCFloor(100); err != nil {
+		t.Fatalf("set local gc floor failed: %v", err)
+	}
+
+	nm := NewNodeManager(database, "node-1")
+	net := &rejoinFullSyncNetwork{}
+	nm.RegisterNetwork(net)
+	nm.OnPeerConnected("node-2")
+
+	nm.ObservePeerGCFloor("node-2", 150)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if net.FetchCalls() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected full sync to be triggered for gc floor lag")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if database.GCFloor() >= 150 && nm.CanUseIncrementalWithPeer("node-2") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected catch-up done: floor=%d, can_incremental=%v",
+				database.GCFloor(), nm.CanUseIncrementalWithPeer("node-2"))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestNodeManager_GCFloorPeerBehind_BlocksIncrementalOnly(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "test-node")
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+	if err := database.SetGCFloor(200); err != nil {
+		t.Fatalf("set local gc floor failed: %v", err)
+	}
+
+	nm := NewNodeManager(database, "node-1")
+	net := &rejoinFullSyncNetwork{}
+	nm.RegisterNetwork(net)
+	nm.OnPeerConnected("node-2")
+
+	nm.ObservePeerGCFloor("node-2", 150)
+	if nm.CanUseIncrementalWithPeer("node-2") {
+		t.Fatal("expected incremental to be blocked for behind peer")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if got := net.FetchCalls(); got != 0 {
+		t.Fatalf("expected no local full sync when peer is behind, got fetch calls=%d", got)
 	}
 }
 

@@ -43,6 +43,7 @@ func (vs *VersionSync) OnPeerConnected(peerID string) {
 		Type:      MsgTypeVersionDigest,
 		NodeID:    vs.nodeMgr.localNodeID,
 		RawData:   digestBytes,
+		GCFloor:   vs.db.GCFloor(),
 		Timestamp: vs.db.Clock().Now(),
 	}
 
@@ -100,6 +101,17 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 
 // OnReceiveDigest compares remote digest and sends local diffs.
 func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
+	if msg == nil {
+		return
+	}
+	if vs.nodeMgr != nil && vs.nodeMgr.db != nil && msg.GCFloor > 0 {
+		vs.nodeMgr.ObservePeerGCFloor(peerID, msg.GCFloor)
+	}
+	if vs.nodeMgr != nil && vs.nodeMgr.db != nil && !vs.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+		log.Printf("[VersionSync] skip incremental digest sync with blocked peer: %s", shortPeerID(peerID))
+		return
+	}
+
 	var remoteDigest VersionDigest
 	if err := msgpack.Unmarshal(msg.RawData, &remoteDigest); err != nil {
 		log.Printf("[VersionSync] unmarshal remote digest failed: %v", err)
