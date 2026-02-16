@@ -12,7 +12,7 @@
 *   **自动索引**: 基于 Schema 定义自动维护二级索引，查询速度快。
 *   **类型安全**: 核心 API 支持泛型，减少运行时错误。
 *   **高性能**: 底层使用 BadgerDB KV 存储，结合 LSM Tree 提供高吞吐量的读写。
-*   **垃圾回收 (GC)**: 基于 HLC (Hybrid Logical Clock) 的无等待垃圾回收机制，有效防止元数据膨胀。
+*   **垃圾回收 (GC)**: 支持数据库级与表级 GC，并提供多节点手动协商 GC 能力（Safe Timestamp 协商）。
 
 ---
 
@@ -365,15 +365,20 @@ for _, doc := range docs {
 
 ## 6. 垃圾回收 (Garbage Collection)
 
-Yep CRDT 提供了强大的垃圾回收机制，用于清理 CRDT 操作产生的墓碑数据（TMD），防止元数据无限膨胀。垃圾回收器基于混合逻辑时钟（HLC）和 Safe Timestamp 机制。
+Yep CRDT 通过 GC 清理 CRDT 操作产生的墓碑（Tombstone），防止元数据持续膨胀。
+
+当前版本的同步层不再内置自动 GC 调度器；推荐在业务侧显式触发 GC。多节点场景下，推荐使用同步模块提供的“手动协商 GC”。
 
 ### 6.1 核心概念
 
 #### Safe Timestamp
-**Safe Timestamp** 是一个时间点，系统保证在该时间点之前的所有操作都已同步到所有节点。它通常通过以下方式计算：
-- **最小时钟值**：所有节点当前时钟值的最小值（需要全局同步）
-- **保守估计**：当前时间减去网络延迟容差（如 `currentTime - 5s`）
-- **确认协议**：使用一致性协议（如 Raft）记录的确认时间戳
+**Safe Timestamp** 表示“在该时间点之前的数据可以安全清理墓碑”。
+
+在同步模块的手动协商流程中：
+
+- 每个参与节点先计算自己的 `safeTimestamp`
+- 协调者取所有节点返回值的最小值，作为本轮最终 `safeTimestamp`
+- 所有参与节点确认后，再统一执行 GC
 
 #### 为什么需要 GC？
 在 CRDT 系统中，删除操作不会立即删除数据，而是标记为已删除（Tombstone）。这确保了：
@@ -388,7 +393,7 @@ Yep CRDT 提供了强大的垃圾回收机制，用于清理 CRDT 操作产生�
 
 ### 6.2 数据库级别的 GC API
 
-Yep CRDT 提供了数据库级别的统一 GC 接口，可以一次性清理所有表的墓碑数据。
+`db.DB` 提供数据库级统一 GC 接口，可一次性清理所有表中的墓碑。
 
 ```go
 import "time"
@@ -416,7 +421,7 @@ if len(result.Errors) > 0 {
 
 #### GCByTimeOffset（推荐）
 
-更方便的方法是使用 `GCByTimeOffset`，它会自动计算 `safeTimestamp`。
+更方便的方法是 `GCByTimeOffset`，由数据库根据偏移量自动计算 `safeTimestamp`。
 
 ```go
 // 清理 1 分钟前的数据
@@ -439,48 +444,45 @@ fmt.Printf("扫描行: %d\n", result.RowsScanned)
 fmt.Printf("清理墓碑: %d\n", result.TombstonesRemoved)
 ```
 
-### 6.4 定期 GC 策略（推荐）
+### 6.4 多节点手动协商 GC（推荐）
 
-在生产环境中，建议启动定期 GC 的后台 goroutine。
+同步层提供 `prepare -> commit` 两阶段协商流程，建议通过 `LocalNode` 或 `MultiEngine` 触发。
 
 ```go
-// 策略 1: 固定间隔 GC
-func startPeriodicGC(database *db.DB, interval time.Duration, offset time.Duration) {
-    ticker := time.NewTicker(interval)
-    go func() {
-        for range ticker.C {
-            result := database.GCByTimeOffset(offset)
-            if result.TombstonesRemoved > 0 {
-                log.Printf("GC: 清理了 %d 个墓碑", result.TombstonesRemoved)
-            }
-        }
-    }()
+// LocalNode 入口（推荐）
+gcResult, err := node.ManualGCTenant("tenant-1", 15*time.Second)
+if err != nil {
+    log.Fatal(err)
 }
 
-// 使用
-startPeriodicGC(myDB, 1 * time.Minute, 30 * time.Second)
+fmt.Printf("safeTs=%d prepared=%d committed=%d localRemoved=%d\n",
+    gcResult.SafeTimestamp,
+    len(gcResult.PreparedPeers),
+    len(gcResult.CommittedPeers),
+    gcResult.LocalResult.TombstonesRemoved,
+)
 ```
 
 ```go
-// 策略 2: 基于数量的自适应 GC
-func startAdaptiveGC(database *db.DB, interval time.Duration, threshold int) {
-    ticker := time.NewTicker(interval)
-    go func() {
-        for range ticker.C {
-            // 检查最近的操作数量或内存使用
-            // 如果超过阈值，使用更保守的 offset
-            offset := 30 * time.Second
-            if shouldPerformAggressiveGC() {
-                offset = 5 * time.Second
-            }
-            
-            result := database.GCByTimeOffset(offset)
-            log.Printf("Adaptive GC: 清理 %d, 扫描 %d 行", 
-                result.TombstonesRemoved, result.RowsScanned)
-        }
-    }()
+// MultiEngine 入口
+gcResult, err := engine.ManualGC("tenant-1", 15*time.Second)
+if err != nil {
+    log.Fatal(err)
 }
+_ = gcResult
 ```
+
+协商语义：
+
+- `prepare`：收集参与节点 `safeTimestamp`
+- 协调者取最小值
+- `commit`：向参与节点下发最终 `safeTimestamp` 并执行 GC
+
+实现备注：
+
+- `timeout <= 0` 时使用默认超时（当前实现为 10 秒）
+- 若协商过程中节点拒绝或超时，调用会返回错误
+- 建议在业务侧将触发动作做成运维命令或定时任务（显式触发，而非隐式后台）
 
 ### 6.5 GC 结果统计
 
@@ -506,7 +508,7 @@ type TableGCResult struct {
 #### Safe Timestamp 的计算
 - **保守为上**：宁可保留更多墓碑，也不要过早清理
 - **网络分区**：考虑节点长期离线的情况，`safeTimestamp` 可能被拖慢
-- **全量同步**：离线节点重新上线时，应强制全量同步，避免"僵尸数据"复活
+- **显式触发**：生产环境建议由业务侧统一调度 GC，不要隐式自动执行
 
 #### 性能影响
 - **扫描开销**：GC 会扫描所有行，可能影响性能
@@ -577,6 +579,22 @@ engine, err := sync.EnableMultiTenantSync([]*db.DB{myDB}, db.SyncConfig{
     Debug: true, // 打印详细的同步日志
 })
 ```
+
+如需增量优先模式（关闭重连时自动全量触发），可传入 `nodeOpts`：
+
+```go
+engine, err := sync.EnableMultiTenantSync(
+    []*db.DB{myDB},
+    db.SyncConfig{
+        ListenPort: 8080,
+        Password:   "cluster-secret",
+    },
+    sync.WithTimeoutThreshold(0),
+    sync.WithClockThreshold(0),
+)
+```
+
+使用 `sync.StartLocalNode(...)` 时，也可通过 `LocalNodeOptions{IncrementalOnly: true}` 达到相同效果。
 
 ### 7.3 同步机制原理
 
@@ -710,4 +728,32 @@ if err != nil {
     }
 }
 _ = rows
+```
+
+### 9.5 手动协商 GC（替代旧自动 GC）
+
+同步层已移除旧的自动 GC 组件（`GCManager`、`GCInterval`、`GCTimeOffset` 配置项）。
+
+当前推荐通过以下 API 触发分布式 GC：
+
+- `node.ManualGCTenant(tenantID, timeout)`
+- `engine.ManualGC(tenantID, timeout)`
+
+执行流程为 `prepare -> commit` 两阶段：
+
+1. 协调者向在线节点发送 `gc_prepare`，收集各节点 `safeTimestamp`
+2. 协调者取最小值作为最终 `safeTimestamp`
+3. 协调者发送 `gc_commit`，参与节点确认并执行 `db.GC(safeTimestamp)`
+
+```go
+gcResult, err := node.ManualGCTenant("tenant-1", 15*time.Second)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("safeTs=%d prepared=%d committed=%d removed=%d\n",
+    gcResult.SafeTimestamp,
+    len(gcResult.PreparedPeers),
+    len(gcResult.CommittedPeers),
+    gcResult.LocalResult.TombstonesRemoved,
+)
 ```

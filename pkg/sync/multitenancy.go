@@ -205,6 +205,12 @@ func (m *MultiTenantManager) handleMessage(tenantID, peerID string, msg NetworkM
 
 	case MsgTypeFetchRawResponse:
 		// 响应已由 TenantNetwork 请求等待器处理
+
+	case MsgTypeGCPrepare:
+		tnm.nodeMgr.HandleManualGCPrepare(peerID, msg)
+
+	case MsgTypeGCCommit:
+		tnm.nodeMgr.HandleManualGCCommit(peerID, msg)
 	}
 }
 

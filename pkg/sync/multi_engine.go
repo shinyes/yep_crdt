@@ -57,7 +57,7 @@ type tenantScopedNetwork struct {
 }
 
 // EnableMultiTenantSync enables sync for multiple tenant databases on a single transport.
-func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig) (*MultiEngine, error) {
+func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig, nodeOpts ...Option) (*MultiEngine, error) {
 	if config.Password == "" {
 		return nil, fmt.Errorf("sync password cannot be empty")
 	}
@@ -111,7 +111,7 @@ func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig) (*MultiEngi
 			tenantID: tenantID,
 			network:  network,
 		}
-		nodeMgr := NewNodeManager(database, network.LocalID())
+		nodeMgr := NewNodeManager(database, network.LocalID(), nodeOpts...)
 		nodeMgr.RegisterNetwork(scopedNetwork)
 
 		rt := &tenantRuntime{
@@ -366,6 +366,12 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 
 	case MsgTypeVersionDigest:
 		rt.vs.OnReceiveDigest(peerID, &msg)
+
+	case MsgTypeGCPrepare:
+		rt.nodeMgr.HandleManualGCPrepare(peerID, msg)
+
+	case MsgTypeGCCommit:
+		rt.nodeMgr.HandleManualGCCommit(peerID, msg)
 	}
 }
 

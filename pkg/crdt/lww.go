@@ -1,22 +1,23 @@
 package crdt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"sync"
 )
 
-// LWWRegister 实现最后写入胜出 (Last-Write-Wins) 寄存器。
+// LWWRegister implements a Last-Write-Wins register.
 type LWWRegister struct {
 	mu        sync.RWMutex
 	value     []byte
 	timestamp int64
 }
 
-// NewLWWRegister 创建一个新的 LWWRegister。
+// NewLWWRegister creates a new LWWRegister.
 func NewLWWRegister(val []byte, ts int64) *LWWRegister {
 	return &LWWRegister{
-		value:     val,
+		value:     cloneBytes(val),
 		timestamp: ts,
 	}
 }
@@ -31,7 +32,7 @@ func (r *LWWRegister) Value() any {
 	return r.value
 }
 
-// OpLWWSet 是在 LWWRegister 中设置值的操作。
+// OpLWWSet sets the value for LWWRegister.
 type OpLWWSet struct {
 	Value     []byte
 	Timestamp int64
@@ -50,9 +51,9 @@ func (r *LWWRegister) Apply(op Op) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// LWW 逻辑：如果时间戳更大则更新
-	if setOp.Timestamp > r.timestamp {
-		r.value = setOp.Value
+	// Deterministic winner: timestamp first, then value bytes as tie-breaker.
+	if compareLWWState(setOp.Timestamp, setOp.Value, r.timestamp, r.value) > 0 {
+		r.value = cloneBytes(setOp.Value)
 		r.timestamp = setOp.Timestamp
 	}
 	return nil
@@ -70,21 +71,41 @@ func (r *LWWRegister) Merge(other CRDT) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if o.timestamp > r.timestamp {
-		// 深度拷贝以避免引用共享
-		r.value = make([]byte, len(o.value))
-		copy(r.value, o.value)
+	if compareLWWState(o.timestamp, o.value, r.timestamp, r.value) > 0 {
+		r.value = cloneBytes(o.value)
 		r.timestamp = o.timestamp
 	}
 	return nil
+}
+
+func compareLWWState(tsA int64, valueA []byte, tsB int64, valueB []byte) int {
+	if tsA > tsB {
+		return 1
+	}
+	if tsA < tsB {
+		return -1
+	}
+	// For equal timestamps, use a stable deterministic order on value bytes.
+	// We pick the lexicographically smaller value as winner so every replica
+	// resolves ties in the same direction.
+	return bytes.Compare(valueB, valueA)
+}
+
+func cloneBytes(v []byte) []byte {
+	if v == nil {
+		return nil
+	}
+	c := make([]byte, len(v))
+	copy(c, v)
+	return c
 }
 
 func (r *LWWRegister) GC(safeTimestamp int64) int {
 	return 0
 }
 
-// Bytes 序列化 LWWRegister。
-// 格式：时间戳 (8 字节) + 值
+// Bytes serializes LWWRegister.
+// Format: timestamp (8 bytes) + value bytes.
 func (r *LWWRegister) Bytes() ([]byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -95,7 +116,7 @@ func (r *LWWRegister) Bytes() ([]byte, error) {
 	return buf, nil
 }
 
-// FromBytesLWW 反序列化 LWWRegister。
+// FromBytesLWW deserializes LWWRegister.
 func FromBytesLWW(data []byte) (*LWWRegister, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("invalid data length for LWWRegister")

@@ -6,7 +6,7 @@ Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库�
 - SQL-Like 查询：`Where` / `And` / `OrderBy` / `Limit` / `Offset` / `IN`
 - 自动索引与查询规划（Longest Prefix Match）
 - 分布式自动同步（增量、全量补齐、重连）
-- 面向多节点场景的 GC 与可观测性
+- 面向多节点场景的手动 GC 协商与可观测性
 
 完整说明见 `USER_GUIDE.md`。
 
@@ -227,6 +227,24 @@ if ok {
 }
 ```
 
+### 同步模式开关
+
+`LocalNodeOptions` 的 `IncrementalOnly` 可用于“增量优先”模式：
+
+- `IncrementalOnly: true` 时，会关闭重连时的自动全量触发（长离线阈值与时钟差阈值触发都关闭）
+- 适合希望把全量同步切换为显式运维动作的场景
+
+```go
+node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+	DataRoot:        "./tmp/demo_manual",
+	ListenPort:      9001,
+	Password:        "cluster-secret",
+	IncrementalOnly: true,
+})
+_ = node
+_ = err
+```
+
 ### 关键配置
 
 `sync.TenetConfig` 新增流控参数：
@@ -302,6 +320,10 @@ _ = rows
 
 ## 垃圾回收
 
+同步层的旧自动 GC 管理器已移除；当前推荐使用“手动触发 + 多节点协商”的方式执行 GC。
+
+### 单节点/本地维护
+
 ```go
 // 方式 1：指定 safeTimestamp
 safeTs := myDB.Now() - 5000 // 5s
@@ -319,7 +341,36 @@ fmt.Printf("tables=%d rows=%d removed=%d errors=%d\n",
 _ = result2
 ```
 
-建议在低峰期周期执行 GC。分布式场景下应保守估计 safe time，避免过早清理导致离线节点回补异常。
+### 多节点协商 GC（推荐）
+
+```go
+// 通过 LocalNode 触发（内部会执行 prepare -> commit 两阶段协商）
+gcResult, err := node.ManualGCTenant("tenant-1", 15*time.Second)
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("safeTs=%d prepared=%d committed=%d localRemoved=%d\n",
+	gcResult.SafeTimestamp,
+	len(gcResult.PreparedPeers),
+	len(gcResult.CommittedPeers),
+	gcResult.LocalResult.TombstonesRemoved,
+)
+```
+
+也可直接调用：
+
+```go
+gcResult, err := engine.ManualGC("tenant-1", 15*time.Second)
+_ = gcResult
+_ = err
+```
+
+说明：
+
+- 协调器先向在线节点收集各自 `safeTimestamp`，取最小值作为本轮 `safeTimestamp`
+- 所有参与节点确认后才进入 commit 并执行 GC
+- `timeout <= 0` 时会使用默认超时（当前实现为 10 秒）
 
 ## 性能建议
 

@@ -9,20 +9,22 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// NodeManager coordinates heartbeat, GC, clock, and data sync for one node.
+// NodeManager coordinates heartbeat, clock, and data sync for one node.
 type NodeManager struct {
-	mu          sync.RWMutex
-	nodes       map[string]*NodeInfo
-	localNodeID string
-	db          *db.DB
-	config      Config
+	mu           sync.RWMutex
+	nodes        map[string]*NodeInfo
+	offlineSince map[string]time.Time
+	localNodeID  string
+	db           *db.DB
+	config       Config
 
 	heartbeat *HeartbeatMonitor
-	gc        *GCManager
 	dataSync  *DataSyncManager
 	clockSync *ClockSync
 	network   NetworkInterface
 }
+
+const defaultSafeTimestampOffset = 30 * time.Second
 
 // NewNodeManager creates a node manager.
 func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager {
@@ -32,34 +34,32 @@ func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager
 	}
 
 	nm := &NodeManager{
-		nodes:       make(map[string]*NodeInfo),
-		localNodeID: nodeID,
-		db:          database,
-		config:      config,
-		network:     &DefaultNetwork{},
+		nodes:        make(map[string]*NodeInfo),
+		offlineSince: make(map[string]time.Time),
+		localNodeID:  nodeID,
+		db:           database,
+		config:       config,
+		network:      &DefaultNetwork{},
 	}
 
 	nm.heartbeat = NewHeartbeatMonitor(nm, config.HeartbeatInterval)
-	nm.gc = NewGCManager(nm, config.GCInterval, config.GCTimeOffset)
 	nm.dataSync = NewDataSyncManager(database, nodeID)
 	nm.clockSync = NewClockSync(nm, config.ClockThreshold)
 
 	return nm
 }
 
-// Start starts background heartbeat and GC components.
+// Start starts background components.
 func (nm *NodeManager) Start(ctx context.Context) {
 	log.Printf("node manager starting: local=%s", nm.localNodeID)
 	nm.heartbeat.Start(ctx)
-	nm.gc.Start(ctx)
 	log.Printf("node manager started: local=%s", nm.localNodeID)
 }
 
-// Stop stops all background components.
+// Stop stops background components.
 func (nm *NodeManager) Stop() {
 	log.Printf("node manager stopping: local=%s", nm.localNodeID)
 	nm.heartbeat.Stop()
-	nm.gc.Stop()
 }
 
 // OnHeartbeat records heartbeat from a peer.
@@ -69,11 +69,13 @@ func (nm *NodeManager) OnHeartbeat(nodeID string, clock int64) {
 
 // OnPeerConnected marks a peer online from transport-level connect event.
 func (nm *NodeManager) OnPeerConnected(nodeID string) {
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
 	now := time.Now()
 	localClock := nm.db.Clock().Now()
+	var shouldHandleRejoin bool
+	var rejoinClock int64
+	var offlineDuration time.Duration
+
+	nm.mu.Lock()
 	nodeInfo, exists := nm.nodes[nodeID]
 	if !exists {
 		nm.nodes[nodeID] = &NodeInfo{
@@ -83,13 +85,29 @@ func (nm *NodeManager) OnPeerConnected(nodeID string) {
 			LastKnownClock: localClock,
 			LastSyncTime:   now,
 		}
+		nm.mu.Unlock()
 		return
+	}
+
+	if !nodeInfo.IsOnline {
+		shouldHandleRejoin = true
+		rejoinClock = nodeInfo.LastKnownClock
+		if rejoinClock <= 0 {
+			rejoinClock = localClock
+		}
+		offlineDuration = nm.offlineDurationSinceLocked(nodeID, now, nodeInfo.LastHeartbeat)
 	}
 
 	nodeInfo.LastHeartbeat = now
 	nodeInfo.IsOnline = true
 	if nodeInfo.LastKnownClock <= 0 {
 		nodeInfo.LastKnownClock = localClock
+	}
+	delete(nm.offlineSince, nodeID)
+	nm.mu.Unlock()
+
+	if shouldHandleRejoin {
+		nm.clockSync.HandleNodeRejoin(nodeID, rejoinClock, offlineDuration)
 	}
 }
 
@@ -100,7 +118,21 @@ func (nm *NodeManager) OnPeerDisconnected(nodeID string) {
 
 	if nodeInfo, exists := nm.nodes[nodeID]; exists {
 		nodeInfo.IsOnline = false
+		nm.offlineSince[nodeID] = time.Now()
 	}
+}
+
+func (nm *NodeManager) offlineDurationSinceLocked(nodeID string, now time.Time, fallback time.Time) time.Duration {
+	if offlineAt, ok := nm.offlineSince[nodeID]; ok && !offlineAt.IsZero() {
+		if now.After(offlineAt) {
+			return now.Sub(offlineAt)
+		}
+		return 0
+	}
+	if fallback.IsZero() || !now.After(fallback) {
+		return 0
+	}
+	return now.Sub(fallback)
 }
 
 // MarkPeerSeen updates liveness based on any inbound peer traffic.
@@ -128,6 +160,7 @@ func (nm *NodeManager) MarkPeerSeen(nodeID string) {
 	if nodeInfo.LastKnownClock <= 0 {
 		nodeInfo.LastKnownClock = localClock
 	}
+	delete(nm.offlineSince, nodeID)
 }
 
 // GetNodeInfo returns one node record.
@@ -164,38 +197,28 @@ func (nm *NodeManager) GetOnlineNodes() []string {
 	return onlineNodes
 }
 
-// CalculateSafeTimestamp computes GC safe time using online peer clocks.
+// CalculateSafeTimestamp computes GC safe time using all known node clocks.
+// This is intentionally conservative: offline nodes are still considered so
+// GC does not advance past their last known observation point.
 func (nm *NodeManager) CalculateSafeTimestamp() int64 {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
 
-	var minClock int64
-	first := true
+	localClock := nm.db.Clock().Now()
+	minClock := localClock
 	for _, nodeInfo := range nm.nodes {
-		if !nodeInfo.IsOnline {
-			continue
-		}
 		if nodeInfo.ID == nm.localNodeID {
 			continue
 		}
 		if nodeInfo.LastKnownClock <= 0 {
 			continue
 		}
-		if first || nodeInfo.LastKnownClock < minClock {
+		if nodeInfo.LastKnownClock < minClock {
 			minClock = nodeInfo.LastKnownClock
-			first = false
 		}
 	}
 
-	safetyOffset := nm.config.GCTimeOffset.Milliseconds()
-	if safetyOffset <= 0 {
-		safetyOffset = int64((30 * time.Second).Milliseconds())
-	}
-
-	if first {
-		return nm.db.Clock().Now() - safetyOffset
-	}
-	return minClock - safetyOffset
+	return minClock - defaultSafeTimestampOffset.Milliseconds()
 }
 
 // OnReceiveMerge applies one full-row CRDT payload.
@@ -212,6 +235,15 @@ func (nm *NodeManager) OnReceiveDelta(table string, key string, columns []string
 func (nm *NodeManager) UpdateLocalClock(remoteClock int64) {
 	nm.db.Clock().Update(remoteClock)
 	log.Printf("local clock updated: %d", remoteClock)
+}
+
+func (nm *NodeManager) markPeerFullSync(nodeID string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	if nodeInfo, exists := nm.nodes[nodeID]; exists {
+		nodeInfo.LastSyncTime = time.Now()
+	}
 }
 
 // RegisterNetwork binds transport implementation.

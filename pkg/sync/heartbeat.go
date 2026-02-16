@@ -51,8 +51,10 @@ func (hm *HeartbeatMonitor) Start(ctx context.Context) {
 
 // OnHeartbeat handles inbound heartbeat from one peer.
 func (hm *HeartbeatMonitor) OnHeartbeat(nodeID string, clock int64) {
+	var shouldHandleRejoin bool
+	var offlineDuration time.Duration
+
 	hm.nm.mu.Lock()
-	defer hm.nm.mu.Unlock()
 
 	now := time.Now()
 	nodeInfo, exists := hm.nm.nodes[nodeID]
@@ -68,14 +70,23 @@ func (hm *HeartbeatMonitor) OnHeartbeat(nodeID string, clock int64) {
 		log.Printf("peer discovered via heartbeat: %s clock=%d", nodeID, clock)
 	} else {
 		wasOffline := !nodeInfo.IsOnline
+		if wasOffline {
+			shouldHandleRejoin = true
+			offlineDuration = hm.nm.offlineDurationSinceLocked(nodeID, now, nodeInfo.LastHeartbeat)
+		}
 		nodeInfo.LastHeartbeat = now
 		nodeInfo.LastKnownClock = clock
 		nodeInfo.IsOnline = true
+		delete(hm.nm.offlineSince, nodeID)
 
 		if wasOffline {
 			log.Printf("peer rejoined: %s", nodeID)
-			hm.nm.clockSync.HandleNodeRejoin(nodeID, clock)
 		}
+	}
+	hm.nm.mu.Unlock()
+
+	if shouldHandleRejoin {
+		hm.nm.clockSync.HandleNodeRejoin(nodeID, clock, offlineDuration)
 	}
 
 	if clock > 0 {

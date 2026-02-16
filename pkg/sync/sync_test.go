@@ -3,11 +3,13 @@ package sync
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
+	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
@@ -57,7 +59,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	nm := NewNodeManager(database, "node-1")
 
 	baseTime := database.Clock().Now()
-	safetyOffset := DefaultConfig().GCTimeOffset.Milliseconds()
+	safetyOffset := defaultSafeTimestampOffset.Milliseconds()
 
 	safeTs := nm.CalculateSafeTimestamp()
 	expectedSafeTs := baseTime - safetyOffset
@@ -83,6 +85,14 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	expectedSafeTs = node3Clock - safetyOffset
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected SafeTimestamp to use node-3 clock: want=%d got=%d", expectedSafeTs, safeTs)
+	}
+
+	// Offline nodes still constrain safe timestamp for GC safety.
+	nm.OnPeerDisconnected("node-3")
+	safeTs = nm.CalculateSafeTimestamp()
+	expectedSafeTs = node3Clock - safetyOffset
+	if safeTs != expectedSafeTs {
+		t.Errorf("expected offline node clock to still constrain SafeTimestamp: want=%d got=%d", expectedSafeTs, safeTs)
 	}
 }
 
@@ -131,6 +141,120 @@ func TestNodeManager_Rejoin(t *testing.T) {
 	}
 }
 
+func TestNodeManager_Rejoin_LongOfflineRequiresFullSync(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "test-node")
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	const hugeClockThreshold = int64(1 << 60)
+	nm := NewNodeManager(database, "node-1",
+		WithTimeoutThreshold(40*time.Millisecond),
+		WithClockThreshold(hugeClockThreshold),
+	)
+	net := &rejoinFullSyncNetwork{}
+	nm.RegisterNetwork(net)
+
+	peerClock := database.Clock().Now()
+	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnPeerDisconnected("node-2")
+
+	time.Sleep(70 * time.Millisecond)
+	nm.OnPeerConnected("node-2")
+
+	if got := net.FetchCalls(); got == 0 {
+		t.Fatal("expected full sync fetch for long-offline rejoin")
+	}
+}
+
+func TestNodeManager_Rejoin_ShortOfflineNoForcedFullSync(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "test-node")
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	const hugeClockThreshold = int64(1 << 60)
+	nm := NewNodeManager(database, "node-1",
+		WithTimeoutThreshold(200*time.Millisecond),
+		WithClockThreshold(hugeClockThreshold),
+	)
+	net := &rejoinFullSyncNetwork{}
+	nm.RegisterNetwork(net)
+
+	peerClock := database.Clock().Now()
+	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnPeerDisconnected("node-2")
+
+	time.Sleep(30 * time.Millisecond)
+	nm.OnPeerConnected("node-2")
+
+	if got := net.FetchCalls(); got != 0 {
+		t.Fatalf("expected no forced full sync for short offline rejoin, got fetch calls=%d", got)
+	}
+}
+
+func TestNodeManager_Rejoin_IncrementalOnlyMode_NoFullSync(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := db.Open(s, "test-node")
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	// Incremental-only mode:
+	// - TimeoutThreshold<=0 disables long-offline full sync gate
+	// - ClockThreshold<=0 disables clock-gap full sync gate
+	nm := NewNodeManager(database, "node-1",
+		WithTimeoutThreshold(0),
+		WithClockThreshold(0),
+	)
+	net := &rejoinFullSyncNetwork{}
+	nm.RegisterNetwork(net)
+
+	peerClock := database.Clock().Now()
+	nm.OnHeartbeat("node-2", peerClock)
+	nm.OnPeerDisconnected("node-2")
+
+	time.Sleep(120 * time.Millisecond)
+	// stale clock to simulate large clock gap, still should not trigger full sync in incremental-only mode
+	nm.OnHeartbeat("node-2", peerClock-1_000_000)
+
+	if got := net.FetchCalls(); got != 0 {
+		t.Fatalf("expected no full sync in incremental-only mode, got fetch calls=%d", got)
+	}
+}
+
 // TestNodeManager_DataReject verifies incoming timestamp does not block merge path.
 func TestNodeManager_DataReject(t *testing.T) {
 	s, err := store.NewBadgerStore(t.TempDir() + "/db")
@@ -175,4 +299,50 @@ func TestNodeManager_DataReject(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "test-table") {
 		t.Fatalf("expected table-not-exist error, got: %v", err)
 	}
+}
+
+type rejoinFullSyncNetwork struct {
+	mu         sync.Mutex
+	fetchCalls int
+}
+
+func (n *rejoinFullSyncNetwork) SendHeartbeat(targetNodeID string, clock int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) BroadcastHeartbeat(clock int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
+	return nil
+}
+
+func (n *rejoinFullSyncNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
+	n.mu.Lock()
+	n.fetchCalls++
+	n.mu.Unlock()
+	return nil, nil
+}
+
+func (n *rejoinFullSyncNetwork) FetchCalls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.fetchCalls
 }

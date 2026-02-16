@@ -8,19 +8,22 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
 // LocalNodeOptions configures local filesystem based multi-tenant startup.
 type LocalNodeOptions struct {
-	DataRoot     string
-	ListenPort   int
-	ConnectTo    string
-	Password     string
-	Debug        bool
-	Reset        bool
-	IdentityPath string
+	DataRoot   string
+	ListenPort int
+	ConnectTo  string
+	Password   string
+	Debug      bool
+	// IncrementalOnly disables automatic full-sync triggers on rejoin.
+	IncrementalOnly bool
+	Reset           bool
+	IdentityPath    string
 	// BadgerValueLogFileSize sets max bytes per Badger vlog file. 0 means store default (128MB).
 	BadgerValueLogFileSize int64
 	EnsureSchema           func(*db.DB) error
@@ -103,13 +106,18 @@ func StartLocalNode(opts LocalNodeOptions) (*LocalNode, error) {
 		openOrder = append(openOrder, database)
 	}
 
+	nodeOpts := make([]Option, 0, 2)
+	if opts.IncrementalOnly {
+		nodeOpts = append(nodeOpts, WithTimeoutThreshold(0), WithClockThreshold(0))
+	}
+
 	engine, err := EnableMultiTenantSync(openOrder, db.SyncConfig{
 		ListenPort:   opts.ListenPort,
 		ConnectTo:    opts.ConnectTo,
 		Password:     opts.Password,
 		Debug:        opts.Debug,
 		IdentityPath: identityPath,
-	})
+	}, nodeOpts...)
 	if err != nil {
 		closeDatabases(openOrder)
 		return nil, err
@@ -159,6 +167,23 @@ func (n *LocalNode) Engine() *MultiEngine {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.engine
+}
+
+// ManualGCTenant triggers negotiated manual GC for one tenant.
+func (n *LocalNode) ManualGCTenant(tenantID string, timeout time.Duration) (*ManualGCResult, error) {
+	n.mu.RLock()
+	engine := n.engine
+	closed := n.closed
+	n.mu.RUnlock()
+
+	if closed {
+		return nil, fmt.Errorf("local node is closed")
+	}
+	if engine == nil {
+		return nil, fmt.Errorf("sync engine is not started")
+	}
+
+	return engine.ManualGC(tenantID, timeout)
 }
 
 // TenantDatabase returns one opened tenant database and whether it exists.
