@@ -543,7 +543,7 @@ func createTestNode(t *testing.T, nodeID string) (*NodeManager, *db.DB) {
 		t.Fatalf("创建存储失败: %v", err)
 	}
 
-	database := db.Open(s, nodeID)
+	database := mustOpenDB(t, s, nodeID)
 	nm := NewNodeManager(database, nodeID)
 
 	return nm, database

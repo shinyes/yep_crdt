@@ -53,8 +53,9 @@ func OpenBadgerWithConfig(cfg BadgerOpenConfig) (*DB, error) {
 		return nil, err
 	}
 
-	database, err := openDatabaseNoPanic(kv, databaseID, dbOptions...)
+	database, err := Open(kv, databaseID, dbOptions...)
 	if err != nil {
+		_ = kv.Close()
 		return nil, err
 	}
 
@@ -86,16 +87,5 @@ func OpenBadgerWithConfig(cfg BadgerOpenConfig) (*DB, error) {
 		}
 	}
 
-	return database, nil
-}
-
-func openDatabaseNoPanic(s store.Store, databaseID string, opts ...Option) (database *DB, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			_ = s.Close()
-			err = fmt.Errorf("open database failed: %v", r)
-		}
-	}()
-	database = Open(s, databaseID, opts...)
 	return database, nil
 }

@@ -30,7 +30,10 @@ func TestQueryLocalFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	d := Open(s, "test-files")
+	d, err := Open(s, "test-files")
+	if err != nil {
+		t.Fatalf("open db failed: %v", err)
+	}
 	defer d.Close()
 
 	d.SetFileStorageDir(fileStoreDir)

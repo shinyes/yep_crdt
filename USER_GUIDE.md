@@ -64,7 +64,10 @@ func main() {
 
 	// 3. 打开数据库实例
 	// Open 会启动后台服务（如 HLC 时钟），并校验 DatabaseID
-	myDB := db.Open(s, "my-database-id")
+	myDB, err := db.Open(s, "my-database-id")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer myDB.Close()
 
 	// (可选) 设置文件存储根目录，用于 LocalFileCRDT

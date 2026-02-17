@@ -13,7 +13,10 @@ func TestDB_GCFloor_DefaultZero(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := Open(s, "test-db")
+	database, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("open db failed: %v", err)
+	}
 	if got := database.GCFloor(); got != 0 {
 		t.Fatalf("expected default gc floor 0, got %d", got)
 	}
@@ -26,7 +29,10 @@ func TestDB_SetGCFloor_Monotonic(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := Open(s, "test-db")
+	database, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("open db failed: %v", err)
+	}
 	if err := database.SetGCFloor(100); err != nil {
 		t.Fatalf("set gc floor failed: %v", err)
 	}

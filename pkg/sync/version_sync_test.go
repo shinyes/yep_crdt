@@ -64,7 +64,7 @@ func TestVersionSyncOnPeerConnected_SendsDigestMessage(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "db-1")
+	database := mustOpenDB(t, s, "db-1")
 	defer database.Close()
 
 	err = database.DefineTable(&meta.TableSchema{
@@ -107,7 +107,7 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "db-1")
+	database := mustOpenDB(t, s, "db-1")
 	defer database.Close()
 
 	err = database.DefineTable(&meta.TableSchema{

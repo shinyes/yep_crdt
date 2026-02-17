@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -24,7 +25,10 @@ func TestDB_HLC(t *testing.T) {
 	}
 	defer s.Close()
 
-	myDB := Open(s, "test-db-hlc")
+	myDB, err := Open(s, "test-db-hlc")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 	defer myDB.Close()
 
 	// 1. Test Now()
@@ -73,7 +77,10 @@ func TestDB_DatabaseID(t *testing.T) {
 	defer s.Close()
 
 	// 1. First Open - should succeed and persist ID
-	db1 := Open(s, "my-tenant")
+	db1, err := Open(s, "my-tenant")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 	if db1.DatabaseID != "my-tenant" {
 		t.Errorf("Expected DatabaseID 'my-tenant', got '%s'", db1.DatabaseID)
 	}
@@ -81,22 +88,20 @@ func TestDB_DatabaseID(t *testing.T) {
 	// Actually Open(s) reuses s.
 
 	// 2. Re-open with SAME ID - should succeed
-	db2 := Open(s, "my-tenant")
+	db2, err := Open(s, "my-tenant")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 	if db2.DatabaseID != "my-tenant" {
 		t.Errorf("Expected DatabaseID 'my-tenant', got '%s'", db2.DatabaseID)
 	}
 
-	// 3. Re-open with DIFFERENT ID - should panic
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected Open to panic on ID mismatch")
-		} else {
-			expectedMsg := "Database ID mismatch: expected my-tenant, got other-tenant"
-			if r != expectedMsg {
-				t.Errorf("Panic mismatch. Want '%s', got '%v'", expectedMsg, r)
-			}
-		}
-	}()
-
-	_ = Open(s, "other-tenant")
+	// 3. Re-open with DIFFERENT ID - should return typed error
+	_, err = Open(s, "other-tenant")
+	if err == nil {
+		t.Fatalf("expected Open to return error on ID mismatch")
+	}
+	if !errors.Is(err, ErrDatabaseIDMismatch) {
+		t.Fatalf("expected ErrDatabaseIDMismatch, got %v", err)
+	}
 }

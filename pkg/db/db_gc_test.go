@@ -19,7 +19,10 @@ func TestDB_GC(t *testing.T) {
 	}
 	defer s.Close()
 
-	db := Open(s, "test-db")
+	db, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// 定义表
 	schema := &meta.TableSchema{
@@ -91,7 +94,10 @@ func TestDB_GCByTimeOffset(t *testing.T) {
 	}
 	defer s.Close()
 
-	db := Open(s, "test-db")
+	db, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// 定义表
 	schema := &meta.TableSchema{
@@ -143,7 +149,10 @@ func TestDB_GCWithORSet(t *testing.T) {
 	}
 	defer s.Close()
 
-	db := Open(s, "test-db")
+	db, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// 定义表
 	schema := &meta.TableSchema{
@@ -163,7 +172,7 @@ func TestDB_GCWithORSet(t *testing.T) {
 
 	// 插入包含 ORSet 的数据
 	key := uuid.New()
-	
+
 	// 创建 ORSet 并添加元素
 	tagSet := crdt.NewORSet[string]()
 	tagSet.Apply(crdt.OpORSetAdd[string]{Element: "tag1"})
@@ -183,7 +192,7 @@ func TestDB_GCWithORSet(t *testing.T) {
 
 	// 删除一个标签
 	tagSet.Apply(crdt.OpORSetRemove[string]{Element: "tag1"})
-	
+
 	data = map[string]any{
 		"tags": tagSet,
 	}
@@ -225,7 +234,7 @@ func TestDB_GCWithORSet(t *testing.T) {
 		// 所以我们只检查它是否是 CRDT 接口
 		t.Logf("  Tags is CRDT: %v", tagsCRDT.Type())
 	}
-	
+
 	// 由于 Table.Get 返回的是 Value()，我们无法直接访问 Tombstones
 	// 这是预期的行为
 }
@@ -239,7 +248,10 @@ func TestDB_TableGC(t *testing.T) {
 	}
 	defer s.Close()
 
-	db := Open(s, "test-db")
+	db, err := Open(s, "test-db")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// 定义表
 	schema := &meta.TableSchema{

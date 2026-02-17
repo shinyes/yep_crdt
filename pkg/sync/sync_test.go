@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
@@ -20,7 +19,7 @@ func TestNodeManager_Basic(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 
 	nm := NewNodeManager(database, "node-1",
 		WithHeartbeatInterval(1*time.Second),
@@ -55,7 +54,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	nm := NewNodeManager(database, "node-1")
 
 	baseTime := database.Clock().Now()
@@ -103,7 +102,7 @@ func TestNodeManager_Rejoin(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 
 	nm := NewNodeManager(database, "node-1", WithClockThreshold(8000))
 
@@ -148,7 +147,7 @@ func TestNodeManager_Rejoin_LongOfflineRequiresFullSync(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	if err := database.DefineTable(&meta.TableSchema{
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -185,7 +184,7 @@ func TestNodeManager_Rejoin_ShortOfflineNoForcedFullSync(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	if err := database.DefineTable(&meta.TableSchema{
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -222,7 +221,7 @@ func TestNodeManager_Rejoin_IncrementalOnlyMode_NoFullSync(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	if err := database.DefineTable(&meta.TableSchema{
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -262,7 +261,7 @@ func TestNodeManager_GCFloorLag_TriggersFullSyncAndCatchesUp(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	if err := database.DefineTable(&meta.TableSchema{
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -313,7 +312,7 @@ func TestNodeManager_GCFloorPeerBehind_BlocksIncrementalOnly(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	if err := database.DefineTable(&meta.TableSchema{
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -350,7 +349,7 @@ func TestNodeManager_DataReject(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "test-node")
+	database := mustOpenDB(t, s, "test-node")
 	nm := NewNodeManager(database, "node-1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

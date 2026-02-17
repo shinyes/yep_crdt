@@ -16,7 +16,10 @@ func TestDefineTableSchemaConflict(t *testing.T) {
 		t.Fatalf("NewBadgerStore() failed: %v", err)
 	}
 
-	database := Open(kv, "tenant-define-table-conflict")
+	database, err := Open(kv, "tenant-define-table-conflict")
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
 	defer func() {
 		_ = database.Close()
 	}()

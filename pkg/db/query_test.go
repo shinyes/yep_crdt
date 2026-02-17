@@ -19,10 +19,13 @@ func TestQueryPlanner(t *testing.T) {
 	defer s.Close()
 	defer os.RemoveAll(dbPath)
 
-	myDB := Open(s, "test-query-planner")
+	myDB, err := Open(s, "test-query-planner")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// Define Schema with Composite Index
-	err := myDB.DefineTable(&meta.TableSchema{
+	err = myDB.DefineTable(&meta.TableSchema{
 		ID:   1,
 		Name: "users",
 		Columns: []meta.ColumnSchema{
@@ -110,9 +113,12 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 	defer s.Close()
 	defer os.RemoveAll(dbPath)
 
-	myDB := Open(s, "test-find-crdts")
+	myDB, err := Open(s, "test-find-crdts")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
-	err := myDB.DefineTable(&meta.TableSchema{
+	err = myDB.DefineTable(&meta.TableSchema{
 		ID:   2,
 		Name: "docs",
 		Columns: []meta.ColumnSchema{
@@ -190,10 +196,13 @@ func TestGetCRDT(t *testing.T) {
 	defer s.Close()
 	defer os.RemoveAll(dbPath)
 
-	myDB := Open(s, "test-get-crdt")
+	myDB, err := Open(s, "test-get-crdt")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
 
 	// Define Table
-	err := myDB.DefineTable(&meta.TableSchema{
+	err = myDB.DefineTable(&meta.TableSchema{
 		ID:   3,
 		Name: "items",
 		Columns: []meta.ColumnSchema{

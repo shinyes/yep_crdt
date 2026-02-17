@@ -52,7 +52,7 @@ func TestBroadcastRowDelta_OnlySelectedColumns(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "delta-node")
+	database := mustOpenDB(t, s, "delta-node")
 	defer database.Close()
 
 	err = database.DefineTable(&meta.TableSchema{
@@ -120,8 +120,8 @@ func TestOnReceiveDelta_MergesOnlyChangedColumns(t *testing.T) {
 	}
 	defer s2.Close()
 
-	db1 := db.Open(s1, "node-a")
-	db2 := db.Open(s2, "node-b")
+	db1 := mustOpenDB(t, s1, "node-a")
+	db2 := mustOpenDB(t, s2, "node-b")
 	defer db1.Close()
 	defer db2.Close()
 

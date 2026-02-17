@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
@@ -140,7 +139,7 @@ func TestNodeManager_HandleManualGCPrepare_SendsAck(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -171,7 +170,7 @@ func TestNodeManager_HandleManualGCCommit_RejectsUnsafeTimestamp(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -204,7 +203,7 @@ func TestNodeManager_HandleManualGCCommit_Success(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -244,7 +243,7 @@ func TestNodeManager_HandleManualGCExecute_RejectsWithoutCommit(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -277,7 +276,7 @@ func TestNodeManager_HandleManualGCExecute_Success(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -320,7 +319,7 @@ func TestNodeManager_HandleManualGCAbort_ClearsPending(t *testing.T) {
 	}
 	defer s.Close()
 
-	nm := NewNodeManager(db.Open(s, "test-node"), "node-1")
+	nm := NewNodeManager(mustOpenDB(t, s, "test-node"), "node-1")
 	net := &manualGCRecordNetwork{}
 	nm.RegisterNetwork(net)
 
@@ -363,7 +362,7 @@ func TestMultiEngine_ManualGC_LocalOnly(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "tenant-1")
+	database := mustOpenDB(t, s, "tenant-1")
 	nm := NewNodeManager(database, "node-1")
 	rt := &tenantRuntime{
 		tenantID: "tenant-1",

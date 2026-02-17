@@ -136,7 +136,10 @@ func main() {
 	}
 	defer s.Close()
 
-	database := db.Open(s, "tenant-1")
+	database, err := db.Open(s, "tenant-1")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer database.Close()
 }
 ```

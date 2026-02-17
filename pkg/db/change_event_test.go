@@ -15,7 +15,10 @@ func TestOnChangeDetailed_ReportsChangedColumns(t *testing.T) {
 	}
 	defer s.Close()
 
-	database := Open(s, "change-event-db")
+	database, err := Open(s, "change-event-db")
+	if err != nil {
+		t.Fatalf("open db failed: %v", err)
+	}
 	defer database.Close()
 
 	err = database.DefineTable(&meta.TableSchema{

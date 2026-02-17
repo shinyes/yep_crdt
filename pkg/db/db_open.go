@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -10,10 +11,11 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
+var ErrDatabaseIDMismatch = errors.New("database id mismatch")
+
 // Open 打开数据库。
 // databaseID 是数据库的唯一标识 (如 "tenant-1")。
-// 如果存储中已存在 ID 且与传入的不一致，将 panic。
-func Open(s store.Store, databaseID string, opts ...Option) *DB {
+func Open(s store.Store, databaseID string, opts ...Option) (*DB, error) {
 	c := meta.NewCatalog(s)
 	// Try loading existing catalog
 	if err := c.Load(); err != nil {
@@ -32,19 +34,19 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		return err
 	})
 	if err != nil && err != store.ErrKeyNotFound {
-		panic(fmt.Sprintf("读取 Database ID 失败: %v", err))
+		return nil, fmt.Errorf("读取 Database ID 失败: %w", err)
 	}
 
 	if storedDBID != "" {
 		if storedDBID != databaseID {
-			panic("Database ID mismatch: expected " + storedDBID + ", got " + databaseID)
+			return nil, fmt.Errorf("%w: expected %s, got %s", ErrDatabaseIDMismatch, storedDBID, databaseID)
 		}
 	} else {
 		// First time, store it
 		if err := s.Update(func(txn store.Tx) error {
 			return txn.Set([]byte(sysKeyDatabaseID), []byte(databaseID), 0)
 		}); err != nil {
-			panic(fmt.Sprintf("存储 Database ID 失败: %v", err))
+			return nil, fmt.Errorf("存储 Database ID 失败: %w", err)
 		}
 	}
 
@@ -59,7 +61,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		return err
 	})
 	if err != nil && err != store.ErrKeyNotFound {
-		panic(fmt.Sprintf("读取 Node ID 失败: %v", err))
+		return nil, fmt.Errorf("读取 Node ID 失败: %w", err)
 	}
 
 	if nodeID == "" || err == store.ErrKeyNotFound {
@@ -67,7 +69,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		if err := s.Update(func(txn store.Tx) error {
 			return txn.Set([]byte(sysKeyNodeID), []byte(nodeID), 0)
 		}); err != nil {
-			panic(fmt.Sprintf("存储 Node ID 失败: %v", err))
+			return nil, fmt.Errorf("存储 Node ID 失败: %w", err)
 		}
 	}
 
@@ -85,7 +87,7 @@ func Open(s store.Store, databaseID string, opts ...Option) *DB {
 		opt(db)
 	}
 
-	return db
+	return db, nil
 }
 
 // SetFileStorageDir 设置文件存储目录。
