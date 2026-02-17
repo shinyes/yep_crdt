@@ -1,9 +1,8 @@
 package db
 
 import (
+	"bytes"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/meta"
@@ -11,13 +10,12 @@ import (
 
 func (q *Query) matches(row crdt.ReadOnlyMap) bool {
 	for _, cond := range q.conditions {
-		// Lazy load optimization: Only fetch the specific field needed for this condition
+		// Lazy load optimization: only fetch the field needed for this condition.
 		val, ok := row.Get(cond.Field)
 		if !ok {
 			return false
 		}
 
-		// Find column type from prebuilt map
 		colType := meta.ColTypeString // Default fallback
 		if t, exists := q.columnTypes[cond.Field]; exists {
 			colType = t
@@ -69,106 +67,86 @@ func (q *Query) matches(row crdt.ReadOnlyMap) bool {
 }
 
 func compare(a, b any, t meta.ColumnType) int {
-	switch t {
+	switch normalizeColumnType(t) {
 	case meta.ColTypeInt:
-		// Strict numeric comparison
-		numA, okA := toFloat(a) // Helper handles int/int64/float variants
-		numB, okB := toFloat(b)
+		av, okA := parseInt64Like(a)
+		bv, okB := parseInt64Like(b)
 		if !okA || !okB {
-			// Type mismatch for schema type Int -> treat as not equal (or handled upstream?)
-			// Returning -2 to indicate error? simpler: fallback to string or inequalities fail.
-			// Let's fallback to string comparison if types are wildly different,
-			// to maintain legacy "try best effort" but safer.
-			// Actually, for strict safety, if schema says Int and we can't parse, it's invalid.
-			// However `matches` expects -1, 0, 1.
-			// If type mismatch, they are definitely not equal.
-			// For ordering (>, <), undefined behavior if types mismatch.
-			// Let's return a stable non-zero.
-			return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+			return fallbackCompare(a, b)
 		}
-		if numA < numB {
+		if av < bv {
 			return -1
-		} else if numA > numB {
+		}
+		if av > bv {
 			return 1
 		}
 		return 0
 
+	case meta.ColTypeFloat:
+		av, okA := parseFloat64Like(a)
+		bv, okB := parseFloat64Like(b)
+		if !okA || !okB {
+			return fallbackCompare(a, b)
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+		return 0
+
+	case meta.ColTypeBool:
+		av, okA := parseBoolLike(a)
+		bv, okB := parseBoolLike(b)
+		if !okA || !okB {
+			return fallbackCompare(a, b)
+		}
+		if av == bv {
+			return 0
+		}
+		if !av && bv {
+			return -1
+		}
+		return 1
+
+	case meta.ColTypeTimestamp:
+		av, okA := parseTimestampLike(a)
+		bv, okB := parseTimestampLike(b)
+		if !okA || !okB {
+			return fallbackCompare(a, b)
+		}
+		if av.Before(bv) {
+			return -1
+		}
+		if av.After(bv) {
+			return 1
+		}
+		return 0
+
+	case meta.ColTypeBytes:
+		av, okA := bytesFromAny(a)
+		bv, okB := bytesFromAny(b)
+		if !okA || !okB {
+			return fallbackCompare(a, b)
+		}
+		return bytes.Compare(av, bv)
+
 	case meta.ColTypeString:
-		// Strict string comparison
-		strA, okA := a.(string)
-		if !okA {
-			// If source is []byte (common in our storage), convert.
-			if bBytes, ok := a.([]byte); ok {
-				strA = string(bBytes)
-			} else {
-				strA = fmt.Sprintf("%v", a)
-			}
-		}
-		strB, okB := b.(string)
-		if !okB {
-			if bBytes, ok := b.([]byte); ok {
-				strB = string(bBytes)
-			} else {
-				strB = fmt.Sprintf("%v", b)
-			}
-		}
-		return strings.Compare(strA, strB)
+		return bytes.Compare([]byte(stringify(a)), []byte(stringify(b)))
 
 	default:
-		// Fallback for unknown types
-		return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+		return fallbackCompare(a, b)
 	}
 }
 
-func toFloat(v any) (float64, bool) {
+func stringify(v any) string {
 	switch val := v.(type) {
-	case int:
-		return float64(val), true
-	case int8:
-		return float64(val), true
-	case int16:
-		return float64(val), true
-	case int32:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case uint:
-		return float64(val), true
-	case uint8:
-		return float64(val), true
-	case uint16:
-		return float64(val), true
-	case uint32:
-		return float64(val), true
-	case uint64:
-		return float64(val), true
-	case float32:
-		return float64(val), true
-	case float64:
-		return val, true
 	case string:
-		return parseNumericText(val)
+		return val
 	case []byte:
-		// Attempt to parse bytes as numeric text since storage is often LWWRegister bytes.
-		return parseNumericText(string(val))
+		return string(val)
 	default:
-		return 0, false
+		return fmt.Sprintf("%v", v)
 	}
-}
-
-func parseNumericText(text string) (float64, bool) {
-	if text == "" {
-		return 0, false
-	}
-	if i, err := strconv.ParseInt(text, 10, 64); err == nil {
-		return float64(i), true
-	}
-	if u, err := strconv.ParseUint(text, 10, 64); err == nil {
-		return float64(u), true
-	}
-	f, err := strconv.ParseFloat(text, 64)
-	if err != nil {
-		return 0, false
-	}
-	return f, true
 }

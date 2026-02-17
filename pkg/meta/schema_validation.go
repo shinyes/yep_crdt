@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+var supportedColumnTypes = map[ColumnType]struct{}{
+	ColTypeString:    {},
+	ColTypeBytes:     {},
+	ColTypeFloat:     {},
+	ColTypeInt:       {},
+	ColTypeBool:      {},
+	ColTypeTimestamp: {},
+}
+
 // ValidateTableSchemaShape validates schema structure and rejects malformed input.
 func ValidateTableSchemaShape(schema *TableSchema) error {
 	if schema == nil {
@@ -86,9 +95,18 @@ func normalizeColumns(columns []ColumnSchema) (map[string]ColumnSchema, error) {
 		if _, exists := normalized[name]; exists {
 			return nil, fmt.Errorf("duplicate column name %q", name)
 		}
+
+		colType := ColumnType(strings.TrimSpace(string(column.Type)))
+		if colType == "" {
+			colType = ColTypeString
+		}
+		if _, ok := supportedColumnTypes[colType]; !ok {
+			return nil, fmt.Errorf("unsupported column type %q for column %q", column.Type, name)
+		}
+
 		normalized[name] = ColumnSchema{
 			Name:     name,
-			Type:     column.Type,
+			Type:     colType,
 			CrdtType: column.CrdtType,
 		}
 	}

@@ -17,8 +17,8 @@ func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
 		if err != nil {
 			return err
 		}
-		res = m.Value().(map[string]any)
-		return nil
+		res, err = t.decodeRowForResult(m.Value().(map[string]any))
+		return err
 	})
 	return res, err
 }

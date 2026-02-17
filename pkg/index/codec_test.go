@@ -3,6 +3,7 @@ package index
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func TestEncodeKey(t *testing.T) {
@@ -70,10 +71,34 @@ func TestEncodeKey(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "unsupported type",
+			name:    "float64 value",
 			tableID: 1,
 			indexID: 5,
 			values:  []any{3.14},
+			pk:      []byte{1, 2, 3, 4},
+			wantErr: false,
+		},
+		{
+			name:    "bool value",
+			tableID: 1,
+			indexID: 6,
+			values:  []any{true},
+			pk:      []byte{1, 2, 3, 4},
+			wantErr: false,
+		},
+		{
+			name:    "timestamp value",
+			tableID: 1,
+			indexID: 7,
+			values:  []any{time.Unix(1700000000, 0).UTC()},
+			pk:      []byte{1, 2, 3, 4},
+			wantErr: false,
+		},
+		{
+			name:    "unsupported type",
+			tableID: 1,
+			indexID: 8,
+			values:  []any{map[string]any{"x": 1}},
 			pk:      []byte{1, 2, 3, 4},
 			wantErr: true,
 		},
@@ -132,15 +157,29 @@ func TestEncodeKeyOrdering(t *testing.T) {
 	if bytes.Compare(key7, key8) >= 0 {
 		t.Error("Int64 encoding should order negative before positive")
 	}
+
+	// Float ordering
+	key9, _ := EncodeKey(tableID, indexID, []any{1.5}, pk1)
+	key10, _ := EncodeKey(tableID, indexID, []any{2.5}, pk2)
+	if bytes.Compare(key9, key10) >= 0 {
+		t.Error("Float encoding should produce ordered keys")
+	}
+
+	// Bool ordering: false < true
+	key11, _ := EncodeKey(tableID, indexID, []any{false}, pk1)
+	key12, _ := EncodeKey(tableID, indexID, []any{true}, pk2)
+	if bytes.Compare(key11, key12) >= 0 {
+		t.Error("Bool encoding should produce ordered keys")
+	}
 }
 
 func TestEncodePrefix(t *testing.T) {
 	tests := []struct {
-		name     string
-		tableID  uint32
-		indexID  uint32
-		values   []any
-		wantErr  bool
+		name    string
+		tableID uint32
+		indexID uint32
+		values  []any
+		wantErr bool
 	}{
 		{
 			name:    "no values (full table scan)",
@@ -164,10 +203,17 @@ func TestEncodePrefix(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "unsupported type",
+			name:    "float supported",
 			tableID: 1,
 			indexID: 1,
 			values:  []any{3.14},
+			wantErr: false,
+		},
+		{
+			name:    "unsupported type",
+			tableID: 1,
+			indexID: 1,
+			values:  []any{struct{}{}},
 			wantErr: true,
 		},
 	}
@@ -195,7 +241,7 @@ func TestEncodePrefixVsKey(t *testing.T) {
 	// Single value
 	prefix, _ := EncodePrefix(tableID, indexID, []any{"test"})
 	key, _ := EncodeKey(tableID, indexID, []any{"test"}, pk)
-	
+
 	if !bytes.HasPrefix(key, prefix) {
 		t.Error("Key should have the prefix")
 	}
@@ -203,7 +249,7 @@ func TestEncodePrefixVsKey(t *testing.T) {
 	// Multiple values
 	prefix2, _ := EncodePrefix(tableID, indexID, []any{"name", 25})
 	key2, _ := EncodeKey(tableID, indexID, []any{"name", 25, "extra"}, pk)
-	
+
 	if !bytes.HasPrefix(key2, prefix2) {
 		t.Error("Key should have the composite prefix")
 	}
@@ -212,33 +258,33 @@ func TestEncodePrefixVsKey(t *testing.T) {
 func TestEncodeValueInt64Negative(t *testing.T) {
 	// Test that negative int64 values are encoded correctly for ordering
 	buf := new(bytes.Buffer)
-	
+
 	// Encode -1
 	err := encodeValue(buf, int64(-1))
 	if err != nil {
 		t.Fatalf("encodeValue failed: %v", err)
 	}
-	
+
 	neg1Bytes := buf.Bytes()
-	
+
 	// Encode 0
 	buf = new(bytes.Buffer)
 	err = encodeValue(buf, int64(0))
 	if err != nil {
 		t.Fatalf("encodeValue failed: %v", err)
 	}
-	
+
 	zeroBytes := buf.Bytes()
-	
+
 	// Encode 1
 	buf = new(bytes.Buffer)
 	err = encodeValue(buf, int64(1))
 	if err != nil {
 		t.Fatalf("encodeValue failed: %v", err)
 	}
-	
+
 	pos1Bytes := buf.Bytes()
-	
+
 	// Check ordering: -1 < 0 < 1
 	if bytes.Compare(neg1Bytes, zeroBytes) >= 0 {
 		t.Error("Encoding of -1 should be less than 0")

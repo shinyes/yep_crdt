@@ -169,8 +169,15 @@ func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
 		}
 
 		// 更新索引
-		newBody := localMap.Value().(map[string]any)
-		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldBody, newBody); err != nil {
+		oldIndexBody, err := t.decodeRowForIndex(oldBody)
+		if err != nil {
+			return fmt.Errorf("decode old row for index failed: %w", err)
+		}
+		newIndexBody, err := t.decodeRowForIndex(localMap.Value().(map[string]any))
+		if err != nil {
+			return fmt.Errorf("decode new row for index failed: %w", err)
+		}
+		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldIndexBody, newIndexBody); err != nil {
 			return fmt.Errorf("更新索引失败: %w", err)
 		}
 

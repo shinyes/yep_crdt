@@ -19,7 +19,7 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 	if key.Version() != 7 {
 		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
-	colType, err := t.getColCrdtType(col)
+	colCrdtType, err := t.getColCrdtType(col)
 	if err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 		// Initialize if missing
 		if currentMap.Entries[col] == nil {
 			var newCrdt crdt.CRDT
-			switch colType {
+			switch colCrdtType {
 			case meta.CrdtCounter:
 				newCrdt = crdt.NewPNCounter(t.db.NodeID)
 			case meta.CrdtORSet:
@@ -54,7 +54,7 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 		var op crdt.Op
 		ts := t.db.clock.Now()
 
-		switch colType {
+		switch colCrdtType {
 		case meta.CrdtCounter:
 			delta, ok := toInt64(val)
 			if !ok {
@@ -97,7 +97,15 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 				Op:  crdt.OpRGAInsert[[]byte]{AnchorID: lastID, Value: encodeValue(val)},
 			}
 		default: // LWW or Unknown
-			lww := crdt.NewLWWRegister(encodeValue(val), ts)
+			colType := meta.ColTypeString
+			if schemaCol, ok := t.getColumnSchema(col); ok && schemaCol.Type != "" {
+				colType = schemaCol.Type
+			}
+			encoded, err := encodeLWWValueByColumnType(colType, val)
+			if err != nil {
+				return fmt.Errorf("failed to encode column %q: %w", col, err)
+			}
+			lww := crdt.NewLWWRegister(encoded, ts)
 			op = crdt.OpMapSet{Key: col, Value: lww}
 		}
 
@@ -123,7 +131,7 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 	if key.Version() != 7 {
 		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
-	colType, err := t.getColCrdtType(col)
+	colCrdtType, err := t.getColCrdtType(col)
 	if err != nil {
 		return err
 	}
@@ -136,7 +144,7 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 
 		var op crdt.Op
 
-		switch colType {
+		switch colCrdtType {
 		case meta.CrdtCounter:
 			delta, ok := toInt64(val)
 			if !ok {
@@ -179,7 +187,7 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 			return t.saveRow(txn, key, currentMap, oldBody)
 
 		default:
-			return fmt.Errorf("remove not supported for type %s", colType)
+			return fmt.Errorf("remove not supported for type %s", colCrdtType)
 		}
 
 		if err := currentMap.Apply(op); err != nil {

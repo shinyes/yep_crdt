@@ -26,6 +26,15 @@ func (t *Table) getColCrdtType(col string) (string, error) {
 	return "", fmt.Errorf("column not found: %s", col)
 }
 
+func (t *Table) getColumnSchema(col string) (meta.ColumnSchema, bool) {
+	for _, c := range t.schema.Columns {
+		if c.Name == col {
+			return c, true
+		}
+	}
+	return meta.ColumnSchema{}, false
+}
+
 // validateKey logic removed as we use uuid.UUID type. Check version if needed.
 
 func (t *Table) loadRow(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, map[string]any, error) {
@@ -51,7 +60,17 @@ func (t *Table) loadRow(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, map[string]a
 
 func (t *Table) saveRow(txn store.Tx, pk uuid.UUID, currentMap *crdt.MapCRDT, oldBody map[string]any) error {
 	newBody := currentMap.Value().(map[string]any)
-	if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk[:], oldBody, newBody); err != nil {
+
+	oldIndexBody, err := t.decodeRowForIndex(oldBody)
+	if err != nil {
+		return err
+	}
+	newIndexBody, err := t.decodeRowForIndex(newBody)
+	if err != nil {
+		return err
+	}
+
+	if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, pk[:], oldIndexBody, newIndexBody); err != nil {
 		return err
 	}
 	finalBytes, err := currentMap.Bytes()
@@ -99,6 +118,44 @@ func columnsFromMap(data map[string]any) []string {
 		columns = append(columns, col)
 	}
 	return columns
+}
+
+func (t *Table) decodeRowForResult(raw map[string]any) (map[string]any, error) {
+	return t.decodeRowBySchema(raw)
+}
+
+func (t *Table) decodeRowForIndex(raw map[string]any) (map[string]any, error) {
+	return t.decodeRowBySchema(raw)
+}
+
+func (t *Table) decodeRowBySchema(raw map[string]any) (map[string]any, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	decoded := make(map[string]any, len(raw))
+	for col, val := range raw {
+		schemaCol, ok := t.getColumnSchema(col)
+		if !ok {
+			decoded[col] = val
+			continue
+		}
+
+		crdtType := schemaCol.CrdtType
+		if crdtType == "" {
+			crdtType = meta.CrdtLWW
+		}
+		if crdtType != meta.CrdtLWW {
+			decoded[col] = val
+			continue
+		}
+
+		typedValue, err := decodeLWWValueByColumnType(schemaCol.Type, val)
+		if err != nil {
+			return nil, fmt.Errorf("decode column %q failed: %w", col, err)
+		}
+		decoded[col] = typedValue
+	}
+	return decoded, nil
 }
 
 // Helper to encode value for LWW/RGA (bytes) or ORSet (string->bytes)

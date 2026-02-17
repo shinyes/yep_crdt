@@ -45,14 +45,15 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		// 我们需要模式来知道类型。
 
 		for col, val := range data {
-			// 查找列模式，根据 schema 决定 CRDT 类型
-			colCrdtType := meta.CrdtLWW // 默认类型
-			for _, schemaCol := range t.schema.Columns {
-				if schemaCol.Name == col {
-					if schemaCol.CrdtType != "" {
-						colCrdtType = schemaCol.CrdtType
-					}
-					break
+			// 查找列模式，根据 schema 决定 CRDT/列类型
+			colCrdtType := meta.CrdtLWW
+			colDataType := meta.ColTypeString
+			if schemaCol, ok := t.getColumnSchema(col); ok {
+				if schemaCol.CrdtType != "" {
+					colCrdtType = schemaCol.CrdtType
+				}
+				if schemaCol.Type != "" {
+					colDataType = schemaCol.Type
 				}
 			}
 
@@ -145,7 +146,11 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 				return fmt.Errorf("LocalFile requires FileImport type, got %T", val)
 			default:
 				// LWW (默认)
-				crdtVal = crdt.NewLWWRegister(encodeValue(val), ts)
+				encoded, err := encodeLWWValueByColumnType(colDataType, val)
+				if err != nil {
+					return fmt.Errorf("failed to encode column %q: %w", col, err)
+				}
+				crdtVal = crdt.NewLWWRegister(encoded, ts)
 			}
 
 			// 应用到 Map
@@ -158,18 +163,8 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 			}
 		}
 
-		// 3. 更新索引
-		newBody := currentMap.Value().(map[string]any)
-		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldBody, newBody); err != nil {
-			return err
-		}
-
-		// 4. 保存
-		finalBytes, err := currentMap.Bytes()
-		if err != nil {
-			return err
-		}
-		return txn.Set(keyBytes, finalBytes, 0)
+		// 3. 保存并更新索引
+		return t.saveRow(txn, key, currentMap, oldBody)
 	})
 
 	// 写入成功后触发变更回调（用于自动广播）

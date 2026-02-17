@@ -34,7 +34,7 @@ type Query struct {
 }
 
 func (t *Table) Where(field string, op Operator, val any) *Query {
-	return &Query{
+	q := &Query{
 		table: t,
 		conditions: []Condition{
 			{Field: field, Op: op, Value: val},
@@ -42,6 +42,8 @@ func (t *Table) Where(field string, op Operator, val any) *Query {
 		conditionFirstIndex: map[string]int{field: 0},
 		columnTypes:         buildColumnTypeMap(t.schema),
 	}
+	q.conditions[0].Value = q.normalizeConditionValue(field, q.conditions[0].Value)
+	return q
 }
 
 func buildColumnTypeMap(schema *meta.TableSchema) map[string]meta.ColumnType {
@@ -56,13 +58,30 @@ func buildColumnTypeMap(schema *meta.TableSchema) map[string]meta.ColumnType {
 }
 
 func (q *Query) And(field string, op Operator, val any) *Query {
-	q.conditions = append(q.conditions, Condition{Field: field, Op: op, Value: val})
+	q.conditions = append(q.conditions, Condition{
+		Field: field,
+		Op:    op,
+		Value: q.normalizeConditionValue(field, val),
+	})
 	if q.conditionFirstIndex == nil {
 		q.rebuildConditionIndex()
 	} else if _, exists := q.conditionFirstIndex[field]; !exists {
 		q.conditionFirstIndex[field] = len(q.conditions) - 1
 	}
 	return q
+}
+
+func (q *Query) normalizeConditionValue(field string, value any) any {
+	colType, exists := q.columnTypes[field]
+	if !exists {
+		return value
+	}
+	normalized, err := normalizeValueByColumnType(colType, value)
+	if err != nil {
+		// Keep legacy behavior: query keeps running with original value.
+		return value
+	}
+	return normalized
 }
 
 func (q *Query) Offset(offset int) *Query {

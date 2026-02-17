@@ -641,8 +641,13 @@ Yep CRDT 实现了三种层级的同步机制，自动智能切换：
 | Schema 类型 | 对应的 Go 类型 | 描述 |
 | :--- | :--- | :--- |
 | `ColTypeString` | `string` | 文本字符串 |
-| `ColTypeInt` | `int`, `int64` | 整数 |
+| `ColTypeInt` | `int`, `int64` | 整数（值本体约 `1~20` 字节，含负号） |
 | `ColTypeBool` | `bool` | 布尔值 |
+| `ColTypeFloat` | `float32`, `float64` | 浮点数（值本体通常约 `1~24` 字节） |
+| `ColTypeBytes` | `[]byte` | 二进制数据（BLOB） |
+| `ColTypeTimestamp` | `time.Time`, RFC3339 字符串, Unix 时间戳 | 时间戳 |
+
+说明：`Table.Get()` 与 `Query.Find()` 会按 schema 返回类型化值，不再要求业务侧手动从字符串/字节做二次解析。
 
 | CRDT 类型 | 操作方法 | 适用场景 |
 | :--- | :--- | :--- |

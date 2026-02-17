@@ -17,10 +17,8 @@ var ErrDatabaseIDMismatch = errors.New("database id mismatch")
 // databaseID 是数据库的唯一标识 (如 "tenant-1")。
 func Open(s store.Store, databaseID string, opts ...Option) (*DB, error) {
 	c := meta.NewCatalog(s)
-	// Try loading existing catalog
 	if err := c.Load(); err != nil {
-		// 记录错误但继续执行，可能是首次运行
-		fmt.Printf("警告: 加载 catalog 失败: %v\n", err)
+		return nil, fmt.Errorf("加载 catalog 失败: %w", err)
 	}
 
 	// 1. Check Database ID

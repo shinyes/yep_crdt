@@ -12,9 +12,12 @@ import (
 type ColumnType string
 
 const (
-	ColTypeString ColumnType = "string"
-	ColTypeInt    ColumnType = "int"
-	ColTypeBool   ColumnType = "bool"
+	ColTypeString    ColumnType = "string"
+	ColTypeBytes     ColumnType = "bytes"
+	ColTypeFloat     ColumnType = "float"
+	ColTypeInt       ColumnType = "int"
+	ColTypeBool      ColumnType = "bool"
+	ColTypeTimestamp ColumnType = "timestamp"
 	// ... 根据需要添加更多
 )
 
@@ -91,6 +94,15 @@ func (c *Catalog) Load() error {
 
 		c.lastTableID = state.LastTableID
 		for _, t := range state.Tables {
+			if err := ValidateTableSchemaShape(t); err != nil {
+				return fmt.Errorf("invalid table %q in catalog: %w", t.Name, err)
+			}
+			if _, exists := c.tables[t.Name]; exists {
+				return fmt.Errorf("duplicate table name in catalog: %q", t.Name)
+			}
+			if _, exists := c.ids[t.ID]; exists {
+				return fmt.Errorf("duplicate table id in catalog: %d", t.ID)
+			}
 			c.tables[t.Name] = t
 			c.ids[t.ID] = t
 		}

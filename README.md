@@ -148,6 +148,10 @@ func main() {
 
 主键要求使用 UUIDv7（时间有序、全局唯一）。
 
+Schema 列类型支持：`string` / `int` / `bool` / `float` / `bytes` / `timestamp`。
+`Table.Get()` 与 `Query.Find()` 会按 schema 进行类型化解码（例如 `timestamp -> time.Time`）。
+值本体长度说明：`ColTypeInt` 按十进制文本存储（约 `1~20` 字节，含负号）；`ColTypeFloat` 按 `float64` 文本存储（通常约 `1~24` 字节）。
+
 | CRDT 类型 | 常用方法 | 典型场景 |
 | :--- | :--- | :--- |
 | `CrdtLWW` | `Set` | 昵称、状态、标题等普通字段 |

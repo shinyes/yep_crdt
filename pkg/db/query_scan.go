@@ -15,7 +15,11 @@ func (q *Query) scanIndex(txn store.Tx, idxID uint32, prefixValues []any, rangeC
 	}
 	results := make([]map[string]any, len(crdts))
 	for i, c := range crdts {
-		results[i] = c.Value().(map[string]any)
+		row, err := q.table.decodeRowForResult(c.Value().(map[string]any))
+		if err != nil {
+			return nil, err
+		}
+		results[i] = row
 	}
 	return results, nil
 }
@@ -94,7 +98,11 @@ func (q *Query) scanTable(txn store.Tx) ([]map[string]any, error) {
 	}
 	results := make([]map[string]any, len(crdts))
 	for i, c := range crdts {
-		results[i] = c.Value().(map[string]any)
+		row, err := q.table.decodeRowForResult(c.Value().(map[string]any))
+		if err != nil {
+			return nil, err
+		}
+		results[i] = row
 	}
 	return results, nil
 }
@@ -155,7 +163,7 @@ func (q *Query) fetchRow(txn store.Tx, pk uuid.UUID) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m.Value().(map[string]any), nil
+	return q.table.decodeRowForResult(m.Value().(map[string]any))
 }
 
 func (q *Query) fetchCRDT(txn store.Tx, pk uuid.UUID) (*crdt.MapCRDT, error) {

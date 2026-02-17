@@ -1,6 +1,8 @@
 package meta
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/shinyes/yep_crdt/pkg/store"
@@ -371,6 +373,24 @@ func TestAddTableRejectsInvalidSchema(t *testing.T) {
 			},
 		},
 		{
+			name: "unsupported text column type",
+			schema: &TableSchema{
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "bio", Type: ColumnType("text")},
+				},
+			},
+		},
+		{
+			name: "unsupported json column type",
+			schema: &TableSchema{
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "profile", Type: ColumnType("json")},
+				},
+			},
+		},
+		{
 			name: "empty index column name",
 			schema: &TableSchema{
 				Name: "users",
@@ -391,6 +411,36 @@ func TestAddTableRejectsInvalidSchema(t *testing.T) {
 				t.Fatalf("expected error for invalid schema %q", tt.name)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsUnsupportedColumnType(t *testing.T) {
+	store := newMockStore()
+	state := catalogState{
+		LastTableID: 1,
+		Tables: []*TableSchema{
+			{
+				ID:   1,
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "bio", Type: ColumnType("text")},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state failed: %v", err)
+	}
+	store.data[MetaCatalogKey] = data
+
+	catalog := NewCatalog(store)
+	err = catalog.Load()
+	if err == nil {
+		t.Fatalf("expected load to fail for unsupported column type")
+	}
+	if !strings.Contains(err.Error(), "unsupported column type") {
+		t.Fatalf("unexpected load error: %v", err)
 	}
 }
 
