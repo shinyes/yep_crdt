@@ -2,9 +2,28 @@ package index
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
 )
+
+const testIndexHeaderLen = 1 + 4 + 4
+
+func decodeFirstTLVForTest(t *testing.T, key []byte) (byte, []byte, []byte) {
+	t.Helper()
+	if len(key) < testIndexHeaderLen+5 {
+		t.Fatalf("key too short for TLV: %d", len(key))
+	}
+	body := key[testIndexHeaderLen:]
+	typeTag := body[0]
+	payloadLen := int(binary.BigEndian.Uint32(body[1:5]))
+	if len(body) < 5+payloadLen {
+		t.Fatalf("invalid TLV length: %d (body=%d)", payloadLen, len(body))
+	}
+	payload := body[5 : 5+payloadLen]
+	rest := body[5+payloadLen:]
+	return typeTag, payload, rest
+}
 
 func TestEncodeKey(t *testing.T) {
 	tests := []struct {
@@ -27,6 +46,13 @@ func TestEncodeKey(t *testing.T) {
 				// Check prefix
 				if key[0] != IndexPrefix {
 					t.Errorf("expected prefix %d, got %d", IndexPrefix, key[0])
+				}
+				typeTag, payload, _ := decodeFirstTLVForTest(t, key)
+				if typeTag != indexTypeString {
+					t.Fatalf("expected string type tag %d, got %d", indexTypeString, typeTag)
+				}
+				if string(payload) != "test" {
+					t.Fatalf("expected payload test, got %q", payload)
 				}
 			},
 		},
@@ -130,9 +156,10 @@ func TestEncodeKeyOrdering(t *testing.T) {
 	pk1 := []byte{1, 0, 0, 0}
 	pk2 := []byte{2, 0, 0, 0}
 
-	// String ordering
-	key1, _ := EncodeKey(tableID, indexID, []any{"alice"}, pk1)
-	key2, _ := EncodeKey(tableID, indexID, []any{"bob"}, pk2)
+	// String ordering for equal-length strings.
+	// TLV length prefix comes before payload, so cross-length lexical ordering is not guaranteed.
+	key1, _ := EncodeKey(tableID, indexID, []any{"anna"}, pk1)
+	key2, _ := EncodeKey(tableID, indexID, []any{"beth"}, pk2)
 	if bytes.Compare(key1, key2) >= 0 {
 		t.Error("String encoding should produce ordered keys")
 	}
@@ -255,6 +282,66 @@ func TestEncodePrefixVsKey(t *testing.T) {
 	}
 }
 
+func TestEncodePrefixWithEmbeddedZeroBytes(t *testing.T) {
+	tableID := uint32(3)
+	indexID := uint32(9)
+	pk := []byte{9, 9, 9, 9}
+
+	stringVal := "a\x00b"
+	stringPrefix, err := EncodePrefix(tableID, indexID, []any{stringVal})
+	if err != nil {
+		t.Fatalf("EncodePrefix string failed: %v", err)
+	}
+	stringKey, err := EncodeKey(tableID, indexID, []any{stringVal, 123}, pk)
+	if err != nil {
+		t.Fatalf("EncodeKey string failed: %v", err)
+	}
+	if !bytes.HasPrefix(stringKey, stringPrefix) {
+		t.Fatal("string key should match prefix even with embedded zero bytes")
+	}
+
+	bytesVal := []byte{0x00, 0x01, 0x00, 0xFF}
+	bytesPrefix, err := EncodePrefix(tableID, indexID, []any{bytesVal})
+	if err != nil {
+		t.Fatalf("EncodePrefix bytes failed: %v", err)
+	}
+	bytesKey, err := EncodeKey(tableID, indexID, []any{bytesVal, int64(7)}, pk)
+	if err != nil {
+		t.Fatalf("EncodeKey bytes failed: %v", err)
+	}
+	if !bytes.HasPrefix(bytesKey, bytesPrefix) {
+		t.Fatal("bytes key should match prefix even with embedded zero bytes")
+	}
+}
+
+func TestEncodeKeyTypeTagDistinguishesStringAndBytes(t *testing.T) {
+	tableID := uint32(10)
+	indexID := uint32(10)
+	pk := []byte{1, 2, 3, 4}
+
+	stringKey, err := EncodeKey(tableID, indexID, []any{"ab"}, pk)
+	if err != nil {
+		t.Fatalf("EncodeKey string failed: %v", err)
+	}
+	bytesKey, err := EncodeKey(tableID, indexID, []any{[]byte("ab")}, pk)
+	if err != nil {
+		t.Fatalf("EncodeKey bytes failed: %v", err)
+	}
+
+	if bytes.Equal(stringKey, bytesKey) {
+		t.Fatal("string and bytes keys should differ by type tag")
+	}
+
+	stringTag, _, _ := decodeFirstTLVForTest(t, stringKey)
+	bytesTag, _, _ := decodeFirstTLVForTest(t, bytesKey)
+	if stringTag != indexTypeString {
+		t.Fatalf("expected string tag %d, got %d", indexTypeString, stringTag)
+	}
+	if bytesTag != indexTypeBytes {
+		t.Fatalf("expected bytes tag %d, got %d", indexTypeBytes, bytesTag)
+	}
+}
+
 func TestEncodeValueInt64Negative(t *testing.T) {
 	// Test that negative int64 values are encoded correctly for ordering
 	buf := new(bytes.Buffer)
@@ -291,5 +378,45 @@ func TestEncodeValueInt64Negative(t *testing.T) {
 	}
 	if bytes.Compare(zeroBytes, pos1Bytes) >= 0 {
 		t.Error("Encoding of 0 should be less than 1")
+	}
+}
+
+func TestDecodeValueAt(t *testing.T) {
+	ts := time.Unix(1700000000, 123456789).UTC()
+	key, err := EncodeKey(7, 8, []any{
+		int64(-42),
+		3.5,
+		true,
+		ts,
+		"a\x00b",
+		[]byte{0x00, 0x01, 0xFF},
+	}, []byte{1, 2, 3, 4})
+	if err != nil {
+		t.Fatalf("EncodeKey failed: %v", err)
+	}
+
+	v0, err := DecodeValueAt(key, 0)
+	if err != nil || v0.(int64) != -42 {
+		t.Fatalf("DecodeValueAt[0] got %v err=%v", v0, err)
+	}
+	v1, err := DecodeValueAt(key, 1)
+	if err != nil || v1.(float64) != 3.5 {
+		t.Fatalf("DecodeValueAt[1] got %v err=%v", v1, err)
+	}
+	v2, err := DecodeValueAt(key, 2)
+	if err != nil || v2.(bool) != true {
+		t.Fatalf("DecodeValueAt[2] got %v err=%v", v2, err)
+	}
+	v3, err := DecodeValueAt(key, 3)
+	if err != nil || !v3.(time.Time).Equal(ts) {
+		t.Fatalf("DecodeValueAt[3] got %v err=%v", v3, err)
+	}
+	v4, err := DecodeValueAt(key, 4)
+	if err != nil || v4.(string) != "a\x00b" {
+		t.Fatalf("DecodeValueAt[4] got %v err=%v", v4, err)
+	}
+	v5, err := DecodeValueAt(key, 5)
+	if err != nil || !bytes.Equal(v5.([]byte), []byte{0x00, 0x01, 0xFF}) {
+		t.Fatalf("DecodeValueAt[5] got %v err=%v", v5, err)
 	}
 }

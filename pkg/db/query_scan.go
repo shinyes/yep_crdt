@@ -4,6 +4,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/index"
+	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
@@ -37,8 +38,17 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 	iter := txn.NewIterator(opts)
 	defer iter.Close()
 
+	rangePos := -1
+	rangeType := meta.ColTypeString
+	if rangeCond != nil {
+		rangePos = len(prefixValues)
+		if t, exists := q.columnTypes[rangeCond.Field]; exists {
+			rangeType = t
+		}
+	}
+
 	seekKey := basePrefix
-	if rangeCond != nil && !q.desc {
+	if rangeCond != nil && !q.desc && q.canUseRangeSeekValue(rangeCond) {
 		seekValues := make([]any, len(prefixValues))
 		copy(seekValues, prefixValues)
 		if rangeCond.Op == OpGt || rangeCond.Op == OpGte {
@@ -62,7 +72,17 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
-		_, pkBytes, _ := iter.Item()
+		keyRaw, pkBytes, _ := iter.Item()
+
+		if rangeCond != nil && rangePos >= 0 && !q.disableIndexRangePreFilter {
+			match, shouldStop := q.matchIndexRangeFromKey(keyRaw, rangePos, rangeCond, rangeType)
+			if shouldStop {
+				break
+			}
+			if !match {
+				continue
+			}
+		}
 
 		// Fetch CRDT
 		pk, err := uuid.FromBytes(pkBytes)
@@ -88,6 +108,96 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 		}
 	}
 	return results, nil
+}
+
+// canUseRangeSeekValue controls whether we can seek directly to range value.
+// For string/bytes columns, TLV length prefix is not lexicographically aligned
+// with query comparator order, so we keep correctness by scanning from basePrefix.
+func (q *Query) canUseRangeSeekValue(rangeCond *Condition) bool {
+	if rangeCond == nil {
+		return false
+	}
+	colType, ok := q.columnTypes[rangeCond.Field]
+	if !ok {
+		return false
+	}
+	switch normalizeColumnType(colType) {
+	case meta.ColTypeString, meta.ColTypeBytes:
+		return false
+	default:
+		return true
+	}
+}
+
+func (q *Query) matchIndexRangeFromKey(
+	key []byte,
+	rangePos int,
+	rangeCond *Condition,
+	rangeType meta.ColumnType,
+) (match bool, shouldStop bool) {
+	rangeValue, err := index.DecodeValueAt(key, rangePos)
+	if err != nil {
+		// Corrupted or unexpected key: keep scanning.
+		return true, false
+	}
+
+	cmp := compare(rangeValue, rangeCond.Value, rangeType)
+	switch rangeCond.Op {
+	case OpEq:
+		match = cmp == 0
+	case OpNe:
+		match = cmp != 0
+	case OpGt:
+		match = cmp > 0
+	case OpGte:
+		match = cmp >= 0
+	case OpLt:
+		match = cmp < 0
+	case OpLte:
+		match = cmp <= 0
+	default:
+		match = true
+	}
+
+	if !q.isRangeOrderAligned(rangeType) {
+		return match, false
+	}
+
+	// Early-stop rules when index order is aligned with comparator semantics.
+	if !q.desc {
+		switch rangeCond.Op {
+		case OpLt:
+			if cmp >= 0 {
+				return match, true
+			}
+		case OpLte:
+			if cmp > 0 {
+				return match, true
+			}
+		}
+		return match, false
+	}
+
+	switch rangeCond.Op {
+	case OpGt:
+		if cmp <= 0 {
+			return match, true
+		}
+	case OpGte:
+		if cmp < 0 {
+			return match, true
+		}
+	}
+	return match, false
+}
+
+func (q *Query) isRangeOrderAligned(colType meta.ColumnType) bool {
+	switch normalizeColumnType(colType) {
+	case meta.ColTypeString, meta.ColTypeBytes:
+		return false
+	default:
+		return true
+	}
 }
 
 // scanTable returns map[string]any

@@ -31,6 +31,8 @@ type Query struct {
 	offset              int
 	orderBy             string // Field name
 	desc                bool
+	// benchmark/debug knob: when true, disables index-key range pre-filter.
+	disableIndexRangePreFilter bool
 }
 
 func (t *Table) Where(field string, op Operator, val any) *Query {

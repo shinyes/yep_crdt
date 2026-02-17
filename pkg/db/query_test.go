@@ -251,3 +251,62 @@ func TestGetCRDT(t *testing.T) {
 		t.Error("Expected tag2")
 	}
 }
+
+func TestQueryRangeOnStringIndex(t *testing.T) {
+	dbPath := "./tmp/test_query_range_string_index"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+
+	s, err := store.NewBadgerStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewBadgerStore failed: %v", err)
+	}
+	defer s.Close()
+	defer os.RemoveAll(dbPath)
+
+	myDB, err := Open(s, "test-query-range-string-index")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+
+	err = myDB.DefineTable(&meta.TableSchema{
+		ID:   4,
+		Name: "people",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+		Indexes: []meta.IndexSchema{
+			{ID: 1, Name: "idx_name", Columns: []string{"name"}, Unique: false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DefineTable failed: %v", err)
+	}
+
+	table := myDB.Table("people")
+	if table == nil {
+		t.Fatal("table people not found")
+	}
+
+	for _, name := range []string{"a", "aa", "b", "ba", "c"} {
+		id, _ := uuid.NewV7()
+		if err := table.Set(id, map[string]any{"name": name}); err != nil {
+			t.Fatalf("Set failed for %s: %v", name, err)
+		}
+	}
+
+	rows, err := table.Where("name", OpGt, "b").Find()
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, row := range rows {
+		name, _ := row["name"].(string)
+		got[name] = true
+	}
+
+	if len(got) != 2 || !got["ba"] || !got["c"] {
+		t.Fatalf("unexpected result set: %v", got)
+	}
+}
