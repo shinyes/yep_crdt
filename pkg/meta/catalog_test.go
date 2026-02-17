@@ -223,14 +223,21 @@ func TestAddTableIdempotent(t *testing.T) {
 		Name: "users",
 		Columns: []ColumnSchema{
 			{Name: "id", Type: ColTypeString},
+			{Name: "name", Type: ColTypeString, CrdtType: CrdtLWW},
+		},
+		Indexes: []IndexSchema{
+			{Name: "idx_name", Columns: []string{"name"}, Unique: false},
 		},
 	}
 
 	schema2 := &TableSchema{
 		Name: "users",
 		Columns: []ColumnSchema{
+			{Name: "name", Type: ColTypeString, CrdtType: CrdtLWW},
 			{Name: "id", Type: ColTypeString},
-			{Name: "name", Type: ColTypeString},
+		},
+		Indexes: []IndexSchema{
+			{Name: "idx_name", Columns: []string{"name"}, Unique: false},
 		},
 	}
 
@@ -241,7 +248,7 @@ func TestAddTableIdempotent(t *testing.T) {
 
 	id1 := schema1.ID
 
-	// Adding the same table again should be idempotent
+	// Adding same schema by name should be idempotent.
 	err = catalog.AddTable(schema2)
 	if err != nil {
 		t.Fatalf("Second AddTable() failed: %v", err)
@@ -252,15 +259,138 @@ func TestAddTableIdempotent(t *testing.T) {
 		t.Errorf("Table ID changed from %d to %d", id1, schema2.ID)
 	}
 
-	// Should still have only one table
 	table, ok := catalog.GetTable("users")
 	if !ok {
 		t.Error("GetTable() returned false")
 	}
+	if len(table.Columns) != 2 {
+		t.Errorf("Table has %d columns, want 2", len(table.Columns))
+	}
+}
 
-	// Check the original schema is preserved
-	if len(table.Columns) != 1 {
-		t.Errorf("Table has %d columns, want 1", len(table.Columns))
+func TestAddTableColumnConflict(t *testing.T) {
+	store := newMockStore()
+	catalog := NewCatalog(store)
+
+	schema1 := &TableSchema{
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "name", Type: ColTypeString, CrdtType: CrdtLWW},
+		},
+	}
+	schema2 := &TableSchema{
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "name", Type: ColTypeInt, CrdtType: CrdtCounter},
+		},
+	}
+
+	if err := catalog.AddTable(schema1); err != nil {
+		t.Fatalf("First AddTable() failed: %v", err)
+	}
+	err := catalog.AddTable(schema2)
+	if err == nil {
+		t.Fatalf("expected schema conflict, got nil")
+	}
+	if schema2.ID != schema1.ID {
+		t.Fatalf("expected incoming schema ID %d, got %d", schema1.ID, schema2.ID)
+	}
+}
+
+func TestAddTableIndexConflict(t *testing.T) {
+	store := newMockStore()
+	catalog := NewCatalog(store)
+
+	schema1 := &TableSchema{
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "name", Type: ColTypeString, CrdtType: CrdtLWW},
+		},
+		Indexes: []IndexSchema{
+			{Name: "idx_name", Columns: []string{"name"}, Unique: false},
+		},
+	}
+	schema2 := &TableSchema{
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "name", Type: ColTypeString, CrdtType: CrdtLWW},
+		},
+		Indexes: []IndexSchema{
+			{Name: "idx_name", Columns: []string{"name"}, Unique: true},
+		},
+	}
+
+	if err := catalog.AddTable(schema1); err != nil {
+		t.Fatalf("First AddTable() failed: %v", err)
+	}
+	err := catalog.AddTable(schema2)
+	if err == nil {
+		t.Fatalf("expected schema conflict, got nil")
+	}
+}
+
+func TestAddTableRejectsInvalidSchema(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema *TableSchema
+	}{
+		{
+			name:   "nil schema",
+			schema: nil,
+		},
+		{
+			name: "empty table name",
+			schema: &TableSchema{
+				Name: "   ",
+				Columns: []ColumnSchema{
+					{Name: "id", Type: ColTypeString},
+				},
+			},
+		},
+		{
+			name: "duplicate column names",
+			schema: &TableSchema{
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "id", Type: ColTypeString},
+					{Name: " id ", Type: ColTypeString},
+				},
+			},
+		},
+		{
+			name: "duplicate index names",
+			schema: &TableSchema{
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "id", Type: ColTypeString},
+				},
+				Indexes: []IndexSchema{
+					{Name: "idx_id", Columns: []string{"id"}},
+					{Name: " idx_id ", Columns: []string{"id"}},
+				},
+			},
+		},
+		{
+			name: "empty index column name",
+			schema: &TableSchema{
+				Name: "users",
+				Columns: []ColumnSchema{
+					{Name: "id", Type: ColTypeString},
+				},
+				Indexes: []IndexSchema{
+					{Name: "idx_id", Columns: []string{"id", " "}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := NewCatalog(newMockStore())
+			if err := catalog.AddTable(tt.schema); err == nil {
+				t.Fatalf("expected error for invalid schema %q", tt.name)
+			}
+		})
 	}
 }
 
@@ -303,6 +433,33 @@ func TestAddTableWithID(t *testing.T) {
 	}
 }
 
+func TestAddTableWithDuplicateExplicitID(t *testing.T) {
+	store := newMockStore()
+	catalog := NewCatalog(store)
+
+	first := &TableSchema{
+		ID:   100,
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "id", Type: ColTypeString},
+		},
+	}
+	second := &TableSchema{
+		ID:   100,
+		Name: "posts",
+		Columns: []ColumnSchema{
+			{Name: "id", Type: ColTypeString},
+		},
+	}
+
+	if err := catalog.AddTable(first); err != nil {
+		t.Fatalf("First AddTable() failed: %v", err)
+	}
+	if err := catalog.AddTable(second); err == nil {
+		t.Fatalf("expected duplicate table ID error, got nil")
+	}
+}
+
 func TestAddTableWithIndex(t *testing.T) {
 	store := newMockStore()
 	catalog := NewCatalog(store)
@@ -339,6 +496,27 @@ func TestAddTableWithIndex(t *testing.T) {
 			t.Errorf("Duplicate index ID: %d", idx.ID)
 		}
 		ids[idx.ID] = true
+	}
+}
+
+func TestAddTableRejectDuplicateIndexID(t *testing.T) {
+	store := newMockStore()
+	catalog := NewCatalog(store)
+
+	schema := &TableSchema{
+		Name: "users",
+		Columns: []ColumnSchema{
+			{Name: "id", Type: ColTypeString},
+			{Name: "name", Type: ColTypeString},
+		},
+		Indexes: []IndexSchema{
+			{ID: 1, Name: "idx_name_1", Columns: []string{"name"}},
+			{ID: 1, Name: "idx_name_2", Columns: []string{"name"}},
+		},
+	}
+
+	if err := catalog.AddTable(schema); err == nil {
+		t.Fatalf("expected duplicate index ID error, got nil")
 	}
 }
 
@@ -422,27 +600,27 @@ func TestLoadAndPersist(t *testing.T) {
 	}
 
 	if len(retrieved.Columns) != len(schema.Columns) {
-		t.Errorf("Column count mismatch: got %d, want %d", 
+		t.Errorf("Column count mismatch: got %d, want %d",
 			len(retrieved.Columns), len(schema.Columns))
 	}
 
 	if len(retrieved.Indexes) != len(schema.Indexes) {
-		t.Errorf("Index count mismatch: got %d, want %d", 
+		t.Errorf("Index count mismatch: got %d, want %d",
 			len(retrieved.Indexes), len(schema.Indexes))
 	}
 
 	// Check column types
 	for i, col := range retrieved.Columns {
 		if col.Name != schema.Columns[i].Name {
-			t.Errorf("Column %d name mismatch: got %s, want %s", 
+			t.Errorf("Column %d name mismatch: got %s, want %s",
 				i, col.Name, schema.Columns[i].Name)
 		}
 		if col.Type != schema.Columns[i].Type {
-			t.Errorf("Column %d type mismatch: got %s, want %s", 
+			t.Errorf("Column %d type mismatch: got %s, want %s",
 				i, col.Type, schema.Columns[i].Type)
 		}
 		if col.CrdtType != schema.Columns[i].CrdtType {
-			t.Errorf("Column %d CRDT type mismatch: got %s, want %s", 
+			t.Errorf("Column %d CRDT type mismatch: got %s, want %s",
 				i, col.CrdtType, schema.Columns[i].CrdtType)
 		}
 	}
@@ -450,7 +628,7 @@ func TestLoadAndPersist(t *testing.T) {
 	// Check index IDs
 	for i, idx := range retrieved.Indexes {
 		if idx.ID != indexIDs[i] {
-			t.Errorf("Index %d ID mismatch: got %d, want %d", 
+			t.Errorf("Index %d ID mismatch: got %d, want %d",
 				i, idx.ID, indexIDs[i])
 		}
 	}
@@ -512,7 +690,7 @@ func TestMultipleTables(t *testing.T) {
 		}
 
 		if retrieved.ID != ids[name] {
-			t.Errorf("Table %s ID mismatch: got %d, want %d", 
+			t.Errorf("Table %s ID mismatch: got %d, want %d",
 				name, retrieved.ID, ids[name])
 		}
 	}

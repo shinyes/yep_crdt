@@ -3,6 +3,7 @@ package meta
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/shinyes/yep_crdt/pkg/store"
@@ -125,44 +126,61 @@ func (c *Catalog) Save() error {
 }
 
 func (c *Catalog) AddTable(t *TableSchema) error {
+	if err := ValidateTableSchemaShape(t); err != nil {
+		return err
+	}
+	t.Name = strings.TrimSpace(t.Name)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if existing, exists := c.tables[t.Name]; exists {
-		// If exists, we generally return existing ID.
-		// But schema evolution? For now, simple reuse.
-		// Update t.ID to match existing.
 		t.ID = existing.ID
-		// TODO: Merge columns/indexes?
-		// For MVP: Just return nil if it matches basic check, or error if conflict?
-		// "table %s already exists"
-		// If user calls DefineTable("users") again, usually they expect idempotency.
-		// Let's return nil but ensure ID is set.
+		if err := ValidateTableSchemaShapeCompatibility(existing, t); err != nil {
+			return fmt.Errorf("table %q schema conflict: %w", t.Name, err)
+		}
 		return nil
 	}
 
-	// Assign ID
+	// Assign table ID.
 	if t.ID == 0 {
 		c.lastTableID++
 		t.ID = c.lastTableID
 	} else {
-		// If user somehow provided ID (legacy), update tracker
+		if existing, exists := c.ids[t.ID]; exists {
+			return fmt.Errorf("table id %d already exists for table %q", t.ID, existing.Name)
+		}
 		if t.ID > c.lastTableID {
 			c.lastTableID = t.ID
 		}
 	}
 
-	// Indexes
+	// Assign index IDs and reject duplicate explicit IDs.
 	var maxIdxID uint32
+	usedIndexIDs := make(map[uint32]struct{}, len(t.Indexes))
 	for _, idx := range t.Indexes {
 		if idx.ID > maxIdxID {
 			maxIdxID = idx.ID
 		}
+		if idx.ID == 0 {
+			continue
+		}
+		if _, exists := usedIndexIDs[idx.ID]; exists {
+			return fmt.Errorf("duplicate index id %d in table %q", idx.ID, t.Name)
+		}
+		usedIndexIDs[idx.ID] = struct{}{}
 	}
 	for i := range t.Indexes {
 		if t.Indexes[i].ID == 0 {
 			maxIdxID++
+			for {
+				if _, exists := usedIndexIDs[maxIdxID]; !exists {
+					break
+				}
+				maxIdxID++
+			}
 			t.Indexes[i].ID = maxIdxID
+			usedIndexIDs[maxIdxID] = struct{}{}
 		}
 	}
 

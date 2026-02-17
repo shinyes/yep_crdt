@@ -99,6 +99,8 @@ func main() {
 
 可选：如果需要统一迁移逻辑，可以在 `BadgerOpenConfig` 里提供 `EnsureSchema`。
 
+`DefineTable` 对同名表采用“等价幂等、冲突报错”语义：schema 等价时直接成功，若列类型/CRDT 或索引定义不一致会返回错误。
+
 ## 初始化方式对比
 
 | 方式 | 推荐场景 | 特点 |
