@@ -57,10 +57,11 @@ type pendingResponse struct {
 }
 
 type fetchRawResponseLite struct {
-	Type      string
-	RequestID string
-	Key       string
-	RawData   []byte
+	Type       string
+	RequestID  string
+	Key        string
+	RawData    []byte
+	LocalFiles []SyncedLocalFile
 }
 
 const internalMsgTypePeerDisconnected = "__peer_disconnected__"

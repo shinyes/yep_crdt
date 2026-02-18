@@ -93,9 +93,10 @@ func (tn *TenantNetwork) routeFetchRawResponseToWaiter(waiter pendingResponse, m
 	}
 
 	tn.routeResponseToWaiter(waiter, NetworkMessage{
-		Type:      msg.Type,
-		RequestID: msg.RequestID,
-		Key:       msg.Key,
-		RawData:   msg.RawData,
+		Type:       msg.Type,
+		RequestID:  msg.RequestID,
+		Key:        msg.Key,
+		RawData:    msg.RawData,
+		LocalFiles: msg.LocalFiles,
 	}, peerID)
 }

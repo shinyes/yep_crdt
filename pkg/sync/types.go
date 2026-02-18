@@ -86,10 +86,20 @@ type SyncResult struct {
 	Errors        []error
 }
 
+// SyncedLocalFile carries one LocalFileCRDT payload for transport.
+type SyncedLocalFile struct {
+	Path    string `json:"path"`
+	Hash    string `json:"hash,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	Chunked bool   `json:"chunked,omitempty"`
+	Data    []byte `json:"data,omitempty"`
+}
+
 // RawRowData carries one serialized CRDT row.
 type RawRowData struct {
-	Key  string `json:"key"`
-	Data []byte `json:"data"`
+	Key        string            `json:"key"`
+	Data       []byte            `json:"data"`
+	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
 }
 
 // HeartbeatMessage is a legacy heartbeat payload shape.
@@ -118,6 +128,7 @@ const (
 	MsgTypeFetchResponse    = "fetch_response"
 	MsgTypeRawData          = "raw_data"
 	MsgTypeRawDelta         = "raw_delta"
+	MsgTypeLocalFileChunk   = "local_file_chunk"
 	MsgTypeFetchRawRequest  = "fetch_raw_request"
 	MsgTypeFetchRawResponse = "fetch_raw_response"
 	MsgTypeVersionDigest    = "version_digest"
@@ -144,15 +155,22 @@ const (
 
 // NetworkMessage is the unified transport payload.
 type NetworkMessage struct {
-	Type      string      `json:"type"`
-	TenantID  string      `json:"tenant_id,omitempty"`
-	NodeID    string      `json:"node_id,omitempty"`
-	RequestID string      `json:"request_id,omitempty"`
-	Table     string      `json:"table,omitempty"`
-	Key       string      `json:"key,omitempty"`
-	Columns   []string    `json:"columns,omitempty"`
-	Data      interface{} `json:"data,omitempty"`
-	RawData   []byte      `json:"raw_data,omitempty"`
+	Type       string            `json:"type"`
+	TenantID   string            `json:"tenant_id,omitempty"`
+	NodeID     string            `json:"node_id,omitempty"`
+	RequestID  string            `json:"request_id,omitempty"`
+	Table      string            `json:"table,omitempty"`
+	Key        string            `json:"key,omitempty"`
+	Columns    []string          `json:"columns,omitempty"`
+	Data       interface{}       `json:"data,omitempty"`
+	RawData    []byte            `json:"raw_data,omitempty"`
+	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
+	FilePath   string            `json:"file_path,omitempty"`
+	FileHash   string            `json:"file_hash,omitempty"`
+	FileSize   int64             `json:"file_size,omitempty"`
+	ChunkIndex int               `json:"chunk_index,omitempty"`
+	ChunkTotal int               `json:"chunk_total,omitempty"`
+	ChunkData  []byte            `json:"chunk_data,omitempty"`
 
 	Timestamp int64 `json:"timestamp"`
 	Clock     int64 `json:"clock,omitempty"`

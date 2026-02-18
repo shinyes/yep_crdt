@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-
-	"github.com/google/uuid"
 )
 
 // FullSyncTable performs full sync for one table.
@@ -38,14 +36,7 @@ func (dsm *DataSyncManager) FullSyncTable(ctx context.Context, sourceNodeID stri
 		default:
 		}
 
-		key, err := uuid.Parse(row.Key)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("parse UUID '%s' failed: %w", row.Key, err))
-			result.RejectedCount++
-			continue
-		}
-
-		if err := table.MergeRawRow(key, row.Data); err != nil {
+		if err := dsm.OnReceiveMergeWithFiles(tableName, row.Key, row.Data, 0, row.LocalFiles); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("merge row '%s' failed: %w", row.Key, err))
 			result.RejectedCount++
 			continue
@@ -104,9 +95,15 @@ func (dsm *DataSyncManager) ExportTableRawData(tableName string) ([]RawRowData, 
 
 	result := make([]RawRowData, 0, len(rawRows))
 	for _, row := range rawRows {
+		localFiles, err := dsm.buildLocalFilePayloadsFromRaw(row.Data)
+		if err != nil {
+			return nil, fmt.Errorf("collect local files for row '%s' failed: %w", row.Key.String(), err)
+		}
+
 		result = append(result, RawRowData{
-			Key:  row.Key.String(),
-			Data: row.Data,
+			Key:        row.Key.String(),
+			Data:       row.Data,
+			LocalFiles: localFiles,
 		})
 	}
 

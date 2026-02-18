@@ -72,6 +72,21 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 	case MsgTypeHeartbeat:
 		rt.nodeMgr.OnHeartbeat(peerID, msg.Clock, msg.GCFloor)
 
+	case MsgTypeLocalFileChunk:
+		if msg.RequestID == "" && !rt.nodeMgr.CanUseIncrementalWithPeer(peerID) {
+			log.Printf("[MultiEngine:%s] skip local file chunk from blocked incremental peer: from=%s",
+				rt.tenantID, shortPeerID(peerID))
+			return
+		}
+		if rt.chunks == nil {
+			log.Printf("[MultiEngine:%s] local file chunk receiver not initialized", rt.tenantID)
+			return
+		}
+		if err := rt.chunks.HandleChunk(peerID, rt.db.FileStorageDir, msg); err != nil {
+			log.Printf("[MultiEngine:%s] apply local file chunk failed: path=%s, idx=%d/%d, from=%s, err=%v",
+				rt.tenantID, msg.FilePath, msg.ChunkIndex+1, msg.ChunkTotal, shortPeerID(peerID), err)
+		}
+
 	case MsgTypeRawData:
 		if !rt.nodeMgr.CanUseIncrementalWithPeer(peerID) {
 			log.Printf("[MultiEngine:%s] skip raw row from blocked incremental peer: from=%s",
@@ -81,7 +96,7 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			log.Printf("[MultiEngine:%s] received full row: table=%s, key=%s, from=%s",
 				rt.tenantID, msg.Table, shortPeerID(msg.Key), shortPeerID(peerID))
-			if err := rt.nodeMgr.OnReceiveMerge(msg.Table, msg.Key, msg.RawData, msg.Timestamp); err != nil {
+			if err := rt.nodeMgr.dataSync.OnReceiveMergeWithFiles(msg.Table, msg.Key, msg.RawData, msg.Timestamp, msg.LocalFiles); err != nil {
 				log.Printf("[MultiEngine:%s] merge failed: %v", rt.tenantID, err)
 			}
 		}
@@ -95,7 +110,7 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 		if msg.Table != "" && msg.Key != "" && msg.RawData != nil {
 			log.Printf("[MultiEngine:%s] received row delta: table=%s, key=%s, cols=%v, from=%s",
 				rt.tenantID, msg.Table, shortPeerID(msg.Key), msg.Columns, shortPeerID(peerID))
-			if err := rt.nodeMgr.OnReceiveDelta(msg.Table, msg.Key, msg.Columns, msg.RawData, msg.Timestamp); err != nil {
+			if err := rt.nodeMgr.dataSync.OnReceiveDeltaWithFiles(msg.Table, msg.Key, msg.Columns, msg.RawData, msg.Timestamp, msg.LocalFiles); err != nil {
 				log.Printf("[MultiEngine:%s] delta merge failed: %v", rt.tenantID, err)
 			}
 		}
@@ -135,12 +150,19 @@ func (rt *tenantRuntime) handleFetchRawRequest(peerID string, msg NetworkMessage
 	}
 
 	for _, row := range rawRows {
+		if err := rt.nodeMgr.dataSync.sendChunkedLocalFilesToPeer(peerID, msg.Table, row.Key, msg.RequestID, row.LocalFiles); err != nil {
+			log.Printf("[MultiEngine:%s] send local file chunks failed: table=%s, key=%s, err=%v",
+				rt.tenantID, msg.Table, shortPeerID(row.Key), err)
+			continue
+		}
+
 		responseMsg := &NetworkMessage{
-			Type:      MsgTypeFetchRawResponse,
-			RequestID: msg.RequestID,
-			Table:     msg.Table,
-			Key:       row.Key,
-			RawData:   row.Data,
+			Type:       MsgTypeFetchRawResponse,
+			RequestID:  msg.RequestID,
+			Table:      msg.Table,
+			Key:        row.Key,
+			RawData:    row.Data,
+			LocalFiles: row.LocalFiles,
 		}
 		if err := rt.network.SendMessage(peerID, responseMsg); err != nil {
 			log.Printf("[MultiEngine:%s] send row failed: %v", rt.tenantID, err)

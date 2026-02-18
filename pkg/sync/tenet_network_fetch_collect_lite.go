@@ -70,8 +70,9 @@ func collectFetchRawResponsesLite(responseCh <-chan fetchRawResponseLite, overfl
 			}
 
 			rows = append(rows, RawRowData{
-				Key:  msg.Key,
-				Data: msg.RawData,
+				Key:        msg.Key,
+				Data:       msg.RawData,
+				LocalFiles: msg.LocalFiles,
 			})
 			resetIdle()
 

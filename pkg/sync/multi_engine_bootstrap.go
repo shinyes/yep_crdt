@@ -76,6 +76,7 @@ func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig, nodeOpts ..
 			ctx:      tenantCtx,
 			cancel:   tenantCancel,
 			changeQ:  make(chan db.ChangeEvent, engineChangeQueueSize),
+			chunks:   newLocalFileChunkReceiver(),
 		}
 		rt.vs = NewVersionSync(database, nodeMgr)
 		engine.tenants[tenantID] = rt

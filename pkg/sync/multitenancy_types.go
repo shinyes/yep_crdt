@@ -26,6 +26,7 @@ type TenantNodeManager struct {
 	nodeMgr      *NodeManager   // 节点管理器
 	network      *TenantNetwork // tenet 网络
 	multitenancy *MultiTenantManager
+	chunks       *localFileChunkReceiver
 }
 
 // NewMultiTenantManager 创建多租户管理器

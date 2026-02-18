@@ -74,6 +74,15 @@ func (n *tenantScopedNetwork) SendMessage(targetNodeID string, msg *NetworkMessa
 	return n.network.Send(targetNodeID, &cloned)
 }
 
+func (n *tenantScopedNetwork) Broadcast(msg *NetworkMessage) (int, error) {
+	if msg == nil {
+		return 0, fmt.Errorf("message is nil")
+	}
+	cloned := *msg
+	cloned.TenantID = n.tenantID
+	return n.network.Broadcast(&cloned)
+}
+
 func (n *tenantScopedNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
 	return n.network.fetchRawTableDataWithTenant(sourceNodeID, tableName, n.tenantID, 30*time.Second)
 }

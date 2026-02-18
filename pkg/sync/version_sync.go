@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -129,7 +130,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	tableNames := vs.db.TableNames()
 	for _, tableName := range tableNames {
 		type rowPayload struct {
-			keyStr  string
+			key     uuid.UUID
 			rawData []byte
 		}
 		rowsToSend := make([]rowPayload, 0)
@@ -162,8 +163,9 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 				if err != nil || rawData == nil {
 					continue
 				}
+
 				rowsToSend = append(rowsToSend, rowPayload{
-					keyStr:  keyStr,
+					key:     ld.Key,
 					rawData: rawData,
 				})
 			}
@@ -171,10 +173,17 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 		})
 
 		for _, row := range rowsToSend {
-			timestamp := vs.db.Clock().Now()
-			if err := vs.nodeMgr.network.SendRawData(peerID, tableName, row.keyStr, row.rawData, timestamp); err != nil {
+			var err error
+			if vs.nodeMgr.dataSync != nil {
+				err = vs.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, row.key)
+			} else {
+				timestamp := vs.db.Clock().Now()
+				err = vs.nodeMgr.network.SendRawData(peerID, tableName, row.key.String(), row.rawData, timestamp)
+			}
+
+			if err != nil {
 				log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
-					tableName, shortPeerID(row.keyStr), err)
+					tableName, shortPeerID(row.key.String()), err)
 				continue
 			}
 			diffCount++

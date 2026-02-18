@@ -37,6 +37,7 @@ type tenantRuntime struct {
 	network  NetworkInterface
 	nodeMgr  *NodeManager
 	vs       *VersionSync
+	chunks   *localFileChunkReceiver
 
 	ctx      context.Context
 	cancel   context.CancelFunc

@@ -53,6 +53,7 @@ func (m *MultiTenantManager) StartTenant(ctx context.Context, database *db.DB) (
 		nodeMgr:      nodeMgr,
 		network:      network,
 		multitenancy: m,
+		chunks:       newLocalFileChunkReceiver(),
 	}
 
 	// 通过 TenantNetwork 注册回调，避免覆盖内部回调。

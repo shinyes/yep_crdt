@@ -49,8 +49,26 @@ func (n *captureNetwork) BroadcastRawDelta(table string, key string, columns []s
 	return nil
 }
 func (n *captureNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
+	if msg != nil && msg.Type == MsgTypeRawData {
+		copyData := make([]byte, len(msg.RawData))
+		copy(copyData, msg.RawData)
+		n.rawCalls = append(n.rawCalls, rawCall{
+			target:    targetNodeID,
+			table:     msg.Table,
+			key:       msg.Key,
+			rawData:   copyData,
+			timestamp: msg.Timestamp,
+		})
+		return nil
+	}
+
 	n.target = targetNodeID
-	n.msg = msg
+	if msg == nil {
+		n.msg = nil
+		return nil
+	}
+	cloned := *msg
+	n.msg = &cloned
 	return nil
 }
 func (n *captureNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {

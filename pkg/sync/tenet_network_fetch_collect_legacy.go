@@ -72,8 +72,9 @@ func collectFetchRawResponses(responseCh <-chan NetworkMessage, overflowCh <-cha
 			// RawData already comes from msgpack unmarshal into a per-message byte slice.
 			// Reusing it avoids an extra copy on full-sync hot path.
 			rows = append(rows, RawRowData{
-				Key:  msg.Key,
-				Data: msg.RawData,
+				Key:        msg.Key,
+				Data:       msg.RawData,
+				LocalFiles: msg.LocalFiles,
 			})
 			resetIdle()
 
