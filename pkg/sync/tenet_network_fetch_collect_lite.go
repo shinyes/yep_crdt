@@ -77,8 +77,10 @@ func collectFetchRawResponsesLite(responseCh <-chan fetchRawResponseLite, overfl
 			resetIdle()
 
 		case <-idleC:
-			// Backward compatibility: old peers may not send done marker.
-			return rows, nil
+			if len(rows) > 0 {
+				return rows, fmt.Errorf("%w: received %d rows", ErrTimeoutWaitingResponseCompletion, len(rows))
+			}
+			return nil, fmt.Errorf("%w", ErrTimeoutWaitingResponse)
 
 		case <-overflowCh:
 			return nil, fmt.Errorf("%w", ErrResponseOverflow)

@@ -102,28 +102,9 @@ type RawRowData struct {
 	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
 }
 
-// HeartbeatMessage is a legacy heartbeat payload shape.
-type HeartbeatMessage struct {
-	Type      string `json:"type"`
-	NodeID    string `json:"node_id"`
-	Clock     int64  `json:"clock"`
-	Timestamp int64  `json:"timestamp"`
-}
-
-// DataMessage is a legacy message payload shape.
-type DataMessage struct {
-	Type      string      `json:"type"`
-	NodeID    string      `json:"node_id"`
-	Table     string      `json:"table"`
-	Key       string      `json:"key"`
-	Data      interface{} `json:"data"`
-	Timestamp int64       `json:"timestamp"`
-}
-
 // Message type constants.
 const (
 	MsgTypeHeartbeat        = "heartbeat"
-	MsgTypeData             = "data" // deprecated
 	MsgTypeFetchRequest     = "fetch_request"
 	MsgTypeFetchResponse    = "fetch_response"
 	MsgTypeRawData          = "raw_data"

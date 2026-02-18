@@ -192,120 +192,6 @@ func TestTenantNetworkHandleReceive_RequestWithRequestIDNotRoutedToWaiter(t *tes
 	}
 }
 
-func TestCollectFetchRawResponses_WithDoneMarker(t *testing.T) {
-	ch := make(chan NetworkMessage, 4)
-	ch <- NetworkMessage{
-		Type:    MsgTypeFetchRawResponse,
-		Key:     "k1",
-		RawData: []byte("v1"),
-	}
-	ch <- NetworkMessage{
-		Type:    MsgTypeFetchRawResponse,
-		Key:     "k2",
-		RawData: []byte("v2"),
-	}
-	ch <- NetworkMessage{
-		Type: MsgTypeFetchRawResponse,
-		Key:  fetchRawResponseDoneKey,
-	}
-
-	rows, err := collectFetchRawResponses(ch, nil, 2*time.Second, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("collect failed: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
-	}
-	if rows[0].Key != "k1" || string(rows[0].Data) != "v1" {
-		t.Fatalf("unexpected first row: %+v", rows[0])
-	}
-	if rows[1].Key != "k2" || string(rows[1].Data) != "v2" {
-		t.Fatalf("unexpected second row: %+v", rows[1])
-	}
-}
-
-func TestCollectFetchRawResponses_IdleFallbackWithoutDoneMarker(t *testing.T) {
-	ch := make(chan NetworkMessage, 1)
-	ch <- NetworkMessage{
-		Type:    MsgTypeFetchRawResponse,
-		Key:     "k1",
-		RawData: []byte("v1"),
-	}
-
-	start := time.Now()
-	rows, err := collectFetchRawResponses(ch, nil, 2*time.Second, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("collect failed: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	if rows[0].Key != "k1" || string(rows[0].Data) != "v1" {
-		t.Fatalf("unexpected row: %+v", rows[0])
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("idle fallback took too long: %v", elapsed)
-	}
-}
-
-func TestCollectFetchRawResponses_TimeoutWithoutRows(t *testing.T) {
-	ch := make(chan NetworkMessage)
-	_, err := collectFetchRawResponses(ch, nil, 50*time.Millisecond, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !errors.Is(err, ErrTimeoutWaitingResponse) {
-		t.Fatalf("expected timeout classification, got: %v", err)
-	}
-}
-
-func TestCollectFetchRawResponses_TimeoutWithPartialRowsReturnsError(t *testing.T) {
-	ch := make(chan NetworkMessage, 1)
-	ch <- NetworkMessage{
-		Type:    MsgTypeFetchRawResponse,
-		Key:     "k1",
-		RawData: []byte("v1"),
-	}
-
-	rows, err := collectFetchRawResponses(ch, nil, 50*time.Millisecond, 500*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout error for incomplete response")
-	}
-	if !errors.Is(err, ErrTimeoutWaitingResponseCompletion) {
-		t.Fatalf("expected partial-timeout classification, got: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("expected collected partial rows, got %d", len(rows))
-	}
-}
-
-func TestCollectFetchRawResponses_Overflow(t *testing.T) {
-	ch := make(chan NetworkMessage)
-	overflowCh := make(chan struct{}, 1)
-	overflowCh <- struct{}{}
-
-	_, err := collectFetchRawResponses(ch, overflowCh, time.Second, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected overflow error")
-	}
-	if !errors.Is(err, ErrResponseOverflow) {
-		t.Fatalf("expected overflow classification, got: %v", err)
-	}
-}
-
-func TestCollectFetchRawResponses_PeerDisconnected(t *testing.T) {
-	ch := make(chan NetworkMessage, 1)
-	ch <- NetworkMessage{Type: internalMsgTypePeerDisconnected}
-
-	_, err := collectFetchRawResponses(ch, nil, time.Second, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected peer disconnected error")
-	}
-	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
-		t.Fatalf("expected peer-disconnected classification, got: %v", err)
-	}
-}
-
 func TestCollectFetchRawResponsesLite_WithDoneMarker(t *testing.T) {
 	ch := make(chan fetchRawResponseLite, 4)
 	ch <- fetchRawResponseLite{
@@ -348,6 +234,51 @@ func TestCollectFetchRawResponsesLite_PeerDisconnected(t *testing.T) {
 	}
 	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
 		t.Fatalf("expected peer-disconnected classification, got: %v", err)
+	}
+}
+
+func TestCollectFetchRawResponsesLite_TimeoutWithoutRows(t *testing.T) {
+	ch := make(chan fetchRawResponseLite)
+	_, err := collectFetchRawResponsesLite(ch, nil, 50*time.Millisecond, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, ErrTimeoutWaitingResponse) {
+		t.Fatalf("expected timeout classification, got: %v", err)
+	}
+}
+
+func TestCollectFetchRawResponsesLite_TimeoutWithPartialRowsReturnsError(t *testing.T) {
+	ch := make(chan fetchRawResponseLite, 1)
+	ch <- fetchRawResponseLite{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k1",
+		RawData: []byte("v1"),
+	}
+
+	rows, err := collectFetchRawResponsesLite(ch, nil, 2*time.Second, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error for incomplete response")
+	}
+	if !errors.Is(err, ErrTimeoutWaitingResponseCompletion) {
+		t.Fatalf("expected partial-timeout classification, got: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected collected partial rows, got %d", len(rows))
+	}
+}
+
+func TestCollectFetchRawResponsesLite_Overflow(t *testing.T) {
+	ch := make(chan fetchRawResponseLite)
+	overflowCh := make(chan struct{}, 1)
+	overflowCh <- struct{}{}
+
+	_, err := collectFetchRawResponsesLite(ch, overflowCh, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected overflow error")
+	}
+	if !errors.Is(err, ErrResponseOverflow) {
+		t.Fatalf("expected overflow classification, got: %v", err)
 	}
 }
 

@@ -6,6 +6,10 @@ import (
 )
 
 func (q *Query) Find() ([]map[string]any, error) {
+	if q.normalizationErr != nil {
+		return nil, q.normalizationErr
+	}
+
 	// 1. Plan Selection
 	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
 
@@ -30,6 +34,10 @@ func (q *Query) Find() ([]map[string]any, error) {
 // FindCRDTs returns the raw MapCRDT objects as ReadOnlyMap interface.
 // This allows access to nested CRDTs (like RGA) for iterator usage but prevents modification.
 func (q *Query) FindCRDTs() ([]crdt.ReadOnlyMap, error) {
+	if q.normalizationErr != nil {
+		return nil, q.normalizationErr
+	}
+
 	// 1. Plan Selection
 	bestIndexID, bestPrefix, bestScore, bestRangeCond := q.selectPlan()
 

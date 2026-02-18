@@ -1,6 +1,10 @@
 package db
 
-import "github.com/shinyes/yep_crdt/pkg/meta"
+import (
+	"fmt"
+
+	"github.com/shinyes/yep_crdt/pkg/meta"
+)
 
 type Operator string
 
@@ -33,6 +37,7 @@ type Query struct {
 	desc                bool
 	// benchmark/debug knob: when true, disables index-key range pre-filter.
 	disableIndexRangePreFilter bool
+	normalizationErr           error
 }
 
 func (t *Table) Where(field string, op Operator, val any) *Query {
@@ -44,7 +49,7 @@ func (t *Table) Where(field string, op Operator, val any) *Query {
 		conditionFirstIndex: map[string]int{field: 0},
 		columnTypes:         buildColumnTypeMap(t.schema),
 	}
-	q.conditions[0].Value = q.normalizeConditionValue(field, q.conditions[0].Value)
+	q.conditions[0].Value = q.normalizeConditionValue(field, op, q.conditions[0].Value)
 	return q
 }
 
@@ -63,7 +68,7 @@ func (q *Query) And(field string, op Operator, val any) *Query {
 	q.conditions = append(q.conditions, Condition{
 		Field: field,
 		Op:    op,
-		Value: q.normalizeConditionValue(field, val),
+		Value: q.normalizeConditionValue(field, op, val),
 	})
 	if q.conditionFirstIndex == nil {
 		q.rebuildConditionIndex()
@@ -73,17 +78,41 @@ func (q *Query) And(field string, op Operator, val any) *Query {
 	return q
 }
 
-func (q *Query) normalizeConditionValue(field string, value any) any {
+func (q *Query) normalizeConditionValue(field string, op Operator, value any) any {
 	colType, exists := q.columnTypes[field]
 	if !exists {
 		return value
 	}
+	if op == OpIn {
+		list, ok := value.([]any)
+		if !ok {
+			q.recordNormalizationError(fmt.Errorf("field %q with OpIn expects []any, got %T", field, value))
+			return value
+		}
+		normalizedList := make([]any, len(list))
+		for i, item := range list {
+			normalized, err := normalizeValueByColumnType(colType, item)
+			if err != nil {
+				q.recordNormalizationError(fmt.Errorf("normalize OpIn item %d for field %q failed: %w", i, field, err))
+				return value
+			}
+			normalizedList[i] = normalized
+		}
+		return normalizedList
+	}
 	normalized, err := normalizeValueByColumnType(colType, value)
 	if err != nil {
-		// Keep legacy behavior: query keeps running with original value.
+		q.recordNormalizationError(fmt.Errorf("normalize condition for field %q failed: %w", field, err))
 		return value
 	}
 	return normalized
+}
+
+func (q *Query) recordNormalizationError(err error) {
+	if err == nil || q.normalizationErr != nil {
+		return
+	}
+	q.normalizationErr = err
 }
 
 func (q *Query) Offset(offset int) *Query {

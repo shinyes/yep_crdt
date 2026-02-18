@@ -28,17 +28,22 @@ func DeserializeWithHint(t Type, data []byte, typeHint string) (CRDT, error) {
 		}
 		return c, nil
 	case TypeORSet:
-		// 优先使用类型注册表
 		if typeHint != "" {
 			if serializer, ok := TypeRegistry.ORSetSerializers[typeHint]; ok {
 				c, err := serializer(data)
-				if err == nil {
-					return c.(CRDT), nil
+				if err != nil {
+					return nil, fmt.Errorf("%w: ORSet[%s]: %v", ErrDeserialization, typeHint, err)
 				}
-				// 回退到默认
+				crdtVal, castOK := c.(CRDT)
+				if !castOK {
+					return nil, fmt.Errorf("%w: ORSet serializer %q returned %T", ErrDeserialization, typeHint, c)
+				}
+				return crdtVal, nil
+			}
+			if typeHint != "string" {
+				return nil, fmt.Errorf("%w: ORSet type hint %q is not registered", ErrDeserialization, typeHint)
 			}
 		}
-		// 默认反序列化为 ORSet[string] 以保持兼容性
 		c, err := FromBytesORSet[string](data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: ORSet[string]: %v", ErrDeserialization, err)
@@ -51,17 +56,22 @@ func DeserializeWithHint(t Type, data []byte, typeHint string) (CRDT, error) {
 		}
 		return c, nil
 	case TypeRGA:
-		// 优先使用类型注册表
 		if typeHint != "" {
 			if serializer, ok := TypeRegistry.RGASerializers[typeHint]; ok {
 				c, err := serializer(data)
-				if err == nil {
-					return c.(CRDT), nil
+				if err != nil {
+					return nil, fmt.Errorf("%w: RGA[%s]: %v", ErrDeserialization, typeHint, err)
 				}
-				// 回退到默认
+				crdtVal, castOK := c.(CRDT)
+				if !castOK {
+					return nil, fmt.Errorf("%w: RGA serializer %q returned %T", ErrDeserialization, typeHint, c)
+				}
+				return crdtVal, nil
+			}
+			if typeHint != "[]byte" && typeHint != "[]uint8" {
+				return nil, fmt.Errorf("%w: RGA type hint %q is not registered", ErrDeserialization, typeHint)
 			}
 		}
-		// 默认反序列化为 RGA[[]byte] 以保持兼容性
 		c, err := FromBytesRGA[[]byte](data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: RGA[[]byte]: %v", ErrDeserialization, err)
