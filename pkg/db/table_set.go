@@ -20,8 +20,61 @@ import (
 // 但检查 Fluent API 设计：Set(key, Data{...})。
 // 所以我们需要将 Data 转换为 CRDT。
 func (t *Table) Set(key uuid.UUID, data map[string]any) error {
+	if err := validateUUIDv7(key); err != nil {
+		return err
+	}
+
+	type preparedFileImport struct {
+		staged stagedFileImport
+		meta   crdt.FileMetadata
+	}
+
+	preparedImports := make(map[string]preparedFileImport)
 	var stagedImports []stagedFileImport
 	var promotedImports []promotedFileImport
+	for col, val := range data {
+		fImport, ok := val.(FileImport)
+		if !ok {
+			continue
+		}
+		if t.db.FileStorageDir == "" {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("FileStorageDir not configured, cannot import file")
+		}
+		relativePath, err := normalizeImportRelativePath(fImport.RelativePath)
+		if err != nil {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("invalid file import relative path: %w", err)
+		}
+		srcInfo, err := os.Stat(fImport.LocalPath)
+		if err != nil {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("source file error: %w", err)
+		}
+		if srcInfo.IsDir() {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("source path is a directory")
+		}
+
+		destPath := filepath.Join(t.db.FileStorageDir, relativePath)
+		stagedImport, err := stageFileImport(fImport.LocalPath, destPath, relativePath)
+		if err != nil {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("failed to stage file import: %w", err)
+		}
+
+		meta, err := createFileMetadata(stagedImport.TempPath, relativePath)
+		if err != nil {
+			cleanupStagedFileImports(append(stagedImports, stagedImport))
+			return fmt.Errorf("failed to create file metadata: %w", err)
+		}
+
+		preparedImports[col] = preparedFileImport{
+			staged: stagedImport,
+			meta:   meta,
+		}
+		stagedImports = append(stagedImports, stagedImport)
+	}
 
 	err := t.inTx(true, func(txn store.Tx) error {
 		// 1. 加载现有 CRDT (用于索引比较)
@@ -74,39 +127,12 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 			}
 
 			// 检查是否是 FileImport (自动导入)
-			if fImport, ok := val.(FileImport); ok {
-				if t.db.FileStorageDir == "" {
-					return fmt.Errorf("FileStorageDir not configured, cannot import file")
+			if _, ok := val.(FileImport); ok {
+				prepared, exists := preparedImports[col]
+				if !exists {
+					return fmt.Errorf("file import for column %q is not prepared", col)
 				}
-				relativePath, err := normalizeImportRelativePath(fImport.RelativePath)
-				if err != nil {
-					return fmt.Errorf("invalid file import relative path: %w", err)
-				}
-
-				// 1. 确保源文件存在
-				srcInfo, err := os.Stat(fImport.LocalPath)
-				if err != nil {
-					return fmt.Errorf("source file error: %w", err)
-				}
-				if srcInfo.IsDir() {
-					return fmt.Errorf("source path is a directory")
-				}
-
-				// 2. 准备目标路径
-				destPath := filepath.Join(t.db.FileStorageDir, relativePath)
-				stagedImport, err := stageFileImport(fImport.LocalPath, destPath, relativePath)
-				if err != nil {
-					return fmt.Errorf("failed to stage file import: %w", err)
-				}
-				stagedImports = append(stagedImports, stagedImport)
-
-				// 4. 创建元数据 (从目标文件读取，确保一致性)
-				meta, err := createFileMetadata(stagedImport.TempPath, relativePath)
-				if err != nil {
-					return fmt.Errorf("failed to create file metadata: %w", err)
-				}
-
-				lf := crdt.NewLocalFileCRDT(meta, t.db.clock.Now())
+				lf := crdt.NewLocalFileCRDT(prepared.meta, t.db.clock.Now())
 				op := crdt.OpMapSet{
 					Key:   col,
 					Value: lf,
@@ -190,10 +216,19 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		cleanupStagedFileImports(stagedImports)
 		return err
 	}
-	cleanupPromotedBackupFiles(promotedImports)
+
+	if len(promotedImports) > 0 {
+		promotedCopy := append([]promotedFileImport(nil), promotedImports...)
+		t.onWriteRollback(func() {
+			rollbackPromotedFileImports(promotedCopy)
+		})
+		t.onWriteCommitted(func() {
+			cleanupPromotedBackupFiles(promotedCopy)
+		})
+	}
 
 	// 写入成功后触发变更回调（用于自动广播）
-	t.db.notifyChangeWithColumns(t.schema.Name, key, columnsFromMap(data))
+	t.notifyChangeAfterWrite(key, columnsFromMap(data))
 	return nil
 }
 

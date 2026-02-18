@@ -17,14 +17,23 @@ func (tx *Tx) Table(name string) *Table {
 		schema:       baseTable.schema,
 		indexManager: baseTable.indexManager,
 		tx:           tx.txn,
+		txCtx:        tx,
 	}
 }
 
 // Update 执行读写事务。
 func (db *DB) Update(fn func(*Tx) error) error {
-	return db.store.Update(func(txn store.Tx) error {
-		return fn(&Tx{db: db, txn: txn})
+	tx := &Tx{db: db}
+	err := db.store.Update(func(txn store.Tx) error {
+		tx.txn = txn
+		return fn(tx)
 	})
+	if err != nil {
+		tx.runAfterRollback()
+		return err
+	}
+	tx.runAfterCommit()
+	return nil
 }
 
 // View 执行只读事务。
@@ -32,4 +41,45 @@ func (db *DB) View(fn func(*Tx) error) error {
 	return db.store.View(func(txn store.Tx) error {
 		return fn(&Tx{db: db, txn: txn})
 	})
+}
+
+func (tx *Tx) onCommit(fn func()) {
+	if tx == nil || fn == nil {
+		return
+	}
+	tx.afterCommit = append(tx.afterCommit, fn)
+}
+
+func (tx *Tx) onRollback(fn func()) {
+	if tx == nil || fn == nil {
+		return
+	}
+	tx.afterRollback = append(tx.afterRollback, fn)
+}
+
+func (tx *Tx) runAfterCommit() {
+	if tx == nil {
+		return
+	}
+	for _, fn := range tx.afterCommit {
+		if fn != nil {
+			fn()
+		}
+	}
+	tx.afterCommit = nil
+	tx.afterRollback = nil
+}
+
+func (tx *Tx) runAfterRollback() {
+	if tx == nil {
+		return
+	}
+	for i := len(tx.afterRollback) - 1; i >= 0; i-- {
+		fn := tx.afterRollback[i]
+		if fn != nil {
+			fn()
+		}
+	}
+	tx.afterRollback = nil
+	tx.afterCommit = nil
 }

@@ -88,8 +88,10 @@ func WithFileStorageDir(dir string) Option {
 
 // Tx 代表数据库事务上下文。
 type Tx struct {
-	db  *DB
-	txn store.Tx
+	db            *DB
+	txn           store.Tx
+	afterCommit   []func()
+	afterRollback []func()
 }
 
 // GCResult 包含 GC 操作的结果统计。

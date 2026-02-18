@@ -15,9 +15,8 @@ import (
 // RGA: Append(val)
 // LWW: Set(val) (回退)
 func (t *Table) Add(key uuid.UUID, col string, val any) error {
-	// Validate key version if strict
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateUUIDv7(key); err != nil {
+		return err
 	}
 	colCrdtType, err := t.getColCrdtType(col)
 	if err != nil {
@@ -117,9 +116,8 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 
 	})
 
-	// 写入成功后触发变更回调（用于自动广播）
 	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+		t.notifyChangeAfterWrite(key, []string{col})
 	}
 	return err
 }
@@ -128,8 +126,8 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 // ORSet: Remove(val)
 // RGA: RemoveByValue(val) (Remove all instances of val)
 func (t *Table) Remove(key uuid.UUID, col string, val any) error {
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateUUIDv7(key); err != nil {
+		return err
 	}
 	colCrdtType, err := t.getColCrdtType(col)
 	if err != nil {
@@ -199,7 +197,7 @@ func (t *Table) Remove(key uuid.UUID, col string, val any) error {
 	})
 
 	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+		t.notifyChangeAfterWrite(key, []string{col})
 	}
 	return err
 }

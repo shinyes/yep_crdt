@@ -403,17 +403,17 @@ func TestNodeManager_DataReject(t *testing.T) {
 	initialClock := database.Clock().Now()
 	testRawData := []byte(`{"Entries":{}}`)
 
-	key1 := uuid.New().String()
+	key1, _ := uuid.NewV7()
 	staleDataTimestamp := initialClock - 100000
-	err = nm.dataSync.OnReceiveMerge("test-table", key1, testRawData, staleDataTimestamp)
+	err = nm.dataSync.OnReceiveMerge("test-table", key1.String(), testRawData, staleDataTimestamp)
 	if err == nil || !strings.Contains(err.Error(), "test-table") {
 		t.Fatalf("expected table-not-exist error, got: %v", err)
 	}
 
 	currentClockBeforeSend := database.Clock().Now()
-	key2 := uuid.New().String()
+	key2, _ := uuid.NewV7()
 	newDataTimestamp := currentClockBeforeSend + 10000000
-	err = nm.dataSync.OnReceiveMerge("test-table", key2, testRawData, newDataTimestamp)
+	err = nm.dataSync.OnReceiveMerge("test-table", key2.String(), testRawData, newDataTimestamp)
 	if err == nil || !strings.Contains(err.Error(), "test-table") {
 		t.Fatalf("expected table-not-exist error, got: %v", err)
 	}
@@ -423,11 +423,28 @@ func TestNodeManager_DataReject(t *testing.T) {
 		t.Fatalf("expected local clock to advance, before=%d after=%d target=%d", currentClockBeforeSend, updatedClock, newDataTimestamp)
 	}
 
-	key3 := uuid.New().String()
+	key3, _ := uuid.NewV7()
 	nowStaleTimestamp := currentClockBeforeSend + 100000
-	err = nm.dataSync.OnReceiveMerge("test-table", key3, testRawData, nowStaleTimestamp)
+	err = nm.dataSync.OnReceiveMerge("test-table", key3.String(), testRawData, nowStaleTimestamp)
 	if err == nil || !strings.Contains(err.Error(), "test-table") {
 		t.Fatalf("expected table-not-exist error, got: %v", err)
+	}
+}
+
+func TestNodeManager_DataReject_NonV7Key(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "test-node")
+	nm := NewNodeManager(database, "node-1")
+
+	invalidKey := uuid.New().String() // v4
+	err = nm.dataSync.OnReceiveMerge("test-table", invalidKey, []byte(`{"Entries":{}}`), database.Clock().Now())
+	if err == nil || !strings.Contains(err.Error(), "UUIDv7") {
+		t.Fatalf("expected non-v7 key rejection, got: %v", err)
 	}
 }
 

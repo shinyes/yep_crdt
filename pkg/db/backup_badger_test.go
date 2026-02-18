@@ -29,7 +29,7 @@ func TestDB_BackupToLocalAndRestoreBadger(t *testing.T) {
 		t.Fatalf("open db failed: %v", err)
 	}
 
-	noteID := uuid.New()
+	noteID, _ := uuid.NewV7()
 	if err := database.Table("notes").Set(noteID, map[string]any{
 		"title": "backup-roundtrip",
 	}); err != nil {
@@ -85,7 +85,7 @@ func TestRestoreBadgerFromLocalBackup_WritesUnderParentDir(t *testing.T) {
 		t.Fatalf("open db failed: %v", err)
 	}
 
-	id := uuid.New()
+	id, _ := uuid.NewV7()
 	if err := database.Table("notes").Set(id, map[string]any{
 		"title": "parent-dir-check",
 	}); err != nil {

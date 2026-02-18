@@ -36,7 +36,7 @@ func TestLocalNode_BackupTenantAndRestoreTenant(t *testing.T) {
 		t.Fatalf("open db failed: %v", err)
 	}
 
-	id := uuid.New()
+	id, _ := uuid.NewV7()
 	if err := database.Table("notes").Set(id, map[string]any{"title": "from-backup"}); err != nil {
 		_ = database.Close()
 		t.Fatalf("set row failed: %v", err)
@@ -176,7 +176,7 @@ func TestLocalNode_BackupAllTenants(t *testing.T) {
 		}
 		defer database.Close()
 
-		id := uuid.New()
+		id, _ := uuid.NewV7()
 		rowIDs[tenantID] = id
 		if err := database.Table("notes").Set(id, map[string]any{"title": title}); err != nil {
 			t.Fatalf("set row for tenant %s failed: %v", tenantID, err)

@@ -52,6 +52,10 @@ func (t *Table) ScanRawRows() ([]RawRow, error) {
 // GetRawRow 获取单行的原始 CRDT 字节数据。
 // 用于增量同步时获取需要广播的行数据。
 func (t *Table) GetRawRow(key uuid.UUID) ([]byte, error) {
+	if err := validateUUIDv7(key); err != nil {
+		return nil, err
+	}
+
 	var data []byte
 	err := t.inTx(false, func(txn store.Tx) error {
 		val, err := txn.Get(t.dataKey(key))
@@ -67,6 +71,10 @@ func (t *Table) GetRawRow(key uuid.UUID) ([]byte, error) {
 
 // GetRawRowColumns returns a partial MapCRDT payload containing only selected columns.
 func (t *Table) GetRawRowColumns(key uuid.UUID, columns []string) ([]byte, error) {
+	if err := validateUUIDv7(key); err != nil {
+		return nil, err
+	}
+
 	if len(columns) == 0 {
 		return t.GetRawRow(key)
 	}
@@ -130,6 +138,10 @@ func (t *Table) GetRawRowColumns(key uuid.UUID, columns []string) ([]byte, error
 // 如果本地行不存在，直接写入远程数据。
 // 如果本地行存在，执行 MapCRDT.Merge() 进行无冲突合并。
 func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
+	if err := validateUUIDv7(key); err != nil {
+		return err
+	}
+
 	return t.inTx(true, func(txn store.Tx) error {
 		keyBytes := t.dataKey(key)
 

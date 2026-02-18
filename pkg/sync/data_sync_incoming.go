@@ -28,15 +28,18 @@ func (dsm *DataSyncManager) OnReceiveDeltaWithFiles(tableName string, keyStr str
 }
 
 func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, rawData []byte, timestamp int64, columns []string, localFiles []SyncedLocalFile) error {
+	key, err := uuid.Parse(keyStr)
+	if err != nil {
+		return fmt.Errorf("parse UUID failed: %w", err)
+	}
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
+	}
+
 	// CRDT merge must remain convergent even when transport timestamps are older.
 	// We only use incoming timestamp to advance local HLC when possible.
 	if timestamp > 0 {
 		dsm.db.Clock().Update(timestamp)
-	}
-
-	key, err := uuid.Parse(keyStr)
-	if err != nil {
-		return fmt.Errorf("parse UUID failed: %w", err)
 	}
 
 	table := dsm.db.Table(tableName)

@@ -11,8 +11,8 @@ import (
 
 // InsertAfter 在 RGA 中指定元素后插入。
 func (t *Table) InsertAfter(key uuid.UUID, col string, anchorVal any, newVal any) error {
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateUUIDv7(key); err != nil {
+		return err
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
@@ -62,15 +62,15 @@ func (t *Table) InsertAfter(key uuid.UUID, col string, anchorVal any, newVal any
 	})
 
 	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+		t.notifyChangeAfterWrite(key, []string{col})
 	}
 	return err
 }
 
 // InsertAt 在 RGA 第 N 个位置插入 (0-based).
 func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateUUIDv7(key); err != nil {
+		return err
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
@@ -166,15 +166,15 @@ func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
 	})
 
 	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+		t.notifyChangeAfterWrite(key, []string{col})
 	}
 	return err
 }
 
 // RemoveAt Removes element at index N.
 func (t *Table) RemoveAt(key uuid.UUID, col string, index int) error {
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateUUIDv7(key); err != nil {
+		return err
 	}
 	colType, err := t.getColCrdtType(col)
 	if err != nil || colType != meta.CrdtRGA {
@@ -226,7 +226,7 @@ func (t *Table) RemoveAt(key uuid.UUID, col string, index int) error {
 	})
 
 	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, []string{col})
+		t.notifyChangeAfterWrite(key, []string{col})
 	}
 	return err
 }

@@ -371,3 +371,37 @@ func cleanupPromotedBackupFiles(promoted []promotedFileImport) {
 		}
 	}
 }
+
+func (t *Table) onWriteCommitted(fn func()) {
+	if fn == nil {
+		return
+	}
+	if t.txCtx != nil {
+		t.txCtx.onCommit(fn)
+		return
+	}
+	fn()
+}
+
+func (t *Table) onWriteRollback(fn func()) {
+	if fn == nil {
+		return
+	}
+	if t.txCtx != nil {
+		t.txCtx.onRollback(fn)
+	}
+}
+
+func (t *Table) notifyChangeAfterWrite(key uuid.UUID, columns []string) {
+	colsCopy := append([]string(nil), columns...)
+	t.onWriteCommitted(func() {
+		t.db.notifyChangeWithColumns(t.schema.Name, key, colsCopy)
+	})
+}
+
+func validateUUIDv7(key uuid.UUID) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
+	}
+	return nil
+}

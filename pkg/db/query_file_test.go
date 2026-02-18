@@ -63,7 +63,7 @@ func TestQueryLocalFile(t *testing.T) {
 	}
 
 	// 4. Insert Record with FileImport (auto copies and calculates metadata)
-	id := uuid.New()
+	id, _ := uuid.NewV7()
 
 	// Save to DB using Table.Set with FileImport
 	err = table.Set(id, map[string]any{
@@ -145,7 +145,7 @@ func TestQueryLocalFile_RejectFileImportPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := uuid.New()
+	id, _ := uuid.NewV7()
 	err = d.Table("documents").Set(id, map[string]any{
 		"id": id.String(),
 		"file": FileImport{

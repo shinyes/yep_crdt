@@ -7,6 +7,10 @@ import (
 )
 
 func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
+	if err := validateUUIDv7(key); err != nil {
+		return nil, err
+	}
+
 	var res map[string]any
 	err := t.inTx(false, func(txn store.Tx) error {
 		val, err := txn.Get(t.dataKey(key))
@@ -26,6 +30,10 @@ func (t *Table) Get(key uuid.UUID) (map[string]any, error) {
 // GetCRDT returns the raw ReadOnlyMap CRDT for a given key.
 // This is useful for accessing nested CRDTs (like RGA) without loading the entire map value.
 func (t *Table) GetCRDT(key uuid.UUID) (crdt.ReadOnlyMap, error) {
+	if err := validateUUIDv7(key); err != nil {
+		return nil, err
+	}
+
 	var res crdt.ReadOnlyMap
 	err := t.inTx(false, func(txn store.Tx) error {
 		m, _, err := t.loadRow(txn, key)

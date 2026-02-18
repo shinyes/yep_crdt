@@ -15,6 +15,7 @@ type Table struct {
 	schema       *meta.TableSchema
 	indexManager *index.Manager
 	tx           store.Tx
+	txCtx        *Tx
 }
 
 // FileImport 用于在 Set 操作中指定要导入的外部文件。

@@ -32,7 +32,7 @@ func TestQueryNormalization_InvalidTypedConditionReturnsError(t *testing.T) {
 	}
 
 	users := database.Table("users")
-	id := uuid.New()
+	id, _ := uuid.NewV7()
 	if err := users.Set(id, map[string]any{"age": 20}); err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
@@ -80,9 +80,9 @@ func TestQueryNormalization_OpInNormalizesItems(t *testing.T) {
 	}
 
 	scores := database.Table("scores")
-	id1 := uuid.New()
-	id2 := uuid.New()
-	id3 := uuid.New()
+	id1, _ := uuid.NewV7()
+	id2, _ := uuid.NewV7()
+	id3, _ := uuid.NewV7()
 
 	if err := scores.Set(id1, map[string]any{"score": 10}); err != nil {
 		t.Fatalf("Set score 10 failed: %v", err)

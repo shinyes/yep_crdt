@@ -43,7 +43,7 @@ func TestDB_GC(t *testing.T) {
 
 	// 插入多行数据
 	for i := 0; i < 10; i++ {
-		key := uuid.New()
+		key, _ := uuid.NewV7()
 		data := map[string]any{
 			"name":  "user-" + string(rune('A'+i)),
 			"email": "user-" + string(rune('A'+i)) + "@example.com",
@@ -116,7 +116,7 @@ func TestDB_GCByTimeOffset(t *testing.T) {
 	}
 
 	// 插入数据
-	key := uuid.New()
+	key, _ := uuid.NewV7()
 	data := map[string]any{
 		"title": "Test Document",
 	}
@@ -171,7 +171,7 @@ func TestDB_GCWithORSet(t *testing.T) {
 	}
 
 	// 插入包含 ORSet 的数据
-	key := uuid.New()
+	key, _ := uuid.NewV7()
 
 	// 创建 ORSet 并添加元素
 	tagSet := crdt.NewORSet[string]()
@@ -271,7 +271,7 @@ func TestDB_TableGC(t *testing.T) {
 
 	// 插入多行
 	for i := 0; i < 5; i++ {
-		key := uuid.New()
+		key, _ := uuid.NewV7()
 		data := map[string]any{
 			"value": string(rune('A' + i)),
 		}
