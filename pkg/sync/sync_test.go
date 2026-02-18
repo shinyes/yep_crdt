@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,49 @@ func TestNodeManager_Basic(t *testing.T) {
 	nm.OnPeerDisconnected(node2ID)
 	if nm.IsNodeOnline(node2ID) {
 		t.Error("node-2 should be offline after disconnect")
+	}
+}
+
+func TestNodeManager_BroadcastHeartbeat_NoNetworkReturnsError(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "test-node")
+	nm := NewNodeManager(database, "node-1")
+
+	err = nm.BroadcastHeartbeat(database.Clock().Now())
+	if !errors.Is(err, ErrNoNetwork) {
+		t.Fatalf("expected ErrNoNetwork, got: %v", err)
+	}
+}
+
+func TestNodeManager_BroadcastRawData_NoNetworkReturnsError(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "test-node")
+	nm := NewNodeManager(database, "node-1")
+
+	err = nm.BroadcastRawData("users", "k1", []byte("v1"), database.Clock().Now())
+	if !errors.Is(err, ErrNoNetwork) {
+		t.Fatalf("expected ErrNoNetwork, got: %v", err)
+	}
+}
+
+func TestDefaultNetwork_NoOpRemoved_ReturnsErrNoNetwork(t *testing.T) {
+	network := NewDefaultNetwork()
+
+	if err := network.SendHeartbeat("node-2", 1); !errors.Is(err, ErrNoNetwork) {
+		t.Fatalf("expected ErrNoNetwork from SendHeartbeat, got: %v", err)
+	}
+	if _, err := network.FetchRawTableData("node-2", "users"); !errors.Is(err, ErrNoNetwork) {
+		t.Fatalf("expected ErrNoNetwork from FetchRawTableData, got: %v", err)
 	}
 }
 

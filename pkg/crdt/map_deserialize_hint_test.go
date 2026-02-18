@@ -27,12 +27,12 @@ func TestDeserializeWithHint_ORSetUnknownHintFails(t *testing.T) {
 
 func TestDeserializeWithHint_ORSetSerializerErrorDoesNotFallback(t *testing.T) {
 	const hint = "broken_orset_hint"
-	originalSerializer, hadSerializer := TypeRegistry.ORSetSerializers[hint]
+	originalSerializer, hadSerializer := TypeRegistry.GetORSetSerializer(hint)
 	defer func() {
 		if hadSerializer {
-			TypeRegistry.ORSetSerializers[hint] = originalSerializer
+			TypeRegistry.SetORSetSerializer(hint, originalSerializer)
 		} else {
-			delete(TypeRegistry.ORSetSerializers, hint)
+			TypeRegistry.DeleteORSetSerializer(hint)
 		}
 	}()
 

@@ -19,7 +19,7 @@ func (nm *NodeManager) OnReceiveDelta(table string, key string, columns []string
 // BroadcastHeartbeat sends heartbeat to all peers.
 func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
 	if nm.network == nil {
-		return nil
+		return ErrNoNetwork
 	}
 	peers := nm.GetOnlineNodes()
 	if len(peers) == 0 {
@@ -51,7 +51,7 @@ func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
 // BroadcastRawData sends one full-row CRDT payload to all peers.
 func (nm *NodeManager) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
 	if nm.network == nil {
-		return nil
+		return ErrNoNetwork
 	}
 	return nm.network.BroadcastRawData(table, key, rawData, timestamp)
 }

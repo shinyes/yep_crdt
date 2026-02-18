@@ -105,6 +105,9 @@ func (hm *HeartbeatMonitor) broadcastHeartbeat() {
 	if hm.nm == nil {
 		return
 	}
+	if hm.nm.network == nil {
+		return
+	}
 
 	clock := hm.nm.db.Clock().Now()
 	if err := hm.nm.BroadcastHeartbeat(clock); err != nil {

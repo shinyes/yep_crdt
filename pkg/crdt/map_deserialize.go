@@ -29,7 +29,7 @@ func DeserializeWithHint(t Type, data []byte, typeHint string) (CRDT, error) {
 		return c, nil
 	case TypeORSet:
 		if typeHint != "" {
-			if serializer, ok := TypeRegistry.ORSetSerializers[typeHint]; ok {
+			if serializer, ok := TypeRegistry.GetORSetSerializer(typeHint); ok {
 				c, err := serializer(data)
 				if err != nil {
 					return nil, fmt.Errorf("%w: ORSet[%s]: %v", ErrDeserialization, typeHint, err)
@@ -57,7 +57,7 @@ func DeserializeWithHint(t Type, data []byte, typeHint string) (CRDT, error) {
 		return c, nil
 	case TypeRGA:
 		if typeHint != "" {
-			if serializer, ok := TypeRegistry.RGASerializers[typeHint]; ok {
+			if serializer, ok := TypeRegistry.GetRGASerializer(typeHint); ok {
 				c, err := serializer(data)
 				if err != nil {
 					return nil, fmt.Errorf("%w: RGA[%s]: %v", ErrDeserialization, typeHint, err)

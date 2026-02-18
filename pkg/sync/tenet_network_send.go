@@ -8,10 +8,8 @@ import (
 
 // Send sends a message to one peer.
 func (tn *TenantNetwork) Send(peerID string, msg *NetworkMessage) error {
-	if msg == nil {
-		return fmt.Errorf("message is nil")
-	}
-	return tn.sendValue(peerID, *msg)
+	// Keep Send for compatibility; route through SendMessage as the single send path.
+	return tn.SendMessage(peerID, msg)
 }
 
 // Broadcast broadcasts a message to all peers in the same tenant channel.
@@ -24,7 +22,10 @@ func (tn *TenantNetwork) Broadcast(msg *NetworkMessage) (int, error) {
 
 // SendMessage sends a custom message to one peer.
 func (tn *TenantNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
-	return tn.Send(targetNodeID, msg)
+	if msg == nil {
+		return fmt.Errorf("message is nil")
+	}
+	return tn.sendValue(targetNodeID, *msg)
 }
 
 // SendWithResponse sends a request and waits for a response.

@@ -2,7 +2,6 @@ package sync
 
 import (
 	"fmt"
-	"log"
 )
 
 // ErrNoNetwork indicates there is no registered network interface.
@@ -35,7 +34,8 @@ type NetworkInterface interface {
 	FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error)
 }
 
-// DefaultNetwork is a no-op network implementation used by tests/mocks.
+// DefaultNetwork is an explicit "no network" implementation.
+// All methods return ErrNoNetwork to avoid silently swallowing sync operations.
 type DefaultNetwork struct{}
 
 // NewDefaultNetwork creates a default network implementation.
@@ -43,59 +43,42 @@ func NewDefaultNetwork() NetworkInterface {
 	return &DefaultNetwork{}
 }
 
-// SendHeartbeat sends heartbeat (default implementation).
+// SendHeartbeat returns ErrNoNetwork.
 func (n *DefaultNetwork) SendHeartbeat(targetNodeID string, clock int64) error {
-	log.Printf("sending heartbeat to node %s, clock: %d", targetNodeID, clock)
-	return nil
+	return ErrNoNetwork
 }
 
-// BroadcastHeartbeat broadcasts heartbeat (default implementation).
+// BroadcastHeartbeat returns ErrNoNetwork.
 func (n *DefaultNetwork) BroadcastHeartbeat(clock int64) error {
-	log.Printf("broadcasting heartbeat, clock: %d", clock)
-	return nil
+	return ErrNoNetwork
 }
 
-// SendRawData sends raw CRDT payload (default implementation).
+// SendRawData returns ErrNoNetwork.
 func (n *DefaultNetwork) SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error {
-	log.Printf("sending raw data to node %s, table: %s, key: %s, size: %d bytes, timestamp: %d",
-		targetNodeID, table, key, len(rawData), timestamp)
-	return nil
+	return ErrNoNetwork
 }
 
-// BroadcastRawData broadcasts raw CRDT payload (default implementation).
+// BroadcastRawData returns ErrNoNetwork.
 func (n *DefaultNetwork) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
-	log.Printf("broadcasting raw data, table: %s, key: %s, size: %d bytes, timestamp: %d",
-		table, key, len(rawData), timestamp)
-	return nil
+	return ErrNoNetwork
 }
 
-// SendRawDelta sends delta CRDT payload (default implementation).
+// SendRawDelta returns ErrNoNetwork.
 func (n *DefaultNetwork) SendRawDelta(targetNodeID string, table string, key string, columns []string, rawData []byte, timestamp int64) error {
-	log.Printf("sending raw delta to node %s, table: %s, key: %s, columns: %v, size: %d bytes, timestamp: %d",
-		targetNodeID, table, key, columns, len(rawData), timestamp)
-	return nil
+	return ErrNoNetwork
 }
 
-// BroadcastRawDelta broadcasts delta CRDT payload (default implementation).
+// BroadcastRawDelta returns ErrNoNetwork.
 func (n *DefaultNetwork) BroadcastRawDelta(table string, key string, columns []string, rawData []byte, timestamp int64) error {
-	log.Printf("broadcasting raw delta, table: %s, key: %s, columns: %v, size: %d bytes, timestamp: %d",
-		table, key, columns, len(rawData), timestamp)
-	return nil
+	return ErrNoNetwork
 }
 
-// SendMessage sends a custom message (default implementation).
+// SendMessage returns ErrNoNetwork.
 func (n *DefaultNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
-	if msg == nil {
-		return fmt.Errorf("message is nil")
-	}
-
-	log.Printf("sending message to node %s, type: %s, request_id: %s",
-		targetNodeID, msg.Type, msg.RequestID)
-	return nil
+	return ErrNoNetwork
 }
 
-// FetchRawTableData fetches raw table data (default implementation).
+// FetchRawTableData returns ErrNoNetwork.
 func (n *DefaultNetwork) FetchRawTableData(sourceNodeID string, tableName string) ([]RawRowData, error) {
-	log.Printf("fetching raw table data from node %s, table: %s", sourceNodeID, tableName)
-	return []RawRowData{}, nil
+	return nil, ErrNoNetwork
 }

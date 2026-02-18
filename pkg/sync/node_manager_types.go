@@ -41,7 +41,6 @@ func NewNodeManager(database *db.DB, nodeID string, opts ...Option) *NodeManager
 		localNodeID:     nodeID,
 		db:              database,
 		config:          config,
-		network:         &DefaultNetwork{},
 	}
 
 	nm.heartbeat = NewHeartbeatMonitor(nm, config.HeartbeatInterval)

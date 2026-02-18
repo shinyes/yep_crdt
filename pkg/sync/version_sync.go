@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/google/uuid"
@@ -196,7 +195,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 // CompareAndSync triggers a digest exchange with one peer.
 func (vs *VersionSync) CompareAndSync(peerID string) error {
 	if vs.nodeMgr.network == nil {
-		return fmt.Errorf("network not registered")
+		return ErrNoNetwork
 	}
 
 	vs.OnPeerConnected(peerID)

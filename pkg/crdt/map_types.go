@@ -114,25 +114,70 @@ func (m *MapCRDT) Value() any {
 	return res
 }
 
-// TypeRegistry 存储泛型类型的反序列化函数
-var TypeRegistry = struct {
-	ORSetSerializers map[string]func([]byte) (any, error)
-	RGASerializers   map[string]func([]byte) (any, error)
-}{
-	ORSetSerializers: make(map[string]func([]byte) (any, error)),
-	RGASerializers:   make(map[string]func([]byte) (any, error)),
+type serializerRegistry struct {
+	mu               sync.RWMutex
+	orSetSerializers map[string]func([]byte) (any, error)
+	rgaSerializers   map[string]func([]byte) (any, error)
 }
+
+func newSerializerRegistry() *serializerRegistry {
+	return &serializerRegistry{
+		orSetSerializers: make(map[string]func([]byte) (any, error)),
+		rgaSerializers:   make(map[string]func([]byte) (any, error)),
+	}
+}
+
+func (r *serializerRegistry) GetORSetSerializer(typeHint string) (func([]byte) (any, error), bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	serializer, ok := r.orSetSerializers[typeHint]
+	return serializer, ok
+}
+
+func (r *serializerRegistry) SetORSetSerializer(typeHint string, serializer func([]byte) (any, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.orSetSerializers[typeHint] = serializer
+}
+
+func (r *serializerRegistry) DeleteORSetSerializer(typeHint string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.orSetSerializers, typeHint)
+}
+
+func (r *serializerRegistry) GetRGASerializer(typeHint string) (func([]byte) (any, error), bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	serializer, ok := r.rgaSerializers[typeHint]
+	return serializer, ok
+}
+
+func (r *serializerRegistry) SetRGASerializer(typeHint string, serializer func([]byte) (any, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rgaSerializers[typeHint] = serializer
+}
+
+func (r *serializerRegistry) DeleteRGASerializer(typeHint string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.rgaSerializers, typeHint)
+}
+
+// TypeRegistry stores generic deserializers and is safe for concurrent access.
+var TypeRegistry = newSerializerRegistry()
 
 // RegisterORSet 注册 ORSet 的特定类型反序列化函数
 func RegisterORSet[T comparable](typeHint string, serializer func([]byte) (*ORSet[T], error)) {
-	TypeRegistry.ORSetSerializers[typeHint] = func(data []byte) (any, error) {
+	TypeRegistry.SetORSetSerializer(typeHint, func(data []byte) (any, error) {
 		return serializer(data)
-	}
+	})
 }
 
 // RegisterRGA 注册 RGA 的特定类型反序列化函数
 func RegisterRGA[T any](typeHint string, serializer func([]byte) (*RGA[T], error)) {
-	TypeRegistry.RGASerializers[typeHint] = func(data []byte) (any, error) {
+	TypeRegistry.SetRGASerializer(typeHint, func(data []byte) (any, error) {
 		return serializer(data)
-	}
+	})
 }
