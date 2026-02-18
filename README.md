@@ -208,14 +208,14 @@ _ = err
 
 ### 本地多租户一键启动（简化版）
 
-`sync.StartLocalNode` 会自动探测 `DataRoot` 下租户目录，并启动所有租户频道：
+`sync.StartNodeFromDataRoot` 会自动探测 `DataRoot` 下租户目录，并启动所有租户频道：
 
 - `tenant_port` 形式（例如 `tenant-a_9001`、`tenant-b_9001`）：会优先按当前 `ListenPort` 发现
 - 纯租户目录形式（例如 `tenant-a/`、`tenant-b/`，目录内已有 Badger `MANIFEST`）
 
-StartLocalNode 会自动从 DataRoot 目录中寻找租户，并启动 tenet 网络及租户对应的频道进行同步。
+StartNodeFromDataRoot 会自动从 DataRoot 目录中寻找租户，并启动 tenet 网络及租户对应的频道进行同步。
 ```go
-node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+node, err := ysync.StartNodeFromDataRoot(ysync.NodeFromDataRootOptions{
 	DataRoot:   "./tmp/demo_manual",
 	ListenPort: 9001,
 	ConnectTo:  "127.0.0.1:9002",
@@ -242,13 +242,13 @@ if ok {
 
 ### 同步模式开关
 
-`LocalNodeOptions` 的 `IncrementalOnly` 可用于“增量优先”模式：
+`NodeFromDataRootOptions` 的 `IncrementalOnly` 可用于“增量优先”模式：
 
 - `IncrementalOnly: true` 时，会关闭重连时的自动全量触发（长离线阈值与时钟差阈值触发都关闭）
 - 适合希望把全量同步切换为显式运维动作的场景
 
 ```go
-node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+node, err := ysync.StartNodeFromDataRoot(ysync.NodeFromDataRootOptions{
 	DataRoot:        "./tmp/demo_manual",
 	ListenPort:      9001,
 	Password:        "cluster-secret",

@@ -602,7 +602,7 @@ engine, err := sync.EnableMultiTenantSync(
 )
 ```
 
-使用 `sync.StartLocalNode(...)` 时，也可通过 `LocalNodeOptions{IncrementalOnly: true}` 达到相同效果。
+使用 `sync.StartNodeFromDataRoot(...)` 时，也可通过 `NodeFromDataRootOptions{IncrementalOnly: true}` 达到相同效果。
 
 ### 7.3 同步机制原理
 

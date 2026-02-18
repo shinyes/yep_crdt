@@ -6,8 +6,8 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// LocalNodeOptions configures local filesystem based multi-tenant startup.
-type LocalNodeOptions struct {
+// NodeFromDataRootOptions configures local filesystem based multi-tenant startup.
+type NodeFromDataRootOptions struct {
 	DataRoot   string
 	ListenPort int
 	ConnectTo  string

@@ -47,7 +47,7 @@ func run() error {
 		log.SetOutput(io.Discard)
 	}
 
-	node, err := ysync.StartLocalNode(ysync.LocalNodeOptions{
+	node, err := ysync.StartNodeFromDataRoot(ysync.NodeFromDataRootOptions{
 		DataRoot:               *dataRoot,
 		ListenPort:             *listenPort,
 		ConnectTo:              *connectTo,

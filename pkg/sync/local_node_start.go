@@ -9,8 +9,8 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
 
-// StartLocalNode discovers local tenant databases, opens them, and starts multi-tenant sync.
-func StartLocalNode(opts LocalNodeOptions) (*LocalNode, error) {
+// StartNodeFromDataRoot discovers local tenant databases, opens them, and starts multi-tenant sync.
+func StartNodeFromDataRoot(opts NodeFromDataRootOptions) (*LocalNode, error) {
 	if opts.ListenPort <= 0 {
 		return nil, fmt.Errorf("listen port must be > 0")
 	}
