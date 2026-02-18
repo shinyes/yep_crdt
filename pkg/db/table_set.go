@@ -20,6 +20,8 @@ import (
 // 但检查 Fluent API 设计：Set(key, Data{...})。
 // 所以我们需要将 Data 转换为 CRDT。
 func (t *Table) Set(key uuid.UUID, data map[string]any) error {
+	var stagedImports []stagedFileImport
+	var promotedImports []promotedFileImport
 
 	err := t.inTx(true, func(txn store.Tx) error {
 		// 1. 加载现有 CRDT (用于索引比较)
@@ -92,18 +94,14 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 
 				// 2. 准备目标路径
 				destPath := filepath.Join(t.db.FileStorageDir, relativePath)
-				// 确保父目录存在
-				if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-					return fmt.Errorf("failed to create destination dir: %w", err)
+				stagedImport, err := stageFileImport(fImport.LocalPath, destPath, relativePath)
+				if err != nil {
+					return fmt.Errorf("failed to stage file import: %w", err)
 				}
-
-				// 3. 复制文件
-				if err := copyFile(fImport.LocalPath, destPath); err != nil {
-					return fmt.Errorf("failed to copy file: %w", err)
-				}
+				stagedImports = append(stagedImports, stagedImport)
 
 				// 4. 创建元数据 (从目标文件读取，确保一致性)
-				meta, err := createFileMetadata(destPath, relativePath)
+				meta, err := createFileMetadata(stagedImport.TempPath, relativePath)
 				if err != nil {
 					return fmt.Errorf("failed to create file metadata: %w", err)
 				}
@@ -170,14 +168,33 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		}
 
 		// 3. 保存并更新索引
-		return t.saveRow(txn, key, currentMap, oldBody)
+		if err := t.saveRow(txn, key, currentMap, oldBody); err != nil {
+			return err
+		}
+
+		if len(stagedImports) == 0 {
+			return nil
+		}
+
+		promoted, err := promoteStagedFileImports(stagedImports)
+		if err != nil {
+			cleanupStagedFileImports(stagedImports)
+			return fmt.Errorf("failed to finalize file import: %w", err)
+		}
+		promotedImports = promoted
+		stagedImports = nil
+		return nil
 	})
+	if err != nil {
+		rollbackPromotedFileImports(promotedImports)
+		cleanupStagedFileImports(stagedImports)
+		return err
+	}
+	cleanupPromotedBackupFiles(promotedImports)
 
 	// 写入成功后触发变更回调（用于自动广播）
-	if err == nil {
-		t.db.notifyChangeWithColumns(t.schema.Name, key, columnsFromMap(data))
-	}
-	return err
+	t.db.notifyChangeWithColumns(t.schema.Name, key, columnsFromMap(data))
+	return nil
 }
 
 func normalizeImportRelativePath(rawPath string) (string, error) {

@@ -35,14 +35,15 @@ func discoverTenantLocations(root string, listenPort int) (tenantDiscovery, erro
 			continue
 		}
 		tenantID := strings.TrimSuffix(name, suffix)
-		if tenantID == "" {
+		normalizedTenantID, err := normalizeTenantID(tenantID)
+		if err != nil {
 			continue
 		}
 		path := filepath.Join(root, name)
 		if !looksLikeBadgerDir(path) {
 			continue
 		}
-		byPort[tenantID] = path
+		byPort[normalizedTenantID] = path
 	}
 
 	byTenant := make(map[string]string, len(entries))
@@ -54,11 +55,15 @@ func discoverTenantLocations(root string, listenPort int) (tenantDiscovery, erro
 		if name == "_tenet_identity" || strings.HasPrefix(name, ".") {
 			continue
 		}
+		normalizedTenantID, err := normalizeTenantID(name)
+		if err != nil {
+			continue
+		}
 		path := filepath.Join(root, name)
 		if !looksLikeBadgerDir(path) {
 			continue
 		}
-		byTenant[name] = path
+		byTenant[normalizedTenantID] = path
 	}
 
 	if len(byPort) == 0 && len(byTenant) == 0 {

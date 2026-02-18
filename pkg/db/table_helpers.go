@@ -4,7 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
@@ -183,6 +186,9 @@ func extractInt64(v any) (int64, error) {
 	case int64:
 		return val, nil
 	case uint:
+		if uint64(val) > math.MaxInt64 {
+			return 0, fmt.Errorf("value %d overflows int64", val)
+		}
 		return int64(val), nil
 	case uint8:
 		return int64(val), nil
@@ -191,10 +197,32 @@ func extractInt64(v any) (int64, error) {
 	case uint32:
 		return int64(val), nil
 	case uint64:
+		if val > math.MaxInt64 {
+			return 0, fmt.Errorf("value %d overflows int64", val)
+		}
 		return int64(val), nil
 	case float32:
-		return int64(val), nil
+		f := float64(val)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, fmt.Errorf("value %v is not finite", val)
+		}
+		if f < math.MinInt64 || f > math.MaxInt64 {
+			return 0, fmt.Errorf("value %v overflows int64", val)
+		}
+		if math.Trunc(f) != f {
+			return 0, fmt.Errorf("value %v is not an integer", val)
+		}
+		return int64(f), nil
 	case float64:
+		if math.IsNaN(val) || math.IsInf(val, 0) {
+			return 0, fmt.Errorf("value %v is not finite", val)
+		}
+		if val < math.MinInt64 || val > math.MaxInt64 {
+			return 0, fmt.Errorf("value %v overflows int64", val)
+		}
+		if math.Trunc(val) != val {
+			return 0, fmt.Errorf("value %v is not an integer", val)
+		}
 		return int64(val), nil
 	default:
 		return 0, fmt.Errorf("cannot extract int64 from %T", v)
@@ -253,4 +281,93 @@ func createFileMetadata(localPath string, relativePath string) (crdt.FileMetadat
 		Size: info.Size(),
 		Hash: fmt.Sprintf("%x", h.Sum(nil)),
 	}, nil
+}
+
+type stagedFileImport struct {
+	TempPath     string
+	DestPath     string
+	RelativePath string
+}
+
+type promotedFileImport struct {
+	DestPath   string
+	BackupPath string
+}
+
+func stageFileImport(srcPath string, destPath string, relativePath string) (stagedFileImport, error) {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return stagedFileImport{}, err
+	}
+
+	tempPath := fmt.Sprintf("%s.import.%d.tmp", destPath, time.Now().UnixNano())
+	if err := copyFile(srcPath, tempPath); err != nil {
+		return stagedFileImport{}, err
+	}
+
+	return stagedFileImport{
+		TempPath:     tempPath,
+		DestPath:     destPath,
+		RelativePath: relativePath,
+	}, nil
+}
+
+func cleanupStagedFileImports(staged []stagedFileImport) {
+	for _, s := range staged {
+		if s.TempPath != "" {
+			_ = os.Remove(s.TempPath)
+		}
+	}
+}
+
+func promoteStagedFileImports(staged []stagedFileImport) ([]promotedFileImport, error) {
+	promoted := make([]promotedFileImport, 0, len(staged))
+
+	for _, s := range staged {
+		backupPath := ""
+		if _, err := os.Stat(s.DestPath); err == nil {
+			backupPath = fmt.Sprintf("%s.import.%d.bak", s.DestPath, time.Now().UnixNano())
+			if err := os.Rename(s.DestPath, backupPath); err != nil {
+				rollbackPromotedFileImports(promoted)
+				return nil, err
+			}
+		} else if !os.IsNotExist(err) {
+			rollbackPromotedFileImports(promoted)
+			return nil, err
+		}
+
+		if err := os.Rename(s.TempPath, s.DestPath); err != nil {
+			if backupPath != "" {
+				_ = os.Rename(backupPath, s.DestPath)
+			}
+			rollbackPromotedFileImports(promoted)
+			return nil, err
+		}
+
+		promoted = append(promoted, promotedFileImport{
+			DestPath:   s.DestPath,
+			BackupPath: backupPath,
+		})
+	}
+
+	return promoted, nil
+}
+
+func rollbackPromotedFileImports(promoted []promotedFileImport) {
+	for i := len(promoted) - 1; i >= 0; i-- {
+		p := promoted[i]
+		if p.DestPath != "" {
+			_ = os.Remove(p.DestPath)
+		}
+		if p.BackupPath != "" {
+			_ = os.Rename(p.BackupPath, p.DestPath)
+		}
+	}
+}
+
+func cleanupPromotedBackupFiles(promoted []promotedFileImport) {
+	for _, p := range promoted {
+		if p.BackupPath != "" {
+			_ = os.Remove(p.BackupPath)
+		}
+	}
 }

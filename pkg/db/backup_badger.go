@@ -160,19 +160,32 @@ func RestoreBadgerFromLocalBackup(cfg BadgerRestoreConfig) (*DB, error) {
 		return nil, err
 	}
 
+	targetExistsBefore := false
+	targetWasEmptyBefore := false
+	if entries, err := os.ReadDir(path); err == nil {
+		targetExistsBefore = true
+		targetWasEmptyBefore = len(entries) == 0
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
 	if cfg.ReplaceExisting {
 		if err := os.RemoveAll(path); err != nil {
 			return nil, err
 		}
 	} else {
-		entries, err := os.ReadDir(path)
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		if len(entries) > 0 {
+		if targetExistsBefore && !targetWasEmptyBefore {
 			return nil, fmt.Errorf("target db path is not empty: %s", path)
 		}
 	}
+
+	cleanupOnFailure := !targetExistsBefore || cfg.ReplaceExisting || targetWasEmptyBefore
+	restoreSucceeded := false
+	defer func() {
+		if cleanupOnFailure && !restoreSucceeded {
+			_ = os.RemoveAll(path)
+		}
+	}()
 
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return nil, err
@@ -218,7 +231,7 @@ func RestoreBadgerFromLocalBackup(cfg BadgerRestoreConfig) (*DB, error) {
 		return nil, err
 	}
 
-	return OpenBadgerWithConfig(BadgerOpenConfig{
+	openedDB, err := OpenBadgerWithConfig(BadgerOpenConfig{
 		Path:                   path,
 		DatabaseID:             databaseID,
 		BadgerValueLogFileSize: cfg.BadgerValueLogFileSize,
@@ -227,6 +240,11 @@ func RestoreBadgerFromLocalBackup(cfg BadgerRestoreConfig) (*DB, error) {
 		Schemas:                cfg.Schemas,
 		EnsureSchema:           cfg.EnsureSchema,
 	})
+	if err != nil {
+		return nil, err
+	}
+	restoreSucceeded = true
+	return openedDB, nil
 }
 
 func validateRestoreTargetPath(path string) error {

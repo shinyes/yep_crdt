@@ -234,6 +234,30 @@ func TestCollectFetchRawResponsesLite_PeerDisconnected(t *testing.T) {
 	}
 }
 
+func TestCollectFetchRawResponsesLite_PeerDisconnectedWithPartialRows(t *testing.T) {
+	ch := make(chan fetchRawResponseLite, 2)
+	ch <- fetchRawResponseLite{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k1",
+		RawData: []byte("v1"),
+	}
+	ch <- fetchRawResponseLite{Type: internalMsgTypePeerDisconnected}
+
+	rows, err := collectFetchRawResponsesLite(ch, nil, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected peer disconnected error")
+	}
+	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
+		t.Fatalf("expected peer-disconnected classification, got: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected partial rows retained, got %d", len(rows))
+	}
+	if rows[0].Key != "k1" || string(rows[0].Data) != "v1" {
+		t.Fatalf("unexpected partial row: %+v", rows[0])
+	}
+}
+
 func TestCollectFetchRawResponsesLite_ChannelClosedWithoutRows(t *testing.T) {
 	ch := make(chan fetchRawResponseLite)
 	close(ch)

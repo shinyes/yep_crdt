@@ -208,3 +208,20 @@ func TestRestoreBadgerFromLocalBackup_RejectDangerousPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRestoreBadgerFromLocalBackup_CleansTargetOnFailure(t *testing.T) {
+	restorePath := filepath.Join(t.TempDir(), "restore-fail", "tenant-x")
+	backupPath := filepath.Join(t.TempDir(), "missing.badgerbak")
+
+	if _, err := RestoreBadgerFromLocalBackup(BadgerRestoreConfig{
+		BackupPath: backupPath,
+		Path:       restorePath,
+		DatabaseID: "tenant-x",
+	}); err == nil {
+		t.Fatal("expected restore to fail with missing backup file")
+	}
+
+	if _, err := os.Stat(restorePath); !os.IsNotExist(err) {
+		t.Fatalf("restore target should be cleaned on failure, stat err=%v", err)
+	}
+}
