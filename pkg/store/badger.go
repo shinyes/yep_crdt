@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -59,6 +60,16 @@ func NewBadgerStore(path string, options ...BadgerOption) (*BadgerStore, error) 
 
 func (s *BadgerStore) Close() error {
 	return s.db.Close()
+}
+
+// Backup exports Badger data into writer. since=0 means full backup.
+func (s *BadgerStore) Backup(w io.Writer, since uint64) (uint64, error) {
+	return s.db.Backup(w, since)
+}
+
+// Load imports data from a backup stream.
+func (s *BadgerStore) Load(r io.Reader, maxPendingWrites int) error {
+	return s.db.Load(r, maxPendingWrites)
 }
 
 func (s *BadgerStore) RunTx(update bool, fn func(Tx) error) error {

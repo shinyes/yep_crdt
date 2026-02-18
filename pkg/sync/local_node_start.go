@@ -90,8 +90,11 @@ func StartNodeFromDataRoot(opts NodeFromDataRootOptions) (*LocalNode, error) {
 	}
 
 	return &LocalNode{
-		engine:    engine,
-		databases: databases,
-		tenantIDs: tenantIDs,
+		engine:                 engine,
+		databases:              databases,
+		tenantIDs:              tenantIDs,
+		dataRoot:               dataRoot,
+		badgerValueLogFileSize: opts.BadgerValueLogFileSize,
+		ensureSchema:           opts.EnsureSchema,
 	}, nil
 }

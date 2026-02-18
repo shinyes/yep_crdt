@@ -28,7 +28,21 @@ type LocalNode struct {
 	engine    *MultiEngine
 	databases map[string]*db.DB
 	tenantIDs []string
-	closed    bool
+	dataRoot  string
+	// startup defaults used by helper APIs like RestoreTenant.
+	badgerValueLogFileSize int64
+	ensureSchema           func(*db.DB) error
+	closed                 bool
+}
+
+// TenantRestoreOptions configures RestoreTenant behavior.
+type TenantRestoreOptions struct {
+	TenantID               string
+	BackupPath             string
+	ReplaceExisting        bool
+	MaxPendingWrites       int
+	BadgerValueLogFileSize int64 // 0 means use LocalNode startup default.
+	EnsureSchema           func(*db.DB) error
 }
 
 type tenantDiscovery struct {

@@ -6,6 +6,7 @@ Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库�
 - SQL-Like 查询：`Where` / `And` / `OrderBy` / `Limit` / `Offset` / `IN`
 - 自动索引与查询规划（Longest Prefix Match）
 - 分布式自动同步（增量、全量补齐、重连）
+- 本地备份/恢复（单租户与全租户打包）
 - `gc_floor` 安全栅栏（落后节点自动全量追平）
 - 面向多节点场景的手动 GC 协商与可观测性
 
@@ -19,6 +20,7 @@ Yep CRDT 是一个本地优先（Local-First）的 Go 嵌入式 CRDT 数据库�
 - [CRDT 列类型速查](#crdt-列类型速查)
 - [查询与事务速查](#查询与事务速查)
 - [分布式同步](#分布式同步)
+- [备份与恢复](#备份与恢复)
 - [垃圾回收](#垃圾回收)
 - [性能建议](#性能建议)
 - [项目结构](#项目结构)
@@ -330,6 +332,75 @@ if err != nil {
 }
 _ = rows
 ```
+
+## 备份与恢复
+
+当前备份/恢复能力基于 Badger backup stream：
+
+- 仅包含 Badger KV 数据
+- 不包含 `FileStorageDir` 实体文件（例如 LocalFileCRDT 对应的本地附件）
+- 恢复时会自动创建目标 DB 目录的父目录
+
+### 单租户（`db` API）
+
+```go
+// 全量备份（since=0）
+since, err := database.BackupToLocal("./backup/tenant-a.badgerbak")
+if err != nil {
+	log.Fatal(err)
+}
+_ = since
+
+// 恢复到指定 DB 目录（例如 ./data/tenant-a）
+restoredDB, err := db.RestoreBadgerFromLocalBackup(db.BadgerRestoreConfig{
+	BackupPath:      "./backup/tenant-a.badgerbak",
+	Path:            "./data/tenant-a",
+	DatabaseID:      "tenant-a",
+	ReplaceExisting: true,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer restoredDB.Close()
+```
+
+### 单租户（`LocalNode` 封装）
+
+```go
+// tenant-a 备份
+_, err := node.BackupTenant("tenant-a", "./backup/tenant-a.badgerbak")
+if err != nil {
+	log.Fatal(err)
+}
+
+// 恢复到 <DataRoot>/tenant-a
+// 注意：若 tenant-a 在当前 LocalNode 正在运行，会返回错误
+err = node.RestoreTenant(ysync.TenantRestoreOptions{
+	TenantID:        "tenant-a",
+	BackupPath:      "./backup/tenant-a.badgerbak",
+	ReplaceExisting: true,
+})
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+### 全租户打包备份
+
+```go
+sinceByTenant, err := node.BackupAllTenants("./backup/all-tenants.zip")
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println("backup since:", sinceByTenant)
+```
+
+归档内容：
+
+- `manifest.json`：租户列表、归档条目路径、since
+- `tenants/<tenant_id_hex>.badgerbak`：每个租户的 Badger 备份流
+
+当前未提供 `RestoreAllTenants` 一键恢复 API；可按 manifest 逐租户解包后调用 `db.RestoreBadgerFromLocalBackup(...)` 恢复到 `<DataRoot>/<tenantID>`。
 
 ## 垃圾回收
 

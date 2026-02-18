@@ -12,6 +12,7 @@
 *   **自动索引**: 基于 Schema 定义自动维护二级索引，查询速度快。
 *   **类型安全**: 核心 API 支持泛型，减少运行时错误。
 *   **高性能**: 底层使用 BadgerDB KV 存储，结合 LSM Tree 提供高吞吐量的读写。
+*   **本地备份/恢复**: 支持单租户备份恢复与全租户打包备份（基于 Badger backup stream）。
 *   **垃圾回收 (GC)**: 支持数据库级与表级 GC，并提供多节点手动协商 GC 能力（prepare/commit/execute）与 `gc_floor` 安全栅栏。
 
 ---
@@ -633,6 +634,74 @@ Yep CRDT 实现了三种层级的同步机制，自动智能切换：
 
 *   **P2P Mesh**: 节点间形成网状结构，不需要所有节点两两互联。消息可以通过中间节点转发（Gossip 传播）。
 *   **穿透性**: 目前主要支持直连。如果在 NAT 后，需要确保端口映射或使用 VPN/Overlay 网络（如 Tailscale）。
+
+### 7.6 备份与恢复（Badger 数据）
+
+当前版本的备份/恢复基于 Badger backup stream，能力边界如下：
+
+- 仅包含 Badger KV 数据
+- 不包含 `FileStorageDir` 中的实体文件
+- 恢复时会自动创建目标 DB 目录的父目录
+
+#### 7.6.1 单租户：`db` API
+
+```go
+// 全量备份
+since, err := myDB.BackupToLocal("./backup/tenant-1.badgerbak")
+if err != nil {
+    log.Fatal(err)
+}
+_ = since
+
+// 恢复到指定 DB 目录
+restoredDB, err := db.RestoreBadgerFromLocalBackup(db.BadgerRestoreConfig{
+    BackupPath:      "./backup/tenant-1.badgerbak",
+    Path:            "./data/tenant-1",
+    DatabaseID:      "tenant-1",
+    ReplaceExisting: true,
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer restoredDB.Close()
+```
+
+#### 7.6.2 单租户：`LocalNode` 封装
+
+```go
+_, err := node.BackupTenant("tenant-1", "./backup/tenant-1.badgerbak")
+if err != nil {
+    log.Fatal(err)
+}
+
+// 恢复路径固定为 <DataRoot>/tenant-1
+// 若当前 LocalNode 里 tenant-1 仍在运行，会返回错误
+err = node.RestoreTenant(sync.TenantRestoreOptions{
+    TenantID:        "tenant-1",
+    BackupPath:      "./backup/tenant-1.badgerbak",
+    ReplaceExisting: true,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+#### 7.6.3 全租户打包备份
+
+```go
+sinceByTenant, err := node.BackupAllTenants("./backup/all-tenants.zip")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println("backup since:", sinceByTenant)
+```
+
+归档结构：
+
+- `manifest.json`：记录租户清单、每个租户的归档条目和 since
+- `tenants/<tenant_id_hex>.badgerbak`：每个租户一份 Badger 备份流
+
+当前未提供 `RestoreAllTenants` 一键恢复 API。可按 `manifest.json` 遍历解包后，逐租户调用 `db.RestoreBadgerFromLocalBackup(...)`，恢复到 `<DataRoot>/<tenantID>`。
 
 ---
 
