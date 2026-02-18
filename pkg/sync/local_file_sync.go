@@ -6,6 +6,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -353,19 +354,30 @@ func resolveLocalFilePath(baseDir string, relativePath string) (string, error) {
 		return "", fmt.Errorf("base directory is empty")
 	}
 
-	clean := filepath.Clean(relativePath)
+	trimmed := strings.TrimSpace(relativePath)
+	if trimmed == "" {
+		return "", fmt.Errorf("invalid relative path %q", relativePath)
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("path must be relative: %q", relativePath)
+	}
+
+	normalized := strings.ReplaceAll(trimmed, `\`, `/`)
+	clean := path.Clean(normalized)
 	if clean == "" || clean == "." {
 		return "", fmt.Errorf("invalid relative path %q", relativePath)
 	}
-	if filepath.IsAbs(clean) {
+	if strings.HasPrefix(clean, "/") {
 		return "", fmt.Errorf("path must be relative: %q", relativePath)
 	}
-	parentPrefix := ".." + string(filepath.Separator)
-	if clean == ".." || strings.HasPrefix(clean, parentPrefix) {
+	if strings.Contains(clean, ":") {
+		return "", fmt.Errorf("path contains invalid ':' : %q", relativePath)
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("path escapes storage directory: %q", relativePath)
 	}
 
-	return filepath.Join(baseDir, clean), nil
+	return filepath.Join(baseDir, filepath.FromSlash(clean)), nil
 }
 
 func hasChunkedLocalFiles(files []SyncedLocalFile) bool {

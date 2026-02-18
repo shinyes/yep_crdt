@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -191,5 +192,19 @@ func TestReplaceFileWithBackup_OverwriteExisting(t *testing.T) {
 
 	if _, err := os.Stat(destPath + ".old"); !os.IsNotExist(err) {
 		t.Fatalf("expected backup file cleanup, got stat err=%v", err)
+	}
+}
+
+func TestRestoreBadgerFromLocalBackup_RejectDangerousPath(t *testing.T) {
+	_, err := RestoreBadgerFromLocalBackup(BadgerRestoreConfig{
+		BackupPath: filepath.Join(t.TempDir(), "dummy.badgerbak"),
+		Path:       ".",
+		DatabaseID: "tenant-danger",
+	})
+	if err == nil {
+		t.Fatal("expected dangerous restore path to fail")
+	}
+	if !strings.Contains(err.Error(), "dangerous restore path") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -159,7 +161,10 @@ func (lf *LocalFileCRDT) ReadAll() ([]byte, error) {
 	if baseDir == "" {
 		return nil, fmt.Errorf("baseDir not set for LocalFileCRDT")
 	}
-	fullPath := filepath.Join(baseDir, path)
+	fullPath, err := resolveLocalFilePath(baseDir, path)
+	if err != nil {
+		return nil, err
+	}
 	return os.ReadFile(fullPath)
 }
 
@@ -188,7 +193,10 @@ func (lf *LocalFileCRDT) ReadAt(offset int64, length int) ([]byte, error) {
 		return nil, fmt.Errorf("offset %d exceeds file size %d", offset, fileSize)
 	}
 
-	fullPath := filepath.Join(baseDir, path)
+	fullPath, err := resolveLocalFilePath(baseDir, path)
+	if err != nil {
+		return nil, err
+	}
 
 	f, err := os.Open(fullPath)
 	if err != nil {
@@ -236,4 +244,35 @@ func createFileMetadata(localPath string, relativePath string) (FileMetadata, er
 		Size: info.Size(),
 		Hash: fmt.Sprintf("%x", h.Sum(nil)),
 	}, nil
+}
+
+func resolveLocalFilePath(baseDir string, relativePath string) (string, error) {
+	if strings.TrimSpace(baseDir) == "" {
+		return "", fmt.Errorf("baseDir not set for LocalFileCRDT")
+	}
+
+	trimmed := strings.TrimSpace(relativePath)
+	if trimmed == "" {
+		return "", fmt.Errorf("invalid local file path")
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("local file path must be relative")
+	}
+
+	normalized := strings.ReplaceAll(trimmed, `\`, `/`)
+	clean := path.Clean(normalized)
+	if clean == "" || clean == "." {
+		return "", fmt.Errorf("invalid local file path")
+	}
+	if strings.HasPrefix(clean, "/") {
+		return "", fmt.Errorf("local file path must be relative")
+	}
+	if strings.Contains(clean, ":") {
+		return "", fmt.Errorf("local file path contains invalid ':'")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("local file path escapes baseDir")
+	}
+
+	return filepath.Join(baseDir, filepath.FromSlash(clean)), nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -26,8 +27,13 @@ func NewMultiStore(rootPath string) *MultiStore {
 // Get 返回给定租户的 Store。
 // 如果存储尚未打开，它将打开存储。
 func (m *MultiStore) Get(tenantID string) (Store, error) {
+	normalizedTenantID, err := normalizeTenantID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+
 	m.mu.RLock()
-	s, ok := m.stores[tenantID]
+	s, ok := m.stores[normalizedTenantID]
 	m.mu.RUnlock()
 	if ok {
 		return s, nil
@@ -37,12 +43,12 @@ func (m *MultiStore) Get(tenantID string) (Store, error) {
 	defer m.mu.Unlock()
 
 	// 双重检查
-	if s, ok := m.stores[tenantID]; ok {
+	if s, ok := m.stores[normalizedTenantID]; ok {
 		return s, nil
 	}
 
 	// 为租户创建目录
-	dbPath := filepath.Join(m.rootPath, tenantID)
+	dbPath := filepath.Join(m.rootPath, normalizedTenantID)
 	if err := os.MkdirAll(dbPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create tenant directory: %w", err)
 	}
@@ -53,21 +59,26 @@ func (m *MultiStore) Get(tenantID string) (Store, error) {
 		return nil, fmt.Errorf("failed to open tenant store: %w", err)
 	}
 
-	m.stores[tenantID] = store
+	m.stores[normalizedTenantID] = store
 	return store, nil
 }
 
 // Close 关闭给定租户的存储。
 func (m *MultiStore) Close(tenantID string) error {
+	normalizedTenantID, err := normalizeTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	s, ok := m.stores[tenantID]
+	s, ok := m.stores[normalizedTenantID]
 	if !ok {
 		return nil
 	}
 
-	delete(m.stores, tenantID)
+	delete(m.stores, normalizedTenantID)
 	return s.Close()
 }
 
@@ -86,4 +97,25 @@ func (m *MultiStore) CloseAll() error {
 		delete(m.stores, id)
 	}
 	return firstErr
+}
+
+func normalizeTenantID(raw string) (string, error) {
+	tenantID := strings.TrimSpace(raw)
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant id cannot be empty")
+	}
+	if filepath.IsAbs(tenantID) {
+		return "", fmt.Errorf("tenant id cannot be absolute path: %s", tenantID)
+	}
+	if strings.ContainsAny(tenantID, `/\`) {
+		return "", fmt.Errorf("tenant id cannot contain path separator: %s", tenantID)
+	}
+	if strings.Contains(tenantID, ":") {
+		return "", fmt.Errorf("tenant id cannot contain ':' : %s", tenantID)
+	}
+	clean := filepath.Clean(tenantID)
+	if clean != tenantID || clean == "." || clean == ".." {
+		return "", fmt.Errorf("invalid tenant id: %s", tenantID)
+	}
+	return tenantID, nil
 }

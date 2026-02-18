@@ -3,7 +3,9 @@ package db
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
@@ -74,6 +76,10 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 				if t.db.FileStorageDir == "" {
 					return fmt.Errorf("FileStorageDir not configured, cannot import file")
 				}
+				relativePath, err := normalizeImportRelativePath(fImport.RelativePath)
+				if err != nil {
+					return fmt.Errorf("invalid file import relative path: %w", err)
+				}
 
 				// 1. 确保源文件存在
 				srcInfo, err := os.Stat(fImport.LocalPath)
@@ -85,7 +91,7 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 				}
 
 				// 2. 准备目标路径
-				destPath := filepath.Join(t.db.FileStorageDir, fImport.RelativePath)
+				destPath := filepath.Join(t.db.FileStorageDir, relativePath)
 				// 确保父目录存在
 				if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 					return fmt.Errorf("failed to create destination dir: %w", err)
@@ -97,7 +103,7 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 				}
 
 				// 4. 创建元数据 (从目标文件读取，确保一致性)
-				meta, err := createFileMetadata(destPath, fImport.RelativePath)
+				meta, err := createFileMetadata(destPath, relativePath)
 				if err != nil {
 					return fmt.Errorf("failed to create file metadata: %w", err)
 				}
@@ -172,4 +178,30 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 		t.db.notifyChangeWithColumns(t.schema.Name, key, columnsFromMap(data))
 	}
 	return err
+}
+
+func normalizeImportRelativePath(rawPath string) (string, error) {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("path must be relative")
+	}
+
+	normalized := strings.ReplaceAll(trimmed, `\`, `/`)
+	relativePath := path.Clean(normalized)
+	if relativePath == "" || relativePath == "." {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	if strings.HasPrefix(relativePath, "/") {
+		return "", fmt.Errorf("path must be relative")
+	}
+	if strings.Contains(relativePath, ":") {
+		return "", fmt.Errorf("path contains invalid ':'")
+	}
+	if relativePath == ".." || strings.HasPrefix(relativePath, "../") {
+		return "", fmt.Errorf("path escapes storage directory")
+	}
+	return relativePath, nil
 }

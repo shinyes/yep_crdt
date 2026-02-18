@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -104,5 +105,62 @@ func TestQueryLocalFile(t *testing.T) {
 
 	if string(readBytes) != string(fileContent) {
 		t.Errorf("content mismatch: got %s, want %s", string(readBytes), string(fileContent))
+	}
+}
+
+func TestQueryLocalFile_RejectFileImportPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	fileStoreDir := filepath.Join(tmpDir, "files")
+	if err := os.Mkdir(fileStoreDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbStoreDir := filepath.Join(tmpDir, "db")
+	s, err := store.NewBadgerStore(dbStoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	d, err := Open(s, "test-files-traversal")
+	if err != nil {
+		t.Fatalf("open db failed: %v", err)
+	}
+	defer d.Close()
+
+	d.SetFileStorageDir(fileStoreDir)
+
+	if err := d.DefineTable(&meta.TableSchema{
+		Name: "documents",
+		Columns: []meta.ColumnSchema{
+			{Name: "id", Type: meta.ColTypeString},
+			{Name: "file", Type: meta.ColTypeString, CrdtType: meta.CrdtLocalFile},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srcPath := filepath.Join(tmpDir, "src.txt")
+	if err := os.WriteFile(srcPath, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := uuid.New()
+	err = d.Table("documents").Set(id, map[string]any{
+		"id": id.String(),
+		"file": FileImport{
+			LocalPath:    srcPath,
+			RelativePath: "../escape.txt",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected file import traversal path to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid file import relative path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "escape.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected escaped file created: %v", statErr)
 	}
 }

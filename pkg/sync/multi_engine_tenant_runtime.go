@@ -3,6 +3,7 @@ package sync
 import (
 	"log"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -10,10 +11,20 @@ import (
 func (rt *tenantRuntime) runChangeWorker() {
 	defer rt.workerWg.Done()
 
+	ticker := time.NewTicker(defaultLocalFileChunkCleanupInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-rt.ctx.Done():
+			if rt.chunks != nil {
+				rt.chunks.CleanupAll()
+			}
 			return
+		case <-ticker.C:
+			if rt.chunks != nil {
+				rt.chunks.CleanupExpired()
+			}
 		case event := <-rt.changeQ:
 			rt.onDataChangedDetailed(event.TableName, event.Key, event.Columns)
 			atomic.AddUint64(&rt.stats.changeProcessed, 1)

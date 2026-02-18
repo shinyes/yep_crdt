@@ -23,6 +23,9 @@ func (m *MultiEngine) onPeerDisconnected(peerID string) {
 	for _, rt := range runtimes {
 		log.Printf("[MultiEngine:%s] peer disconnected: %s", rt.tenantID, shortPeerID(peerID))
 		rt.nodeMgr.OnPeerDisconnected(peerID)
+		if rt.chunks != nil {
+			rt.chunks.CleanupPeer(peerID)
+		}
 	}
 }
 

@@ -127,6 +127,9 @@ func RestoreBadgerFromLocalBackup(cfg BadgerRestoreConfig) (*DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("badger path cannot be empty")
 	}
+	if err := validateRestoreTargetPath(path); err != nil {
+		return nil, err
+	}
 	databaseID := strings.TrimSpace(cfg.DatabaseID)
 	if databaseID == "" {
 		return nil, fmt.Errorf("database id cannot be empty")
@@ -224,4 +227,26 @@ func RestoreBadgerFromLocalBackup(cfg BadgerRestoreConfig) (*DB, error) {
 		Schemas:                cfg.Schemas,
 		EnsureSchema:           cfg.EnsureSchema,
 	})
+}
+
+func validateRestoreTargetPath(path string) error {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || clean == "." || clean == ".." {
+		return fmt.Errorf("dangerous restore path: %s", path)
+	}
+
+	absPath, err := filepath.Abs(clean)
+	if err != nil {
+		return err
+	}
+
+	volume := filepath.VolumeName(absPath)
+	rootPath := string(os.PathSeparator)
+	if volume != "" {
+		rootPath = volume + string(os.PathSeparator)
+	}
+	if absPath == rootPath {
+		return fmt.Errorf("dangerous restore path: %s", path)
+	}
+	return nil
 }

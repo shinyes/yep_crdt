@@ -100,3 +100,21 @@ func TestLocalFileCRDT(t *testing.T) {
 		t.Errorf("Deserialization failed, timestamp mismatch")
 	}
 }
+
+func TestLocalFileCRDT_RejectPathTraversalRead(t *testing.T) {
+	baseDir := t.TempDir()
+	meta := FileMetadata{
+		Path: filepath.Join("..", "outside.txt"),
+		Size: 8,
+		Hash: "dummy",
+	}
+	lf := NewLocalFileCRDT(meta, time.Now().UnixNano())
+	lf.SetBaseDir(baseDir)
+
+	if _, err := lf.ReadAll(); err == nil {
+		t.Fatal("expected ReadAll to reject escaped path")
+	}
+	if _, err := lf.ReadAt(0, 4); err == nil {
+		t.Fatal("expected ReadAt to reject escaped path")
+	}
+}

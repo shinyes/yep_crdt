@@ -10,24 +10,35 @@ import (
 )
 
 type localFileChunkReceiver struct {
-	mu        sync.Mutex
-	transfers map[string]*localFileChunkTransfer
+	mu              sync.Mutex
+	transfers       map[string]*localFileChunkTransfer
+	transferTimeout time.Duration
+	now             func() time.Time
 }
 
 type localFileChunkTransfer struct {
-	key      string
-	tempPath string
-	fullPath string
-	hash     string
-	size     int64
-	total    int
-	next     int
-	written  int64
+	key        string
+	peerID     string
+	tempPath   string
+	fullPath   string
+	hash       string
+	size       int64
+	total      int
+	next       int
+	written    int64
+	lastUpdate time.Time
 }
+
+const (
+	defaultLocalFileChunkTransferTimeout = 5 * time.Minute
+	defaultLocalFileChunkCleanupInterval = 1 * time.Minute
+)
 
 func newLocalFileChunkReceiver() *localFileChunkReceiver {
 	return &localFileChunkReceiver{
-		transfers: make(map[string]*localFileChunkTransfer),
+		transfers:       make(map[string]*localFileChunkTransfer),
+		transferTimeout: defaultLocalFileChunkTransferTimeout,
+		now:             time.Now,
 	}
 }
 
@@ -57,6 +68,8 @@ func (r *localFileChunkReceiver) HandleChunk(peerID string, baseDir string, msg 
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.nowLocked()
+	r.cleanupExpiredTransfersLocked(now)
 
 	transfer, exists := r.transfers[key]
 	if msg.ChunkIndex == 0 {
@@ -68,14 +81,16 @@ func (r *localFileChunkReceiver) HandleChunk(peerID string, baseDir string, msg 
 		}
 		tempPath := fmt.Sprintf("%s.chunk.%d.part", fullPath, time.Now().UnixNano())
 		transfer = &localFileChunkTransfer{
-			key:      key,
-			tempPath: tempPath,
-			fullPath: fullPath,
-			hash:     msg.FileHash,
-			size:     msg.FileSize,
-			total:    msg.ChunkTotal,
-			next:     0,
-			written:  0,
+			key:        key,
+			peerID:     peerID,
+			tempPath:   tempPath,
+			fullPath:   fullPath,
+			hash:       msg.FileHash,
+			size:       msg.FileSize,
+			total:      msg.ChunkTotal,
+			next:       0,
+			written:    0,
+			lastUpdate: now,
 		}
 		r.transfers[key] = transfer
 		exists = true
@@ -118,6 +133,7 @@ func (r *localFileChunkReceiver) HandleChunk(peerID string, baseDir string, msg 
 
 	transfer.written += int64(n)
 	transfer.next++
+	transfer.lastUpdate = now
 
 	if transfer.next < transfer.total {
 		return nil
@@ -147,6 +163,78 @@ func (r *localFileChunkReceiver) HandleChunk(peerID string, baseDir string, msg 
 
 	delete(r.transfers, transfer.key)
 	return nil
+}
+
+func (r *localFileChunkReceiver) CleanupPeer(peerID string) int {
+	if r == nil || strings.TrimSpace(peerID) == "" {
+		return 0
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	removed := 0
+	for _, transfer := range r.transfers {
+		if transfer != nil && transfer.peerID == peerID {
+			r.cleanupTransferLocked(transfer)
+			removed++
+		}
+	}
+	return removed
+}
+
+func (r *localFileChunkReceiver) CleanupExpired() int {
+	if r == nil {
+		return 0
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.cleanupExpiredTransfersLocked(r.nowLocked())
+}
+
+func (r *localFileChunkReceiver) CleanupAll() int {
+	if r == nil {
+		return 0
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	removed := 0
+	for _, transfer := range r.transfers {
+		r.cleanupTransferLocked(transfer)
+		removed++
+	}
+	return removed
+}
+
+func (r *localFileChunkReceiver) nowLocked() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *localFileChunkReceiver) cleanupExpiredTransfersLocked(now time.Time) int {
+	if r.transferTimeout <= 0 {
+		return 0
+	}
+
+	removed := 0
+	for _, transfer := range r.transfers {
+		if transfer == nil || transfer.lastUpdate.IsZero() {
+			r.cleanupTransferLocked(transfer)
+			removed++
+			continue
+		}
+		if now.Sub(transfer.lastUpdate) > r.transferTimeout {
+			r.cleanupTransferLocked(transfer)
+			removed++
+		}
+	}
+	return removed
 }
 
 func (r *localFileChunkReceiver) cleanupTransferLocked(transfer *localFileChunkTransfer) {
