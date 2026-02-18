@@ -132,6 +132,20 @@ func TestOpenBadgerWithConfig_Validation(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("expected invalid badger value log file size to fail")
 	}
+	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:                   filepath.Join(t.TempDir(), "tenant-c"),
+		DatabaseID:             "tenant-c",
+		BadgerValueLogFileSize: 512 * 1024,
+	}); err == nil {
+		t.Fatalf("expected too-small badger value log file size to fail")
+	}
+	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
+		Path:                   filepath.Join(t.TempDir(), "tenant-c"),
+		DatabaseID:             "tenant-c",
+		BadgerValueLogFileSize: 2 << 30,
+	}); err == nil {
+		t.Fatalf("expected too-large badger value log file size to fail")
+	}
 
 	if _, err := OpenBadgerWithConfig(BadgerOpenConfig{
 		Path:       filepath.Join(t.TempDir(), "tenant-c"),

@@ -9,6 +9,11 @@ import (
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
 
+const (
+	minBadgerValueLogFileSize int64 = 1 << 20 // 1MB (inclusive)
+	maxBadgerValueLogFileSize int64 = 2 << 30 // 2GB (exclusive)
+)
+
 // BadgerOpenConfig defines a one-shot bootstrap for a Badger-backed DB.
 type BadgerOpenConfig struct {
 	Path                   string
@@ -34,6 +39,16 @@ func OpenBadgerWithConfig(cfg BadgerOpenConfig) (*DB, error) {
 	}
 	if cfg.BadgerValueLogFileSize < 0 {
 		return nil, fmt.Errorf("badger value log file size must be >= 0, got %d", cfg.BadgerValueLogFileSize)
+	}
+	if cfg.BadgerValueLogFileSize > 0 &&
+		(cfg.BadgerValueLogFileSize < minBadgerValueLogFileSize ||
+			cfg.BadgerValueLogFileSize >= maxBadgerValueLogFileSize) {
+		return nil, fmt.Errorf(
+			"badger value log file size must be 0 or in range [%d, %d), got %d",
+			minBadgerValueLogFileSize,
+			maxBadgerValueLogFileSize,
+			cfg.BadgerValueLogFileSize,
+		)
 	}
 
 	if err := os.MkdirAll(path, 0o755); err != nil {

@@ -36,7 +36,16 @@ func run() error {
 	if *vlogFileSizeMB < 0 {
 		return fmt.Errorf("vlog-size-mb must be >= 0")
 	}
-	vlogFileSizeBytes := *vlogFileSizeMB * 1024 * 1024
+
+	const (
+		bytesPerMB       int64 = 1024 * 1024
+		maxVlogFileSizeM int64 = (2 << 30) / bytesPerMB // 2GB (exclusive)
+	)
+	if *vlogFileSizeMB >= maxVlogFileSizeM {
+		return fmt.Errorf("vlog-size-mb must be 0 or in range [1, %d), got %d", maxVlogFileSizeM, *vlogFileSizeMB)
+	}
+	vlogFileSizeBytes := *vlogFileSizeMB * bytesPerMB
+
 	if preferredTenantID != "" {
 		if err := createSimpleTenantDB(*dataRoot, preferredTenantID, vlogFileSizeBytes); err != nil {
 			return err
