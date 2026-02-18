@@ -171,6 +171,57 @@ func TestOnReceiveMergeWithFiles_PersistsLocalFile(t *testing.T) {
 	}
 }
 
+func TestOnReceiveMergeWithFiles_RollbacksMaterializedFilesOnMergeFailure(t *testing.T) {
+	database, cleanup := openDBWithLocalFileSchema(t, "receiver-rollback-node")
+	defer cleanup()
+
+	existingRelPath := "nested/existing.txt"
+	existingFullPath := filepath.Join(database.FileStorageDir, existingRelPath)
+	if err := os.MkdirAll(filepath.Dir(existingFullPath), 0o755); err != nil {
+		t.Fatalf("prepare existing file dir failed: %v", err)
+	}
+	originalContent := []byte("original-content")
+	if err := os.WriteFile(existingFullPath, originalContent, 0o644); err != nil {
+		t.Fatalf("prepare existing file failed: %v", err)
+	}
+
+	newRelPath := "nested/new.txt"
+	newContent := []byte("new-content")
+	overwriteContent := []byte("overwrite-content")
+
+	dsm := NewDataSyncManager(database, "receiver-rollback-node")
+	key, _ := uuid.NewV7()
+	err := dsm.OnReceiveMergeWithFiles("docs", key.String(), []byte("invalid-map-payload"), database.Clock().Now(), []SyncedLocalFile{
+		{
+			Path: existingRelPath,
+			Hash: sha256Hex(overwriteContent),
+			Size: int64(len(overwriteContent)),
+			Data: overwriteContent,
+		},
+		{
+			Path: newRelPath,
+			Hash: sha256Hex(newContent),
+			Size: int64(len(newContent)),
+			Data: newContent,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected merge failure with invalid raw payload")
+	}
+
+	gotExisting, err := os.ReadFile(existingFullPath)
+	if err != nil {
+		t.Fatalf("read existing file after rollback failed: %v", err)
+	}
+	if !bytes.Equal(gotExisting, originalContent) {
+		t.Fatalf("existing file should be restored on rollback: got=%q want=%q", string(gotExisting), string(originalContent))
+	}
+
+	if _, err := os.Stat(filepath.Join(database.FileStorageDir, newRelPath)); !os.IsNotExist(err) {
+		t.Fatalf("new file should be removed on rollback, stat err=%v", err)
+	}
+}
+
 func TestExportTableRawData_IncludesLocalFilePayload(t *testing.T) {
 	database, cleanup := openDBWithLocalFileSchema(t, "export-node")
 	defer cleanup()

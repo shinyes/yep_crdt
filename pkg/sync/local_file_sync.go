@@ -95,31 +95,40 @@ func (dsm *DataSyncManager) buildLocalFilePayloadsFromRaw(rawData []byte) ([]Syn
 	return files, nil
 }
 
-func (dsm *DataSyncManager) materializeSyncedLocalFiles(files []SyncedLocalFile) error {
+type materializedSyncedLocalFile struct {
+	DestPath   string
+	BackupPath string
+}
+
+func (dsm *DataSyncManager) materializeSyncedLocalFiles(files []SyncedLocalFile) ([]materializedSyncedLocalFile, error) {
 	if len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	baseDir := strings.TrimSpace(dsm.db.FileStorageDir)
 	if baseDir == "" {
-		return fmt.Errorf("FileStorageDir not configured, cannot persist synced LocalFileCRDT files")
+		return nil, fmt.Errorf("FileStorageDir not configured, cannot persist synced LocalFileCRDT files")
 	}
 
+	materialized := make([]materializedSyncedLocalFile, 0, len(files))
 	for _, f := range files {
 		if strings.TrimSpace(f.Path) == "" {
-			return fmt.Errorf("synced local file path is empty")
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("synced local file path is empty")
 		}
 
 		fullPath, err := resolveLocalFilePath(baseDir, f.Path)
 		if err != nil {
-			return fmt.Errorf("resolve synced file path %q failed: %w", f.Path, err)
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("resolve synced file path %q failed: %w", f.Path, err)
 		}
 
 		// Chunked payloads carry metadata only. File bytes should already be streamed via
 		// MsgTypeLocalFileChunk and available in storage by the time row merge is applied.
 		if f.Chunked && len(f.Data) == 0 {
 			if err := verifyExistingSyncedFile(fullPath, f.Size, f.Hash); err != nil {
-				return fmt.Errorf("chunked file %q missing or invalid: %w", f.Path, err)
+				rollbackMaterializedSyncedLocalFiles(materialized)
+				return nil, fmt.Errorf("chunked file %q missing or invalid: %w", f.Path, err)
 			}
 			continue
 		}
@@ -130,29 +139,78 @@ func (dsm *DataSyncManager) materializeSyncedLocalFiles(files []SyncedLocalFile)
 		}
 
 		if f.Size >= 0 && int64(len(data)) != f.Size {
-			return fmt.Errorf("synced local file size mismatch for %q: metadata=%d actual=%d", f.Path, f.Size, len(data))
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("synced local file size mismatch for %q: metadata=%d actual=%d", f.Path, f.Size, len(data))
 		}
 		if f.Hash != "" {
 			actualHash := hashSHA256(data)
 			if !strings.EqualFold(actualHash, f.Hash) {
-				return fmt.Errorf("synced local file hash mismatch for %q: metadata=%s actual=%s", f.Path, f.Hash, actualHash)
+				rollbackMaterializedSyncedLocalFiles(materialized)
+				return nil, fmt.Errorf("synced local file hash mismatch for %q: metadata=%s actual=%s", f.Path, f.Hash, actualHash)
 			}
 		}
 
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-			return fmt.Errorf("create directory for %q failed: %w", f.Path, err)
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("create directory for %q failed: %w", f.Path, err)
 		}
 
 		tmpPath := fmt.Sprintf("%s.sync.%d.tmp", fullPath, time.Now().UnixNano())
 		if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-			return fmt.Errorf("write temp synced file %q failed: %w", f.Path, err)
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("write temp synced file %q failed: %w", f.Path, err)
 		}
-		if err := renameFileReplace(tmpPath, fullPath); err != nil {
-			return fmt.Errorf("rename synced file %q failed: %w", f.Path, err)
+
+		backupPath := ""
+		if _, err := os.Stat(fullPath); err == nil {
+			backupPath = fmt.Sprintf("%s.sync.%d.bak", fullPath, time.Now().UnixNano())
+			if err := os.Rename(fullPath, backupPath); err != nil {
+				_ = os.Remove(tmpPath)
+				rollbackMaterializedSyncedLocalFiles(materialized)
+				return nil, fmt.Errorf("backup synced file %q failed: %w", f.Path, err)
+			}
+		} else if !os.IsNotExist(err) {
+			_ = os.Remove(tmpPath)
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("stat synced file %q failed: %w", f.Path, err)
 		}
+
+		if err := os.Rename(tmpPath, fullPath); err != nil {
+			if backupPath != "" {
+				_ = os.Rename(backupPath, fullPath)
+			}
+			_ = os.Remove(tmpPath)
+			rollbackMaterializedSyncedLocalFiles(materialized)
+			return nil, fmt.Errorf("rename synced file %q failed: %w", f.Path, err)
+		}
+
+		materialized = append(materialized, materializedSyncedLocalFile{
+			DestPath:   fullPath,
+			BackupPath: backupPath,
+		})
 	}
 
-	return nil
+	return materialized, nil
+}
+
+func rollbackMaterializedSyncedLocalFiles(files []materializedSyncedLocalFile) {
+	for i := len(files) - 1; i >= 0; i-- {
+		f := files[i]
+		if f.DestPath != "" {
+			_ = os.Remove(f.DestPath)
+		}
+		if f.BackupPath != "" {
+			_ = os.Rename(f.BackupPath, f.DestPath)
+		}
+	}
+}
+
+func cleanupMaterializedSyncedLocalFileBackups(files []materializedSyncedLocalFile) {
+	for _, f := range files {
+		if f.BackupPath != "" {
+			_ = os.Remove(f.BackupPath)
+		}
+	}
 }
 
 func (dsm *DataSyncManager) sendChunkedLocalFilesToPeer(targetNodeID string, tableName string, key string, requestID string, files []SyncedLocalFile) error {

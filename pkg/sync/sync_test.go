@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
@@ -385,7 +386,8 @@ func TestNodeManager_GCFloorPeerBehind_BlocksIncrementalOnly(t *testing.T) {
 	}
 }
 
-// TestNodeManager_DataReject verifies incoming timestamp does not block merge path.
+// TestNodeManager_DataReject verifies rejected payloads do not move local clock,
+// while successful merge still merges incoming clock.
 func TestNodeManager_DataReject(t *testing.T) {
 	s, err := store.NewBadgerStore(t.TempDir() + "/db")
 	if err != nil {
@@ -419,8 +421,8 @@ func TestNodeManager_DataReject(t *testing.T) {
 	}
 
 	updatedClock := database.Clock().Now()
-	if updatedClock < newDataTimestamp {
-		t.Fatalf("expected local clock to advance, before=%d after=%d target=%d", currentClockBeforeSend, updatedClock, newDataTimestamp)
+	if updatedClock >= newDataTimestamp {
+		t.Fatalf("local clock should not advance for rejected payload, before=%d after=%d target=%d", currentClockBeforeSend, updatedClock, newDataTimestamp)
 	}
 
 	key3, _ := uuid.NewV7()
@@ -428,6 +430,32 @@ func TestNodeManager_DataReject(t *testing.T) {
 	err = nm.dataSync.OnReceiveMerge("test-table", key3.String(), testRawData, nowStaleTimestamp)
 	if err == nil || !strings.Contains(err.Error(), "test-table") {
 		t.Fatalf("expected table-not-exist error, got: %v", err)
+	}
+
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "test-table",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	rowMap := crdt.NewMapCRDT()
+	rawData, err := rowMap.Bytes()
+	if err != nil {
+		t.Fatalf("encode raw row failed: %v", err)
+	}
+
+	key4, _ := uuid.NewV7()
+	successTimestamp := newDataTimestamp + 1_000_000
+	if err := nm.dataSync.OnReceiveMerge("test-table", key4.String(), rawData, successTimestamp); err != nil {
+		t.Fatalf("expected merge success, got: %v", err)
+	}
+
+	clockAfterSuccess := database.Clock().Now()
+	if clockAfterSuccess < successTimestamp {
+		t.Fatalf("expected local clock to merge successful incoming timestamp: got=%d want_at_least=%d", clockAfterSuccess, successTimestamp)
 	}
 }
 

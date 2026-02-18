@@ -36,23 +36,25 @@ func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, ra
 		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
 
-	// CRDT merge must remain convergent even when transport timestamps are older.
-	// We only use incoming timestamp to advance local HLC when possible.
-	if timestamp > 0 {
-		dsm.db.Clock().Update(timestamp)
-	}
-
 	table := dsm.db.Table(tableName)
 	if table == nil {
 		return fmt.Errorf("table does not exist: %s", tableName)
 	}
 
-	if err := dsm.materializeSyncedLocalFiles(localFiles); err != nil {
+	materializedFiles, err := dsm.materializeSyncedLocalFiles(localFiles)
+	if err != nil {
 		return fmt.Errorf("materialize synced local files failed: %w", err)
 	}
 
 	if err := table.MergeRawRow(key, rawData); err != nil {
+		rollbackMaterializedSyncedLocalFiles(materializedFiles)
 		return fmt.Errorf("merge row failed: %w", err)
+	}
+	cleanupMaterializedSyncedLocalFileBackups(materializedFiles)
+
+	// Merge succeeded; now it is safe to merge transport timestamp into local HLC.
+	if timestamp > 0 {
+		dsm.db.Clock().Update(timestamp)
 	}
 
 	if len(columns) == 0 {

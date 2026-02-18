@@ -154,8 +154,8 @@ func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
 		// 尝试加载本地行
 		existingBytes, err := txn.Get(keyBytes)
 		if err == store.ErrKeyNotFound {
-			// 本地不存在，直接写入远程数据
-			return txn.Set(keyBytes, remoteData, 0)
+			// 本地不存在，按标准保存路径写入并构建索引。
+			return t.saveRow(txn, key, remoteMap, nil)
 		}
 		if err != nil {
 			return fmt.Errorf("读取本地行失败: %w", err)
@@ -174,25 +174,10 @@ func (t *Table) MergeRawRow(key uuid.UUID, remoteData []byte) error {
 			return fmt.Errorf("CRDT Merge 失败: %w", err)
 		}
 
-		// 序列化合并后的结果
-		mergedBytes, err := localMap.Bytes()
-		if err != nil {
-			return fmt.Errorf("序列化合并结果失败: %w", err)
+		// 复用标准保存路径，保证索引与编码行为一致。
+		if err := t.saveRow(txn, key, localMap, oldBody); err != nil {
+			return fmt.Errorf("save merged row failed: %w", err)
 		}
-
-		// 更新索引
-		oldIndexBody, err := t.decodeRowForIndex(oldBody)
-		if err != nil {
-			return fmt.Errorf("decode old row for index failed: %w", err)
-		}
-		newIndexBody, err := t.decodeRowForIndex(localMap.Value().(map[string]any))
-		if err != nil {
-			return fmt.Errorf("decode new row for index failed: %w", err)
-		}
-		if err := t.indexManager.UpdateIndexes(txn, t.schema.ID, t.schema.Indexes, key[:], oldIndexBody, newIndexBody); err != nil {
-			return fmt.Errorf("更新索引失败: %w", err)
-		}
-
-		return txn.Set(keyBytes, mergedBytes, 0)
+		return nil
 	})
 }
