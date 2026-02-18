@@ -157,6 +157,22 @@ func TestMutationOperations_RejectNonV7UUID(t *testing.T) {
 	if err := table.RemoveAt(key, "text", 0); err == nil {
 		t.Fatal("remove at should reject non-v7 uuid")
 	}
+
+	v7Key, _ := uuid.NewV7()
+	invalidVariantKey := v7Key
+	invalidVariantKey[8] = (invalidVariantKey[8] & 0x1F) | 0xE0
+	if invalidVariantKey.Version() != 7 {
+		t.Fatalf("expected UUIDv7 version after variant mutation, got=%d", invalidVariantKey.Version())
+	}
+	if invalidVariantKey.Variant() == uuid.RFC4122 {
+		t.Fatal("expected non-RFC4122 variant for mutated UUID")
+	}
+	if err := table.Set(invalidVariantKey, map[string]any{
+		"counter": int64(1),
+		"text":    "x",
+	}); err == nil {
+		t.Fatal("set should reject UUIDv7 with invalid variant")
+	}
 }
 
 func openDBForTxConsistency(t *testing.T) (*DB, string, func()) {

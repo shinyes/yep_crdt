@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/index"
@@ -72,7 +74,10 @@ func (q *Query) scanIndexCRDT(txn store.Tx, idxID uint32, prefixValues []any, ra
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(basePrefix); iter.Next() {
-		keyRaw, pkBytes, _ := iter.Item()
+		keyRaw, pkBytes, err := iter.Item()
+		if err != nil {
+			return nil, fmt.Errorf("scan index iterator item failed: %w", err)
+		}
 
 		if rangeCond != nil && rangePos >= 0 && !q.disableIndexRangePreFilter {
 			match, shouldStop := q.matchIndexRangeFromKey(keyRaw, rangePos, rangeCond, rangeType)
@@ -242,7 +247,10 @@ func (q *Query) scanTableCRDT(txn store.Tx) ([]crdt.ReadOnlyMap, error) {
 	count := 0
 	skipped := 0
 	for ; iter.ValidForPrefix(prefix); iter.Next() {
-		_, val, _ := iter.Item()
+		_, val, err := iter.Item()
+		if err != nil {
+			return nil, fmt.Errorf("scan table iterator item failed: %w", err)
+		}
 
 		m, err := crdt.FromBytesMap(val)
 		if err != nil {

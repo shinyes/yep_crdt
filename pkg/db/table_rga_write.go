@@ -94,45 +94,8 @@ func (t *Table) InsertAt(key uuid.UUID, col string, index int, val any) error {
 			return fmt.Errorf("invalid index: %d", index)
 		}
 
-		currentIndex := 0
-		curr := rga.Vertices[rga.Head].Next
-
-		// Traverse to find element at index-1 (if index=0, anchor is Head)
-		// We need to skip deleted nodes.
-		for curr != "" && currentIndex < index {
-			v := rga.Vertices[curr]
-			if !v.Deleted {
-				currentIndex++
-			}
-			// Maintain anchorID as the last visible node or Head
-			// Wait, simple logic:
-			// If index is 0, anchor is Head.
-			// If index is 1, anchor is 0-th element.
-
-			// Correct traversal:
-			// Scan until we pass `index` visible elements? No.
-			// We need the ID of the element *before* the insertion point.
-
-			if currentIndex == index { // Found our spot? No, index-1
-				// If index=0, loop doesn't run, anchorID=Head. Correct.
-				// If index=1, we need 0-th element ID.
-			}
-
-			if !v.Deleted {
-				if currentIndex == index {
-					// We successfully passed index-1 visible items.
-					// But we are at `index`-th item.
-					// We need the previous one.
-					// Use a prev pointer?
-				}
-			}
-			curr = v.Next
-		}
-
-		// Let's retry traversal simpler
 		// Find the ID of the (index-1)-th visible element.
 		// If index=0, anchor=Head.
-
 		targetAnchor := rga.Head
 		if index > 0 {
 			steps := 0

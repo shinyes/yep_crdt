@@ -403,5 +403,8 @@ func validateUUIDv7(key uuid.UUID) error {
 	if key.Version() != 7 {
 		return fmt.Errorf("invalid key version: must be UUIDv7")
 	}
+	if key.Variant() != uuid.RFC4122 {
+		return fmt.Errorf("invalid key variant: must be RFC4122 UUID")
+	}
 	return nil
 }
