@@ -41,7 +41,7 @@ func TestTenantNetworkHandleReceive_RequestIDWithoutWaiterFallsThrough(t *testin
 	}
 }
 
-func TestTenantNetworkHandleReceive_ResponseRoutesToWaiter(t *testing.T) {
+func TestTenantNetworkHandleReceive_FetchResponseWithoutFetchWaiterChannelDropped(t *testing.T) {
 	tn := &TenantNetwork{
 		tenantID:         "tenant-1",
 		peerHandlers:     make(map[string]PeerMessageHandler),
@@ -71,11 +71,8 @@ func TestTenantNetworkHandleReceive_ResponseRoutesToWaiter(t *testing.T) {
 
 	select {
 	case got := <-responseCh:
-		if got.Key != "k1" {
-			t.Fatalf("unexpected response key: %s", got.Key)
-		}
+		t.Fatalf("fetch raw response should not be routed into normal waiter channel: %+v", got)
 	default:
-		t.Fatal("response should be routed into waiter channel")
 	}
 
 	if broadcastCalled {
@@ -234,6 +231,43 @@ func TestCollectFetchRawResponsesLite_PeerDisconnected(t *testing.T) {
 	}
 	if !errors.Is(err, ErrPeerDisconnectedBeforeResponse) {
 		t.Fatalf("expected peer-disconnected classification, got: %v", err)
+	}
+}
+
+func TestCollectFetchRawResponsesLite_ChannelClosedWithoutRows(t *testing.T) {
+	ch := make(chan fetchRawResponseLite)
+	close(ch)
+
+	rows, err := collectFetchRawResponsesLite(ch, nil, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected channel closed error")
+	}
+	if !errors.Is(err, ErrResponseChannelClosed) {
+		t.Fatalf("expected channel-closed classification, got: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows, got %d", len(rows))
+	}
+}
+
+func TestCollectFetchRawResponsesLite_ChannelClosedWithPartialRowsReturnsError(t *testing.T) {
+	ch := make(chan fetchRawResponseLite, 1)
+	ch <- fetchRawResponseLite{
+		Type:    MsgTypeFetchRawResponse,
+		Key:     "k1",
+		RawData: []byte("v1"),
+	}
+	close(ch)
+
+	rows, err := collectFetchRawResponsesLite(ch, nil, time.Second, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected channel closed error with partial rows")
+	}
+	if !errors.Is(err, ErrResponseChannelClosed) {
+		t.Fatalf("expected channel-closed classification, got: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected partial rows retained, got %d", len(rows))
 	}
 }
 
@@ -417,8 +451,8 @@ func TestTenantNetworkStats_Snapshot(t *testing.T) {
 		responseChannels: make(map[string]pendingResponse),
 	}
 
-	ch := make(chan NetworkMessage, 1)
-	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: ch}
+	ch := make(chan fetchRawResponseLite, 1)
+	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", fetchCh: ch}
 
 	payload, err := msgpack.Marshal(&NetworkMessage{
 		Type:      MsgTypeFetchRawResponse,

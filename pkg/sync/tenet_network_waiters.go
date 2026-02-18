@@ -79,24 +79,21 @@ func (tn *TenantNetwork) routeResponseToWaiter(waiter pendingResponse, msg Netwo
 }
 
 func (tn *TenantNetwork) routeFetchRawResponseToWaiter(waiter pendingResponse, msg fetchRawResponseLite, peerID string) {
-	if waiter.fetchCh != nil {
-		select {
-		case waiter.fetchCh <- msg:
-			atomic.AddUint64(&tn.stats.routedResponses, 1)
-		default:
-			atomic.AddUint64(&tn.stats.droppedResponses, 1)
-			stdlog.Printf("[TenantNetwork:%s] fetch response channel is full: request_id=%s peer=%s",
-				tn.tenantID, msg.RequestID, peerID)
-			tn.signalWaiterOverflow(waiter)
-		}
+	if waiter.fetchCh == nil {
+		atomic.AddUint64(&tn.stats.droppedResponses, 1)
+		stdlog.Printf("[TenantNetwork:%s] fetch response waiter channel missing: request_id=%s peer=%s",
+			tn.tenantID, msg.RequestID, peerID)
+		tn.signalWaiterOverflow(waiter)
 		return
 	}
 
-	tn.routeResponseToWaiter(waiter, NetworkMessage{
-		Type:       msg.Type,
-		RequestID:  msg.RequestID,
-		Key:        msg.Key,
-		RawData:    msg.RawData,
-		LocalFiles: msg.LocalFiles,
-	}, peerID)
+	select {
+	case waiter.fetchCh <- msg:
+		atomic.AddUint64(&tn.stats.routedResponses, 1)
+	default:
+		atomic.AddUint64(&tn.stats.droppedResponses, 1)
+		stdlog.Printf("[TenantNetwork:%s] fetch response channel is full: request_id=%s peer=%s",
+			tn.tenantID, msg.RequestID, peerID)
+		tn.signalWaiterOverflow(waiter)
+	}
 }

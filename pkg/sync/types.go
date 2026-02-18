@@ -105,8 +105,6 @@ type RawRowData struct {
 // Message type constants.
 const (
 	MsgTypeHeartbeat        = "heartbeat"
-	MsgTypeFetchRequest     = "fetch_request"
-	MsgTypeFetchResponse    = "fetch_response"
 	MsgTypeRawData          = "raw_data"
 	MsgTypeRawDelta         = "raw_delta"
 	MsgTypeLocalFileChunk   = "local_file_chunk"
@@ -143,7 +141,6 @@ type NetworkMessage struct {
 	Table      string            `json:"table,omitempty"`
 	Key        string            `json:"key,omitempty"`
 	Columns    []string          `json:"columns,omitempty"`
-	Data       interface{}       `json:"data,omitempty"`
 	RawData    []byte            `json:"raw_data,omitempty"`
 	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
 	FilePath   string            `json:"file_path,omitempty"`

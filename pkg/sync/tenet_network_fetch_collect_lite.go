@@ -51,10 +51,7 @@ func collectFetchRawResponsesLite(responseCh <-chan fetchRawResponseLite, overfl
 		select {
 		case msg, ok := <-responseCh:
 			if !ok {
-				if len(rows) > 0 {
-					return rows, nil
-				}
-				return nil, fmt.Errorf("%w", ErrResponseChannelClosed)
+				return rows, fmt.Errorf("%w: received %d rows", ErrResponseChannelClosed, len(rows))
 			}
 			if msg.Type == internalMsgTypePeerDisconnected {
 				return nil, fmt.Errorf("%w", ErrPeerDisconnectedBeforeResponse)

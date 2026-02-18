@@ -1,9 +1,6 @@
 package crdt
 
-import (
-	"fmt"
-	"sync"
-)
+import "sync"
 
 // MapCRDT 实现列 -> CRDT 的映射。
 // 这是 "行" 容器。
@@ -121,13 +118,9 @@ func (m *MapCRDT) Value() any {
 var TypeRegistry = struct {
 	ORSetSerializers map[string]func([]byte) (any, error)
 	RGASerializers   map[string]func([]byte) (any, error)
-	ORSetTypeHints   map[string]string
-	RGATypeHints     map[string]string
 }{
 	ORSetSerializers: make(map[string]func([]byte) (any, error)),
 	RGASerializers:   make(map[string]func([]byte) (any, error)),
-	ORSetTypeHints:   map[string]string{},
-	RGATypeHints:     map[string]string{},
 }
 
 // RegisterORSet 注册 ORSet 的特定类型反序列化函数
@@ -135,7 +128,6 @@ func RegisterORSet[T comparable](typeHint string, serializer func([]byte) (*ORSe
 	TypeRegistry.ORSetSerializers[typeHint] = func(data []byte) (any, error) {
 		return serializer(data)
 	}
-	TypeRegistry.ORSetTypeHints[typeHint] = fmt.Sprintf("%T", *new(T))
 }
 
 // RegisterRGA 注册 RGA 的特定类型反序列化函数
@@ -143,5 +135,4 @@ func RegisterRGA[T any](typeHint string, serializer func([]byte) (*RGA[T], error
 	TypeRegistry.RGASerializers[typeHint] = func(data []byte) (any, error) {
 		return serializer(data)
 	}
-	TypeRegistry.RGATypeHints[typeHint] = fmt.Sprintf("%T", *new(T))
 }
