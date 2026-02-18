@@ -18,12 +18,13 @@ func (nm *NodeManager) OnReceiveDelta(table string, key string, columns []string
 
 // BroadcastHeartbeat sends heartbeat to all peers.
 func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
-	if nm.network == nil {
+	network := nm.getNetwork()
+	if network == nil {
 		return ErrNoNetwork
 	}
 	peers := nm.GetOnlineNodes()
 	if len(peers) == 0 {
-		return nm.network.BroadcastHeartbeat(clock)
+		return network.BroadcastHeartbeat(clock)
 	}
 
 	localFloor := nm.LocalGCFloor()
@@ -38,7 +39,7 @@ func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
 			GCFloor:   localFloor,
 			Timestamp: clock,
 		}
-		if err := nm.network.SendMessage(peerID, msg); err != nil {
+		if err := network.SendMessage(peerID, msg); err != nil {
 			sendErrors = append(sendErrors, fmt.Errorf("peer=%s err=%w", shortPeerID(peerID), err))
 		}
 	}
@@ -50,18 +51,20 @@ func (nm *NodeManager) BroadcastHeartbeat(clock int64) error {
 
 // BroadcastRawData sends one full-row CRDT payload to all peers.
 func (nm *NodeManager) BroadcastRawData(table string, key string, rawData []byte, timestamp int64) error {
-	if nm.network == nil {
+	network := nm.getNetwork()
+	if network == nil {
 		return ErrNoNetwork
 	}
-	return nm.network.BroadcastRawData(table, key, rawData, timestamp)
+	return network.BroadcastRawData(table, key, rawData, timestamp)
 }
 
 // FetchRawTableData fetches all rows of a table from one remote peer.
 func (nm *NodeManager) FetchRawTableData(sourceNodeID, tableName string) ([]RawRowData, error) {
-	if nm.network == nil {
+	network := nm.getNetwork()
+	if network == nil {
 		return nil, ErrNoNetwork
 	}
-	return nm.network.FetchRawTableData(sourceNodeID, tableName)
+	return network.FetchRawTableData(sourceNodeID, tableName)
 }
 
 // FullSync runs full sync from one source node.

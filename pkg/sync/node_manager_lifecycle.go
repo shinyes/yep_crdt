@@ -20,7 +20,7 @@ func (nm *NodeManager) Stop() {
 
 // RegisterNetwork binds transport implementation.
 func (nm *NodeManager) RegisterNetwork(network NetworkInterface) {
-	nm.network = network
+	nm.setNetwork(network)
 	nm.dataSync.SetNetwork(network)
 	log.Println("network interface registered")
 }

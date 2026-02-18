@@ -25,6 +25,7 @@ type NodeFromDataRootOptions struct {
 // LocalNode represents a started local multi-tenant node.
 type LocalNode struct {
 	mu        sync.RWMutex
+	opWG      sync.WaitGroup
 	engine    *MultiEngine
 	databases map[string]*db.DB
 	tenantIDs []string

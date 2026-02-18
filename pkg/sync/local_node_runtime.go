@@ -31,6 +31,9 @@ func (n *LocalNode) Close() error {
 	}
 	n.mu.Unlock()
 
+	// Wait running backup operations to release DB handles before closing.
+	n.opWG.Wait()
+
 	if engine != nil {
 		engine.Stop()
 	}
@@ -57,6 +60,11 @@ func (n *LocalNode) Engine() *MultiEngine {
 
 // ManualGCTenant triggers negotiated manual GC for one tenant.
 func (n *LocalNode) ManualGCTenant(tenantID string, timeout time.Duration) (*ManualGCResult, error) {
+	normalizedTenantID, err := normalizeTenantID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+
 	n.mu.RLock()
 	engine := n.engine
 	closed := n.closed
@@ -69,7 +77,7 @@ func (n *LocalNode) ManualGCTenant(tenantID string, timeout time.Duration) (*Man
 		return nil, fmt.Errorf("sync engine is not started")
 	}
 
-	return engine.ManualGC(tenantID, timeout)
+	return engine.ManualGC(normalizedTenantID, timeout)
 }
 
 // BackupTenant exports one tenant Badger database into a local backup file.
@@ -81,25 +89,27 @@ func (n *LocalNode) BackupTenant(tenantID string, backupPath string) (uint64, er
 // BackupTenantSince exports one tenant Badger database into a local backup file.
 // since=0 means full backup.
 func (n *LocalNode) BackupTenantSince(tenantID string, backupPath string, since uint64) (uint64, error) {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		return 0, fmt.Errorf("tenant id cannot be empty")
+	normalizedTenantID, err := normalizeTenantID(tenantID)
+	if err != nil {
+		return 0, err
 	}
 	backupPath = strings.TrimSpace(backupPath)
 	if backupPath == "" {
 		return 0, fmt.Errorf("backup path cannot be empty")
 	}
 
+	done, err := n.beginBackupOperation()
+	if err != nil {
+		return 0, err
+	}
+	defer done()
+
 	n.mu.RLock()
-	closed := n.closed
-	database, exists := n.databases[tenantID]
+	database, exists := n.databases[normalizedTenantID]
 	n.mu.RUnlock()
 
-	if closed {
-		return 0, fmt.Errorf("local node is closed")
-	}
 	if !exists || database == nil {
-		return 0, fmt.Errorf("tenant not started: %s", tenantID)
+		return 0, fmt.Errorf("tenant not started: %s", normalizedTenantID)
 	}
 
 	return database.BackupToLocalSince(backupPath, since)
@@ -124,8 +134,13 @@ func (n *LocalNode) BackupAllTenants(archivePath string) (map[string]uint64, err
 		return nil, fmt.Errorf("archive path cannot be empty")
 	}
 
+	done, err := n.beginBackupOperation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
 	n.mu.RLock()
-	closed := n.closed
 	tenantDatabases := make(map[string]*db.DB, len(n.databases))
 	for tenantID, database := range n.databases {
 		if database != nil {
@@ -133,10 +148,6 @@ func (n *LocalNode) BackupAllTenants(archivePath string) (map[string]uint64, err
 		}
 	}
 	n.mu.RUnlock()
-
-	if closed {
-		return nil, fmt.Errorf("local node is closed")
-	}
 	if len(tenantDatabases) == 0 {
 		return nil, fmt.Errorf("no tenant started")
 	}
@@ -231,8 +242,7 @@ func (n *LocalNode) BackupAllTenants(archivePath string) (map[string]uint64, err
 		return nil, err
 	}
 
-	_ = os.Remove(archivePath)
-	if err := os.Rename(tmpArchivePath, archivePath); err != nil {
+	if err := replaceFileWithBackup(archivePath, tmpArchivePath); err != nil {
 		return nil, err
 	}
 	cleanupArchive = false
@@ -255,13 +265,39 @@ func copyFileToZip(zipWriter *zip.Writer, archiveEntry string, srcPath string) e
 	return err
 }
 
+func replaceFileWithBackup(destPath string, tmpPath string) error {
+	backupPath := destPath + ".old"
+	hasOriginal := false
+
+	if _, err := os.Stat(destPath); err == nil {
+		_ = os.Remove(backupPath)
+		if err := os.Rename(destPath, backupPath); err != nil {
+			return err
+		}
+		hasOriginal = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if hasOriginal {
+			_ = os.Rename(backupPath, destPath)
+		}
+		return err
+	}
+	if hasOriginal {
+		_ = os.Remove(backupPath)
+	}
+	return nil
+}
+
 // RestoreTenant restores one tenant backup into local data root.
 // Restored data path is "<dataRoot>/<tenantID>".
 // It only restores Badger KV data and does not restore FileStorageDir files.
 func (n *LocalNode) RestoreTenant(opts TenantRestoreOptions) error {
-	tenantID := strings.TrimSpace(opts.TenantID)
-	if tenantID == "" {
-		return fmt.Errorf("tenant id cannot be empty")
+	tenantID, err := normalizeTenantID(opts.TenantID)
+	if err != nil {
+		return err
 	}
 	backupPath := strings.TrimSpace(opts.BackupPath)
 	if backupPath == "" {
@@ -307,6 +343,16 @@ func (n *LocalNode) RestoreTenant(opts TenantRestoreOptions) error {
 		return err
 	}
 	return restoredDB.Close()
+}
+
+func (n *LocalNode) beginBackupOperation() (func(), error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return nil, fmt.Errorf("local node is closed")
+	}
+	n.opWG.Add(1)
+	return n.opWG.Done, nil
 }
 
 // TenantDatabase returns one opened tenant database and whether it exists.

@@ -10,6 +10,7 @@ import (
 // NodeManager coordinates heartbeat, clock, and data sync for one node.
 type NodeManager struct {
 	mu              sync.RWMutex
+	networkMu       sync.RWMutex
 	nodes           map[string]*NodeInfo
 	offlineSince    map[string]time.Time
 	manualGCPending map[string]int64 // coordinator peer ID -> safe timestamp

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
@@ -268,5 +269,94 @@ func TestLocalNode_BackupAllTenants(t *testing.T) {
 		if got, want := row["title"], tenantTitles[tenant.TenantID]; got != want {
 			t.Fatalf("restored title mismatch for %s: got=%v, want=%s", tenant.TenantID, got, want)
 		}
+	}
+}
+
+func TestLocalNode_BackupTenantRejectsInvalidTenantID(t *testing.T) {
+	node := &LocalNode{
+		databases: map[string]*db.DB{},
+	}
+
+	_, err := node.BackupTenant("../escape", filepath.Join(t.TempDir(), "x.badgerbak"))
+	if err == nil {
+		t.Fatal("expected invalid tenant id error")
+	}
+	if !strings.Contains(err.Error(), "tenant id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLocalNode_RestoreTenantRejectsInvalidTenantID(t *testing.T) {
+	node := &LocalNode{
+		dataRoot: t.TempDir(),
+	}
+
+	err := node.RestoreTenant(TenantRestoreOptions{
+		TenantID:   "../escape",
+		BackupPath: filepath.Join(t.TempDir(), "x.badgerbak"),
+	})
+	if err == nil {
+		t.Fatal("expected invalid tenant id error")
+	}
+	if !strings.Contains(err.Error(), "tenant id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLocalNodeClose_WaitsRunningBackupOperation(t *testing.T) {
+	node := &LocalNode{}
+
+	done, err := node.beginBackupOperation()
+	if err != nil {
+		t.Fatalf("begin backup operation failed: %v", err)
+	}
+
+	closedCh := make(chan struct{})
+	go func() {
+		_ = node.Close()
+		close(closedCh)
+	}()
+
+	select {
+	case <-closedCh:
+		t.Fatal("close should wait for backup operation to complete")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	done()
+
+	select {
+	case <-closedCh:
+	case <-time.After(time.Second):
+		t.Fatal("close should finish after backup operation done")
+	}
+}
+
+func TestReplaceFileWithBackup_ArchiveOverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "all.zip")
+	tmpPath := filepath.Join(dir, "all.zip.tmp")
+
+	if err := os.WriteFile(destPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old file failed: %v", err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write tmp file failed: %v", err)
+	}
+
+	if err := replaceFileWithBackup(destPath, tmpPath); err != nil {
+		t.Fatalf("replace archive failed: %v", err)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("read replaced archive failed: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("unexpected replaced archive content: got=%q", string(got))
+	}
+
+	if _, err := os.Stat(destPath + ".old"); !os.IsNotExist(err) {
+		t.Fatalf("expected old archive cleanup, got stat err=%v", err)
 	}
 }

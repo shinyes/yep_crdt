@@ -24,7 +24,8 @@ func NewVersionSync(database *db.DB, nodeMgr *NodeManager) *VersionSync {
 
 // OnPeerConnected builds and sends local digest to a peer.
 func (vs *VersionSync) OnPeerConnected(peerID string) {
-	if vs.nodeMgr.network == nil {
+	network := vs.nodeMgr.getNetwork()
+	if network == nil {
 		return
 	}
 
@@ -47,7 +48,7 @@ func (vs *VersionSync) OnPeerConnected(peerID string) {
 		Timestamp: vs.db.Clock().Now(),
 	}
 
-	if err := vs.nodeMgr.network.SendMessage(peerID, msg); err != nil {
+	if err := network.SendMessage(peerID, msg); err != nil {
 		log.Printf("[VersionSync] send digest failed: %v", err)
 		return
 	}
@@ -176,8 +177,14 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 			if vs.nodeMgr.dataSync != nil {
 				err = vs.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, row.key)
 			} else {
+				network := vs.nodeMgr.getNetwork()
+				if network == nil {
+					log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
+						tableName, shortPeerID(row.key.String()), ErrNoNetwork)
+					continue
+				}
 				timestamp := vs.db.Clock().Now()
-				err = vs.nodeMgr.network.SendRawData(peerID, tableName, row.key.String(), row.rawData, timestamp)
+				err = network.SendRawData(peerID, tableName, row.key.String(), row.rawData, timestamp)
 			}
 
 			if err != nil {
@@ -194,7 +201,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 
 // CompareAndSync triggers a digest exchange with one peer.
 func (vs *VersionSync) CompareAndSync(peerID string) error {
-	if vs.nodeMgr.network == nil {
+	if vs.nodeMgr.getNetwork() == nil {
 		return ErrNoNetwork
 	}
 

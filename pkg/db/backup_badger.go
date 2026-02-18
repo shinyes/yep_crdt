@@ -71,13 +71,38 @@ func (db *DB) BackupToLocalSince(path string, since uint64) (uint64, error) {
 		return 0, err
 	}
 
-	_ = os.Remove(backupPath)
-	if err := os.Rename(tmpPath, backupPath); err != nil {
+	if err := replaceFileWithBackup(backupPath, tmpPath); err != nil {
 		return 0, err
 	}
 	cleanupTmp = false
 
 	return sinceOut, nil
+}
+
+func replaceFileWithBackup(destPath string, tmpPath string) error {
+	backupPath := destPath + ".old"
+	hasOriginal := false
+
+	if _, err := os.Stat(destPath); err == nil {
+		_ = os.Remove(backupPath)
+		if err := os.Rename(destPath, backupPath); err != nil {
+			return err
+		}
+		hasOriginal = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if hasOriginal {
+			_ = os.Rename(backupPath, destPath)
+		}
+		return err
+	}
+	if hasOriginal {
+		_ = os.Remove(backupPath)
+	}
+	return nil
 }
 
 // BadgerRestoreConfig defines restoring one Badger database from local backup.

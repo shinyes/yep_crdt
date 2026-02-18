@@ -164,3 +164,32 @@ func TestRestoreBadgerFromLocalBackup_RejectNonEmptyTargetWithoutReplace(t *test
 		t.Fatalf("expected restore to fail on non-empty target path")
 	}
 }
+
+func TestReplaceFileWithBackup_OverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "backup.badgerbak")
+	tmpPath := filepath.Join(dir, "backup.badgerbak.tmp")
+
+	if err := os.WriteFile(destPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old file failed: %v", err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write tmp file failed: %v", err)
+	}
+
+	if err := replaceFileWithBackup(destPath, tmpPath); err != nil {
+		t.Fatalf("replace file failed: %v", err)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("read replaced file failed: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("unexpected replaced content: got=%q", string(got))
+	}
+
+	if _, err := os.Stat(destPath + ".old"); !os.IsNotExist(err) {
+		t.Fatalf("expected backup file cleanup, got stat err=%v", err)
+	}
+}

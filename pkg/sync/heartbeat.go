@@ -105,7 +105,7 @@ func (hm *HeartbeatMonitor) broadcastHeartbeat() {
 	if hm.nm == nil {
 		return
 	}
-	if hm.nm.network == nil {
+	if hm.nm.getNetwork() == nil {
 		return
 	}
 

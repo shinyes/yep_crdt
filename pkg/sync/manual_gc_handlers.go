@@ -151,11 +151,12 @@ func (nm *NodeManager) sendManualGCResponse(peerID string, resp *NetworkMessage)
 	if resp == nil {
 		return
 	}
-	if nm.network == nil {
+	network := nm.getNetwork()
+	if network == nil {
 		log.Printf("[ManualGC] drop response: peer=%s, type=%s, err=%v", shortPeerID(peerID), resp.Type, ErrNoNetwork)
 		return
 	}
-	if err := nm.network.SendMessage(peerID, resp); err != nil {
+	if err := network.SendMessage(peerID, resp); err != nil {
 		log.Printf("[ManualGC] send response failed: peer=%s, type=%s, err=%v",
 			shortPeerID(peerID), resp.Type, err)
 	}

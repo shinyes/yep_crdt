@@ -138,14 +138,15 @@ func ensureSchema(database *db.DB) error {
 }
 
 func createSimpleTenantDB(dataRoot string, tenantID string, vlogFileSizeBytes int64) error {
-	if strings.TrimSpace(tenantID) == "" {
-		return fmt.Errorf("create-db tenant id cannot be empty")
+	normalizedTenantID, err := validateTenantIDForPath(tenantID)
+	if err != nil {
+		return fmt.Errorf("create-db %w", err)
 	}
 
-	tenantPath := filepath.Join(dataRoot, tenantID)
+	tenantPath := filepath.Join(dataRoot, normalizedTenantID)
 	database, err := db.OpenBadgerWithConfig(db.BadgerOpenConfig{
 		Path:                   tenantPath,
-		DatabaseID:             tenantID,
+		DatabaseID:             normalizedTenantID,
 		BadgerValueLogFileSize: vlogFileSizeBytes,
 		EnsureSchema:           ensureSchema,
 	})
@@ -155,4 +156,25 @@ func createSimpleTenantDB(dataRoot string, tenantID string, vlogFileSizeBytes in
 	defer database.Close()
 
 	return nil
+}
+
+func validateTenantIDForPath(raw string) (string, error) {
+	tenantID := strings.TrimSpace(raw)
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant id cannot be empty")
+	}
+	if filepath.IsAbs(tenantID) {
+		return "", fmt.Errorf("tenant id cannot be absolute path: %s", tenantID)
+	}
+	if strings.ContainsAny(tenantID, `/\`) {
+		return "", fmt.Errorf("tenant id cannot contain path separator: %s", tenantID)
+	}
+	if strings.Contains(tenantID, ":") {
+		return "", fmt.Errorf("tenant id cannot contain ':' : %s", tenantID)
+	}
+	clean := filepath.Clean(tenantID)
+	if clean != tenantID || clean == "." || clean == ".." {
+		return "", fmt.Errorf("invalid tenant id: %s", tenantID)
+	}
+	return tenantID, nil
 }
