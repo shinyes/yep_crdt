@@ -304,7 +304,6 @@ func TestVersionSyncOnReceiveDigest_RetrySendRow(t *testing.T) {
 	if localDigest == nil || len(localDigest.Tables) == 0 {
 		t.Fatal("expected local digest")
 	}
-	usersDigest := localDigest.Tables[0]
 
 	remoteDigest := VersionDigest{
 		NodeID: "peer-1",
@@ -327,7 +326,6 @@ func TestVersionSyncOnReceiveDigest_RetrySendRow(t *testing.T) {
 	}
 	vs := NewVersionSync(database, nm)
 
-	_ = usersDigest
 	vs.OnReceiveDigest("peer-1", &NetworkMessage{
 		Type:    MsgTypeVersionDigest,
 		NodeID:  "peer-1",
@@ -339,5 +337,80 @@ func TestVersionSyncOnReceiveDigest_RetrySendRow(t *testing.T) {
 	}
 	if net.rawCalls[0].key != k1.String() {
 		t.Fatalf("unexpected diff key: %s", net.rawCalls[0].key)
+	}
+}
+
+func TestVersionSyncCompareAndSync_ReturnsErrorWhenBuildDigestFailed(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "db-1")
+	defer database.Close()
+
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	// Inject malformed row key under users prefix to force ScanRowDigest failure.
+	if err := s.Update(func(tx store.Tx) error {
+		return tx.Set([]byte("/d/users/bad-key"), []byte("x"), 0)
+	}); err != nil {
+		t.Fatalf("inject malformed key failed: %v", err)
+	}
+
+	net := &captureNetwork{}
+	vs := NewVersionSync(database, &NodeManager{
+		localNodeID: "local-1",
+		network:     net,
+	})
+
+	err = vs.CompareAndSync("peer-1")
+	if err == nil {
+		t.Fatal("expected compare-and-sync to return digest build error")
+	}
+	if net.msg != nil {
+		t.Fatal("digest message should not be sent when digest build failed")
+	}
+}
+
+func TestVersionSyncCompareAndSync_ReturnsErrorWhenSendDigestFailed(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "db-1")
+	defer database.Close()
+
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	net := &captureNetwork{sendMessageFailRemaining: 1}
+	vs := NewVersionSync(database, &NodeManager{
+		localNodeID: "local-1",
+		network:     net,
+	})
+
+	err = vs.CompareAndSync("peer-1")
+	if err == nil {
+		t.Fatal("expected compare-and-sync to return send digest error")
+	}
+	if net.msg != nil {
+		t.Fatal("digest message should not be captured when send failed")
 	}
 }
