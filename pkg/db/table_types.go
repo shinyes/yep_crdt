@@ -42,7 +42,7 @@ type TableGCResult struct {
 // RowDigest 行摘要，用于版本沟通。
 type RowDigest struct {
 	Key  uuid.UUID // 行主键
-	Hash uint32    // 数据哈希（用于快速比较）
+	Hash string    // 行内容 SHA-256 摘要（用于跨节点快速比较）
 }
 
 func (t *Table) inTx(update bool, fn func(store.Tx) error) error {

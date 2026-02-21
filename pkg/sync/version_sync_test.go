@@ -183,7 +183,7 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 		Tables: []TableDigest{
 			{
 				TableName: "users",
-				RowKeys: map[string]uint32{
+				RowKeys: map[string]string{
 					k1.String(): hash1, // key1 is in-sync; key2 missing => should be sent
 				},
 			},

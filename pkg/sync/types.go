@@ -163,7 +163,7 @@ type NetworkMessage struct {
 // TableDigest is one table digest for version sync.
 type TableDigest struct {
 	TableName string            `json:"table_name"`
-	RowKeys   map[string]uint32 `json:"row_keys"` // key -> FNV hash
+	RowKeys   map[string]string `json:"row_keys"` // key -> SHA-256 digest
 }
 
 // VersionDigest is a per-node digest snapshot.

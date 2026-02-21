@@ -1,6 +1,10 @@
 package db
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
 	"github.com/shinyes/yep_crdt/pkg/store"
@@ -60,25 +64,22 @@ func (t *Table) ScanRowDigest() ([]RowDigest, error) {
 		for iterator.ValidForPrefix(prefix) {
 			keyRaw, valBytes, err := iterator.Item()
 			if err != nil {
-				iterator.Next()
-				continue
+				return fmt.Errorf("scan row digest iterator item failed: %w", err)
 			}
 
 			// 提取 UUID
 			uidBytes := keyRaw[len(prefix):]
 			if len(uidBytes) != 16 {
-				iterator.Next()
-				continue
+				return fmt.Errorf("scan row digest found invalid key length: got=%d", len(uidBytes))
 			}
 
 			key, err := uuid.FromBytes(uidBytes)
 			if err != nil {
-				iterator.Next()
-				continue
+				return fmt.Errorf("scan row digest parse key failed: %w", err)
 			}
 
-			// FNV-1a 哈希（快速且分布均匀）
-			h := fnv32a(valBytes)
+			// SHA-256 摘要，降低跨节点摘要碰撞风险。
+			h := hashRowSHA256(valBytes)
 
 			digests = append(digests, RowDigest{
 				Key:  key,
@@ -93,16 +94,7 @@ func (t *Table) ScanRowDigest() ([]RowDigest, error) {
 	return digests, err
 }
 
-// fnv32a FNV-1a 哈希算法（用于快速数据比较）
-func fnv32a(data []byte) uint32 {
-	const (
-		offset32 = uint32(2166136261)
-		prime32  = uint32(16777619)
-	)
-	h := offset32
-	for _, b := range data {
-		h ^= uint32(b)
-		h *= prime32
-	}
-	return h
+func hashRowSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

@@ -81,7 +81,7 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 				continue
 			}
 
-			rowKeys := make(map[string]uint32, len(rowDigests))
+			rowKeys := make(map[string]string, len(rowDigests))
 			for _, rd := range rowDigests {
 				rowKeys[rd.Key.String()] = rd.Hash
 			}
@@ -121,7 +121,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 
 	log.Printf("[VersionSync] received digest from %s, tables=%d", shortPeerID(peerID), len(remoteDigest.Tables))
 
-	remoteIndex := make(map[string]map[string]uint32)
+	remoteIndex := make(map[string]map[string]string)
 	for _, td := range remoteDigest.Tables {
 		remoteIndex[td.TableName] = td.RowKeys
 	}
@@ -150,7 +150,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 			remoteRows := remoteIndex[tableName]
 			for _, ld := range localDigests {
 				keyStr := ld.Key.String()
-				remoteHash, existsInRemote := uint32(0), false
+				remoteHash, existsInRemote := "", false
 				if remoteRows != nil {
 					remoteHash, existsInRemote = remoteRows[keyStr]
 				}
