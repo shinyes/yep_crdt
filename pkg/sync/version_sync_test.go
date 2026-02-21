@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -15,6 +16,9 @@ type captureNetwork struct {
 	msg    *NetworkMessage
 
 	rawCalls []rawCall
+
+	sendRawFailRemaining     int
+	sendMessageFailRemaining int
 }
 
 type rawCall struct {
@@ -28,6 +32,10 @@ type rawCall struct {
 func (n *captureNetwork) SendHeartbeat(targetNodeID string, clock int64) error { return nil }
 func (n *captureNetwork) BroadcastHeartbeat(clock int64) error                 { return nil }
 func (n *captureNetwork) SendRawData(targetNodeID string, table string, key string, rawData []byte, timestamp int64) error {
+	if n.sendRawFailRemaining > 0 {
+		n.sendRawFailRemaining--
+		return errors.New("send raw data transient failure")
+	}
 	copyData := make([]byte, len(rawData))
 	copy(copyData, rawData)
 	n.rawCalls = append(n.rawCalls, rawCall{
@@ -49,6 +57,10 @@ func (n *captureNetwork) BroadcastRawDelta(table string, key string, columns []s
 	return nil
 }
 func (n *captureNetwork) SendMessage(targetNodeID string, msg *NetworkMessage) error {
+	if n.sendMessageFailRemaining > 0 {
+		n.sendMessageFailRemaining--
+		return errors.New("send message transient failure")
+	}
 	if msg != nil && msg.Type == MsgTypeRawData {
 		copyData := make([]byte, len(msg.RawData))
 		copy(copyData, msg.RawData)
@@ -218,5 +230,114 @@ func TestVersionSyncOnReceiveDigest_SendsOnlyDiffRows(t *testing.T) {
 	}
 	if len(call.rawData) == 0 {
 		t.Fatal("expected raw row payload")
+	}
+}
+
+func TestVersionSyncOnPeerConnected_SkipWhenBuildDigestFailed(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "db-1")
+	defer database.Close()
+
+	if err := database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}); err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	// Inject malformed row key under users prefix to force ScanRowDigest failure.
+	if err := s.Update(func(tx store.Tx) error {
+		return tx.Set([]byte("/d/users/bad-key"), []byte("x"), 0)
+	}); err != nil {
+		t.Fatalf("inject malformed key failed: %v", err)
+	}
+
+	net := &captureNetwork{}
+	nm := &NodeManager{
+		localNodeID: "local-1",
+		network:     net,
+	}
+	vs := NewVersionSync(database, nm)
+
+	vs.OnPeerConnected("peer-1")
+
+	if net.msg != nil {
+		t.Fatal("digest message should not be sent when local digest build failed")
+	}
+}
+
+func TestVersionSyncOnReceiveDigest_RetrySendRow(t *testing.T) {
+	s, err := store.NewBadgerStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store failed: %v", err)
+	}
+	defer s.Close()
+
+	database := mustOpenDB(t, s, "db-1")
+	defer database.Close()
+
+	err = database.DefineTable(&meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	})
+	if err != nil {
+		t.Fatalf("define table failed: %v", err)
+	}
+
+	k1, _ := uuid.NewV7()
+	if err := database.Update(func(tx *db.Tx) error {
+		return tx.Table("users").Set(k1, map[string]any{"name": "alice"})
+	}); err != nil {
+		t.Fatalf("seed row failed: %v", err)
+	}
+
+	localDigest := NewVersionSync(database, &NodeManager{localNodeID: "local-1"}).BuildDigest()
+	if localDigest == nil || len(localDigest.Tables) == 0 {
+		t.Fatal("expected local digest")
+	}
+	usersDigest := localDigest.Tables[0]
+
+	remoteDigest := VersionDigest{
+		NodeID: "peer-1",
+		Tables: []TableDigest{
+			{
+				TableName: "users",
+				RowKeys:   map[string]string{}, // remote missing all rows
+			},
+		},
+	}
+	rawDigest, err := msgpack.Marshal(remoteDigest)
+	if err != nil {
+		t.Fatalf("marshal remote digest failed: %v", err)
+	}
+
+	net := &captureNetwork{sendRawFailRemaining: 1}
+	nm := &NodeManager{
+		localNodeID: "local-1",
+		network:     net,
+	}
+	vs := NewVersionSync(database, nm)
+
+	_ = usersDigest
+	vs.OnReceiveDigest("peer-1", &NetworkMessage{
+		Type:    MsgTypeVersionDigest,
+		NodeID:  "peer-1",
+		RawData: rawDigest,
+	})
+
+	if len(net.rawCalls) != 1 {
+		t.Fatalf("expected diff row to be sent after retry, got %d", len(net.rawCalls))
+	}
+	if net.rawCalls[0].key != k1.String() {
+		t.Fatalf("unexpected diff key: %s", net.rawCalls[0].key)
 	}
 }

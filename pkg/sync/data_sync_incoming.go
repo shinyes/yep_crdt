@@ -32,8 +32,8 @@ func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, ra
 	if err != nil {
 		return fmt.Errorf("parse UUID failed: %w", err)
 	}
-	if key.Version() != 7 {
-		return fmt.Errorf("invalid key version: must be UUIDv7")
+	if err := validateIncomingUUIDv7(key); err != nil {
+		return err
 	}
 
 	table := dsm.db.Table(tableName)
@@ -61,6 +61,16 @@ func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, ra
 		log.Printf("[DataSync] merged full row: table=%s, key=%s, ts=%d, files=%d", tableName, keyStr, timestamp, len(localFiles))
 	} else {
 		log.Printf("[DataSync] merged delta row: table=%s, key=%s, cols=%v, ts=%d, files=%d", tableName, keyStr, columns, timestamp, len(localFiles))
+	}
+	return nil
+}
+
+func validateIncomingUUIDv7(key uuid.UUID) error {
+	if key.Version() != 7 {
+		return fmt.Errorf("invalid key version: must be UUIDv7")
+	}
+	if key.Variant() != uuid.RFC4122 {
+		return fmt.Errorf("invalid key variant: must be RFC4122 UUID")
 	}
 	return nil
 }

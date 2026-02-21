@@ -67,49 +67,102 @@ func (q *Query) selectPlan() (uint32, []any, int, *Condition) {
 	var bestIndexID uint32
 	var bestPrefix []any
 	var bestScore int = -1
+	bestEqPrefixLen := -1
+	bestCoveredCols := -1
+	bestHasRange := false
 	var bestRangeCond *Condition
 
 	for _, idx := range q.table.schema.Indexes {
 		currentPrefix := []any{}
-		currentScore := 0
+		eqPrefixLen := 0
+		coveredCols := 0
+		hasRange := false
 		var currentRange *Condition
 
-		// Check columns in order
+		// Only contiguous prefix can be used by the index engine.
 		for _, col := range idx.Columns {
-			cond := q.findCondition(col)
-			if cond == nil {
-				break // Prefix broken
+			if eqCond := q.findConditionByOp(col, OpEq); eqCond != nil {
+				currentPrefix = append(currentPrefix, eqCond.Value)
+				eqPrefixLen++
+				coveredCols++
+				continue
 			}
 
-			if cond.Op == OpEq {
-				currentPrefix = append(currentPrefix, cond.Value)
-				currentScore++
-			} else {
-				// Range condition. Must be the last part of prefix usage.
-				currentRange = cond
-				currentScore++ // Gives extra point? Yes, because we use index for it.
-				break
+			// Range condition can only appear once and must end prefix usage.
+			if rangeCond := q.findRangeCondition(col); rangeCond != nil {
+				rangeCopy := *rangeCond
+				currentRange = &rangeCopy
+				hasRange = true
+				coveredCols++
 			}
+			break
 		}
 
-		if currentScore > bestScore {
-			bestScore = currentScore
+		if eqPrefixLen == 0 && !hasRange {
+			continue
+		}
+
+		// Prefer longer equality prefix, then range support, then wider covered prefix.
+		currentScore := eqPrefixLen * 10
+		if hasRange {
+			currentScore += 5
+		}
+
+		better := false
+		switch {
+		case currentScore > bestScore:
+			better = true
+		case currentScore == bestScore && eqPrefixLen > bestEqPrefixLen:
+			better = true
+		case currentScore == bestScore && eqPrefixLen == bestEqPrefixLen && hasRange && !bestHasRange:
+			better = true
+		case currentScore == bestScore && eqPrefixLen == bestEqPrefixLen && hasRange == bestHasRange && coveredCols > bestCoveredCols:
+			better = true
+		}
+
+		if better {
 			bestIndexID = idx.ID
 			bestPrefix = currentPrefix
+			bestScore = currentScore
+			bestEqPrefixLen = eqPrefixLen
+			bestCoveredCols = coveredCols
+			bestHasRange = hasRange
 			bestRangeCond = currentRange
 		}
 	}
 	return bestIndexID, bestPrefix, bestScore, bestRangeCond
 }
 
-func (q *Query) findCondition(col string) *Condition {
-	if q.conditionFirstIndex == nil {
-		q.rebuildConditionIndex()
-	}
-	if idx, ok := q.conditionFirstIndex[col]; ok && idx >= 0 && idx < len(q.conditions) {
-		return &q.conditions[idx]
+func (q *Query) findConditionByOp(field string, op Operator) *Condition {
+	for i := range q.conditions {
+		cond := q.conditions[i]
+		if cond.Field == field && cond.Op == op {
+			return &q.conditions[i]
+		}
 	}
 	return nil
+}
+
+func (q *Query) findRangeCondition(field string) *Condition {
+	for i := range q.conditions {
+		cond := q.conditions[i]
+		if cond.Field != field {
+			continue
+		}
+		if isIndexRangeOperator(cond.Op) {
+			return &q.conditions[i]
+		}
+	}
+	return nil
+}
+
+func isIndexRangeOperator(op Operator) bool {
+	switch op {
+	case OpGt, OpGte, OpLt, OpLte:
+		return true
+	default:
+		return false
+	}
 }
 
 func (q *Query) rebuildConditionIndex() {

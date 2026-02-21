@@ -474,6 +474,14 @@ func TestNodeManager_DataReject_NonV7Key(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "UUIDv7") {
 		t.Fatalf("expected non-v7 key rejection, got: %v", err)
 	}
+
+	v7Key, _ := uuid.NewV7()
+	invalidVariantKey := v7Key
+	invalidVariantKey[8] = (invalidVariantKey[8] & 0x1F) | 0xE0
+	err = nm.dataSync.OnReceiveMerge("test-table", invalidVariantKey.String(), []byte(`{"Entries":{}}`), database.Clock().Now())
+	if err == nil || !strings.Contains(err.Error(), "variant") {
+		t.Fatalf("expected invalid variant key rejection, got: %v", err)
+	}
 }
 
 type rejoinFullSyncNetwork struct {

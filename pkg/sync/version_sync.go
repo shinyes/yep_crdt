@@ -1,7 +1,9 @@
 package sync
 
 import (
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
@@ -68,7 +70,7 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 		Tables: make([]TableDigest, 0, len(tableNames)),
 	}
 
-	_ = vs.db.View(func(tx *db.Tx) error {
+	if err := vs.db.View(func(tx *db.Tx) error {
 		for _, tableName := range tableNames {
 			t := tx.Table(tableName)
 			if t == nil {
@@ -77,8 +79,7 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 
 			rowDigests, err := t.ScanRowDigest()
 			if err != nil {
-				log.Printf("[VersionSync] scan digest failed: table=%s, err=%v", tableName, err)
-				continue
+				return fmt.Errorf("scan digest failed: table=%s, err=%w", tableName, err)
 			}
 
 			rowKeys := make(map[string]string, len(rowDigests))
@@ -92,7 +93,10 @@ func (vs *VersionSync) BuildDigest() *VersionDigest {
 			})
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("[VersionSync] build digest failed: %v", err)
+		return nil
+	}
 
 	if len(digest.Tables) == 0 {
 		return nil
@@ -127,6 +131,8 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	}
 
 	var diffCount int
+	var sendFailCount int
+	var tableErrCount int
 	tableNames := vs.db.TableNames()
 	for _, tableName := range tableNames {
 		type rowPayload struct {
@@ -135,7 +141,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 		}
 		rowsToSend := make([]rowPayload, 0)
 
-		_ = vs.db.View(func(tx *db.Tx) error {
+		if err := vs.db.View(func(tx *db.Tx) error {
 			t := tx.Table(tableName)
 			if t == nil {
 				return nil
@@ -143,8 +149,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 
 			localDigests, err := t.ScanRowDigest()
 			if err != nil {
-				log.Printf("[VersionSync] scan local digest failed: table=%s, err=%v", tableName, err)
-				return nil
+				return fmt.Errorf("scan local digest failed: table=%s, err=%w", tableName, err)
 			}
 
 			remoteRows := remoteIndex[tableName]
@@ -160,8 +165,11 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 				}
 
 				rawData, err := t.GetRawRow(ld.Key)
-				if err != nil || rawData == nil {
-					continue
+				if err != nil {
+					return fmt.Errorf("load raw row failed: table=%s, key=%s, err=%w", tableName, shortPeerID(ld.Key.String()), err)
+				}
+				if rawData == nil {
+					return fmt.Errorf("load raw row failed: table=%s, key=%s, err=empty raw data", tableName, shortPeerID(ld.Key.String()))
 				}
 
 				rowsToSend = append(rowsToSend, rowPayload{
@@ -170,24 +178,15 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 				})
 			}
 			return nil
-		})
+		}); err != nil {
+			tableErrCount++
+			log.Printf("[VersionSync] prepare diff rows failed: table=%s, err=%v", tableName, err)
+			continue
+		}
 
 		for _, row := range rowsToSend {
-			var err error
-			if vs.nodeMgr.dataSync != nil {
-				err = vs.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, row.key)
-			} else {
-				network := vs.nodeMgr.getNetwork()
-				if network == nil {
-					log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
-						tableName, shortPeerID(row.key.String()), ErrNoNetwork)
-					continue
-				}
-				timestamp := vs.db.Clock().Now()
-				err = network.SendRawData(peerID, tableName, row.key.String(), row.rawData, timestamp)
-			}
-
-			if err != nil {
+			if err := vs.sendRowWithRetry(peerID, tableName, row.key, row.rawData); err != nil {
+				sendFailCount++
 				log.Printf("[VersionSync] send row failed: table=%s, key=%s, err=%v",
 					tableName, shortPeerID(row.key.String()), err)
 				continue
@@ -196,7 +195,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 		}
 	}
 
-	log.Printf("[VersionSync] sent %d diff rows to %s", diffCount, shortPeerID(peerID))
+	log.Printf("[VersionSync] sent %d diff rows to %s (send_failures=%d, table_errors=%d)", diffCount, shortPeerID(peerID), sendFailCount, tableErrCount)
 }
 
 // CompareAndSync triggers a digest exchange with one peer.
@@ -214,4 +213,36 @@ func shortPeerID(id string) string {
 		return id
 	}
 	return id[:8]
+}
+
+func (vs *VersionSync) sendRowWithRetry(peerID string, tableName string, key uuid.UUID, rawData []byte) error {
+	const maxAttempts = 2
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := vs.sendRowOnce(peerID, tableName, key, rawData); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		if attempt < maxAttempts {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return fmt.Errorf("send row failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func (vs *VersionSync) sendRowOnce(peerID string, tableName string, key uuid.UUID, rawData []byte) error {
+	if vs.nodeMgr.dataSync != nil {
+		return vs.nodeMgr.dataSync.SendRowToPeer(peerID, tableName, key)
+	}
+
+	network := vs.nodeMgr.getNetwork()
+	if network == nil {
+		return ErrNoNetwork
+	}
+
+	timestamp := vs.db.Clock().Now()
+	return network.SendRawData(peerID, tableName, key.String(), rawData, timestamp)
 }

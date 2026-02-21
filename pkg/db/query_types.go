@@ -28,7 +28,7 @@ type Query struct {
 	table      *Table
 	conditions []Condition
 	// conditionFirstIndex keeps the first condition position per field.
-	// This preserves existing behavior while avoiding repeated linear scans in selectPlan.
+	// It is used by normalization/indexing helpers and rebuilt when needed.
 	conditionFirstIndex map[string]int
 	columnTypes         map[string]meta.ColumnType
 	limit               int
