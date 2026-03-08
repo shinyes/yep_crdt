@@ -523,11 +523,11 @@ func BenchmarkTenantNetworkNextRequestID_WithLocalIDCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		id := tn.nextRequestID()
-		parts := strings.SplitN(id, "-", 2)
-		if len(parts) != 2 {
+		sep := strings.LastIndex(id, "-")
+		if sep <= 0 || sep == len(id)-1 {
 			b.Fatalf("invalid prefixed request ID format %q", id)
 		}
-		if _, err := strconv.ParseUint(parts[1], 10, 64); err != nil {
+		if _, err := strconv.ParseUint(id[sep+1:], 10, 64); err != nil {
 			b.Fatalf("invalid request ID %q: %v", id, err)
 		}
 	}
@@ -544,10 +544,9 @@ func BenchmarkTenantNetworkHandleReceive_ResponseRouting(b *testing.B) {
 	tn.responseChannels["req-1"] = pendingResponse{peerID: "peer-1", ch: ch}
 
 	payload, err := msgpack.Marshal(&NetworkMessage{
-		Type:      MsgTypeFetchRawResponse,
+		Type:      MsgTypeGCPrepareAck,
 		RequestID: "req-1",
-		Key:       "k1",
-		RawData:   []byte("v1"),
+		Success:   true,
 	})
 	if err != nil {
 		b.Fatalf("marshal failed: %v", err)

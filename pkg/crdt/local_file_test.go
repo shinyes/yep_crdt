@@ -3,6 +3,7 @@ package crdt
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -116,5 +117,47 @@ func TestLocalFileCRDT_RejectPathTraversalRead(t *testing.T) {
 	}
 	if _, err := lf.ReadAt(0, 4); err == nil {
 		t.Fatal("expected ReadAt to reject escaped path")
+	}
+}
+
+func TestValidateRelativePath(t *testing.T) {
+	absPath := string(filepath.Separator) + filepath.Join("tmp", "abs.txt")
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "normal", input: "docs/a.txt", want: "docs/a.txt"},
+		{name: "backslash normalized", input: `docs\sub\a.txt`, want: "docs/sub/a.txt"},
+		{name: "traversal", input: "../escape.txt", wantErr: true},
+		{name: "absolute", input: absPath, wantErr: true},
+		{name: "windows drive", input: `C:\escape.txt`, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ValidateRelativePath(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for input %q: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected normalized path: want=%q got=%q", tc.want, got)
+			}
+		})
+	}
+
+	// Extra guard: Windows absolute path via volume+separator should also fail on Windows.
+	if runtime.GOOS == "windows" {
+		if _, err := ValidateRelativePath(`C:\tmp\abs.txt`); err == nil {
+			t.Fatal("expected windows absolute path to be rejected")
+		}
 	}
 }

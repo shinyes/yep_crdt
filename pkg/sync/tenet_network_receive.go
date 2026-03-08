@@ -3,8 +3,6 @@ package sync
 import (
 	stdlog "log"
 	"sync/atomic"
-
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 func (tn *TenantNetwork) setupCallbacks() {
@@ -44,7 +42,7 @@ func (tn *TenantNetwork) setupCallbacks() {
 
 func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 	var lite fetchRawResponseLite
-	if err := msgpack.Unmarshal(data, &lite); err != nil {
+	if err := decodeFetchRawResponseLite(data, &lite); err != nil {
 		stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
 		return
 	}
@@ -70,7 +68,7 @@ func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 			}
 
 			var msg NetworkMessage
-			if err := msgpack.Unmarshal(data, &msg); err != nil {
+			if err := decodeNetworkMessage(data, &msg); err != nil {
 				stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
 				return
 			}
@@ -80,7 +78,7 @@ func (tn *TenantNetwork) handleReceive(peerID string, data []byte) {
 	}
 
 	var msg NetworkMessage
-	if err := msgpack.Unmarshal(data, &msg); err != nil {
+	if err := decodeNetworkMessage(data, &msg); err != nil {
 		stdlog.Printf("[TenantNetwork:%s] parse message failed: %v", tn.tenantID, err)
 		return
 	}

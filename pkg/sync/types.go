@@ -88,19 +88,21 @@ type SyncResult struct {
 
 // SyncedLocalFile carries one LocalFileCRDT payload for transport.
 type SyncedLocalFile struct {
-	Path    string `json:"path"`
-	Hash    string `json:"hash,omitempty"`
-	Size    int64  `json:"size,omitempty"`
-	Chunked bool   `json:"chunked,omitempty"`
-	Data    []byte `json:"data,omitempty"`
+	Path    string `json:"path" msgpack:"path"`
+	Hash    string `json:"hash,omitempty" msgpack:"hash,omitempty"`
+	Size    int64  `json:"size,omitempty" msgpack:"size,omitempty"`
+	Chunked bool   `json:"chunked,omitempty" msgpack:"chunked,omitempty"`
+	Data    []byte `json:"data,omitempty" msgpack:"data,omitempty"`
 }
 
 // RawRowData carries one serialized CRDT row.
 type RawRowData struct {
-	Key        string            `json:"key"`
-	Data       []byte            `json:"data"`
-	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
+	Key        string            `json:"key" msgpack:"key"`
+	Data       []byte            `json:"data" msgpack:"data"`
+	LocalFiles []SyncedLocalFile `json:"local_files,omitempty" msgpack:"local_files,omitempty"`
 }
+
+//go:generate go run ../../cmd/gen_sync_docs
 
 // Message type constants.
 const (
@@ -134,40 +136,40 @@ const (
 
 // NetworkMessage is the unified transport payload.
 type NetworkMessage struct {
-	Type       string            `json:"type"`
-	TenantID   string            `json:"tenant_id,omitempty"`
-	NodeID     string            `json:"node_id,omitempty"`
-	RequestID  string            `json:"request_id,omitempty"`
-	Table      string            `json:"table,omitempty"`
-	Key        string            `json:"key,omitempty"`
-	Columns    []string          `json:"columns,omitempty"`
-	RawData    []byte            `json:"raw_data,omitempty"`
-	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
-	FilePath   string            `json:"file_path,omitempty"`
-	FileHash   string            `json:"file_hash,omitempty"`
-	FileSize   int64             `json:"file_size,omitempty"`
-	ChunkIndex int               `json:"chunk_index,omitempty"`
-	ChunkTotal int               `json:"chunk_total,omitempty"`
-	ChunkData  []byte            `json:"chunk_data,omitempty"`
+	Type       string            `json:"type" msgpack:"type"`
+	TenantID   string            `json:"tenant_id,omitempty" msgpack:"tenant_id,omitempty"`
+	NodeID     string            `json:"node_id,omitempty" msgpack:"node_id,omitempty"`
+	RequestID  string            `json:"request_id,omitempty" msgpack:"request_id,omitempty"`
+	Table      string            `json:"table,omitempty" msgpack:"table,omitempty"`
+	Key        string            `json:"key,omitempty" msgpack:"key,omitempty"`
+	Columns    []string          `json:"columns,omitempty" msgpack:"columns,omitempty"`
+	RawData    []byte            `json:"raw_data,omitempty" msgpack:"raw_data,omitempty"`
+	LocalFiles []SyncedLocalFile `json:"local_files,omitempty" msgpack:"local_files,omitempty"`
+	FilePath   string            `json:"file_path,omitempty" msgpack:"file_path,omitempty"`
+	FileHash   string            `json:"file_hash,omitempty" msgpack:"file_hash,omitempty"`
+	FileSize   int64             `json:"file_size,omitempty" msgpack:"file_size,omitempty"`
+	ChunkIndex int               `json:"chunk_index,omitempty" msgpack:"chunk_index,omitempty"`
+	ChunkTotal int               `json:"chunk_total,omitempty" msgpack:"chunk_total,omitempty"`
+	ChunkData  []byte            `json:"chunk_data,omitempty" msgpack:"chunk_data,omitempty"`
 
-	Timestamp int64 `json:"timestamp"`
-	Clock     int64 `json:"clock,omitempty"`
-	GCFloor   int64 `json:"gc_floor,omitempty"`
+	Timestamp int64 `json:"timestamp" msgpack:"timestamp"`
+	Clock     int64 `json:"clock,omitempty" msgpack:"clock,omitempty"`
+	GCFloor   int64 `json:"gc_floor,omitempty" msgpack:"gc_floor,omitempty"`
 
 	// Manual GC control fields.
-	SafeTimestamp int64  `json:"safe_timestamp,omitempty"`
-	Success       bool   `json:"success,omitempty"`
-	Error         string `json:"error,omitempty"`
+	SafeTimestamp int64  `json:"safe_timestamp,omitempty" msgpack:"safe_timestamp,omitempty"`
+	Success       bool   `json:"success,omitempty" msgpack:"success,omitempty"`
+	Error         string `json:"error,omitempty" msgpack:"error,omitempty"`
 }
 
 // TableDigest is one table digest for version sync.
 type TableDigest struct {
-	TableName string            `json:"table_name"`
-	RowKeys   map[string]string `json:"row_keys"` // key -> SHA-256 digest
+	TableName string            `json:"table_name" msgpack:"table_name"`
+	RowKeys   map[string]string `json:"row_keys" msgpack:"row_keys"` // key -> SHA-256 digest
 }
 
 // VersionDigest is a per-node digest snapshot.
 type VersionDigest struct {
-	NodeID string        `json:"node_id"`
-	Tables []TableDigest `json:"tables"`
+	NodeID string        `json:"node_id" msgpack:"node_id"`
+	Tables []TableDigest `json:"tables" msgpack:"tables"`
 }

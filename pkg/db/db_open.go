@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
@@ -12,10 +13,33 @@ import (
 )
 
 var ErrDatabaseIDMismatch = errors.New("database id mismatch")
+var ErrNilStore = errors.New("nil store")
+var ErrEmptyDatabaseID = errors.New("empty database id")
+
+// DatabaseIDMismatchError carries mismatch details and unwraps to
+// ErrDatabaseIDMismatch so callers can use errors.Is / errors.As.
+type DatabaseIDMismatchError struct {
+	StoredDatabaseID   string
+	ProvidedDatabaseID string
+}
+
+func (e *DatabaseIDMismatchError) Error() string {
+	return fmt.Sprintf("%s: expected %s, got %s", ErrDatabaseIDMismatch.Error(), e.StoredDatabaseID, e.ProvidedDatabaseID)
+}
+
+func (e *DatabaseIDMismatchError) Unwrap() error { return ErrDatabaseIDMismatch }
 
 // Open 打开数据库。
 // databaseID 是数据库的唯一标识 (如 "tenant-1")。
 func Open(s store.Store, databaseID string, opts ...Option) (*DB, error) {
+	if s == nil {
+		return nil, ErrNilStore
+	}
+	databaseID = strings.TrimSpace(databaseID)
+	if databaseID == "" {
+		return nil, ErrEmptyDatabaseID
+	}
+
 	c := meta.NewCatalog(s)
 	if err := c.Load(); err != nil {
 		return nil, fmt.Errorf("加载 catalog 失败: %w", err)
@@ -37,7 +61,10 @@ func Open(s store.Store, databaseID string, opts ...Option) (*DB, error) {
 
 	if storedDBID != "" {
 		if storedDBID != databaseID {
-			return nil, fmt.Errorf("%w: expected %s, got %s", ErrDatabaseIDMismatch, storedDBID, databaseID)
+			return nil, &DatabaseIDMismatchError{
+				StoredDatabaseID:   storedDBID,
+				ProvidedDatabaseID: databaseID,
+			}
 		}
 	} else {
 		// First time, store it

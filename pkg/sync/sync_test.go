@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
+	"github.com/shinyes/yep_crdt/pkg/hlc"
 	"github.com/shinyes/yep_crdt/pkg/meta"
 	"github.com/shinyes/yep_crdt/pkg/store"
 )
@@ -106,27 +107,27 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	safetyOffset := defaultSafeTimestampOffset.Milliseconds()
 
 	safeTs := nm.CalculateSafeTimestamp()
-	expectedSafeTs := baseTime - safetyOffset
+	expectedSafeTs := hlc.SubPhysical(baseTime, safetyOffset)
 
 	timeDiff := safeTs - expectedSafeTs
 	if timeDiff < -100 || timeDiff > 100 {
 		t.Errorf("expected SafeTimestamp close to local-30s: want=%d got=%d diff=%d", expectedSafeTs, safeTs, timeDiff)
 	}
 
-	node2Clock := baseTime - 10000
+	node2Clock := hlc.SubPhysical(baseTime, 10000)
 	nm.OnHeartbeat("node-2", node2Clock, 0)
 
 	safeTs = nm.CalculateSafeTimestamp()
-	expectedSafeTs = node2Clock - safetyOffset
+	expectedSafeTs = hlc.SubPhysical(node2Clock, safetyOffset)
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected SafeTimestamp to use node-2 clock: want=%d got=%d", expectedSafeTs, safeTs)
 	}
 
-	node3Clock := baseTime - 20000
+	node3Clock := hlc.SubPhysical(baseTime, 20000)
 	nm.OnHeartbeat("node-3", node3Clock, 0)
 
 	safeTs = nm.CalculateSafeTimestamp()
-	expectedSafeTs = node3Clock - safetyOffset
+	expectedSafeTs = hlc.SubPhysical(node3Clock, safetyOffset)
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected SafeTimestamp to use node-3 clock: want=%d got=%d", expectedSafeTs, safeTs)
 	}
@@ -134,7 +135,7 @@ func TestNodeManager_SafeTimestamp(t *testing.T) {
 	// Offline nodes still constrain safe timestamp for GC safety.
 	nm.OnPeerDisconnected("node-3")
 	safeTs = nm.CalculateSafeTimestamp()
-	expectedSafeTs = node3Clock - safetyOffset
+	expectedSafeTs = hlc.SubPhysical(node3Clock, safetyOffset)
 	if safeTs != expectedSafeTs {
 		t.Errorf("expected offline node clock to still constrain SafeTimestamp: want=%d got=%d", expectedSafeTs, safeTs)
 	}

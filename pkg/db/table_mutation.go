@@ -69,31 +69,9 @@ func (t *Table) Add(key uuid.UUID, col string, val any) error {
 				Op:  crdt.OpORSetAdd[string]{Element: string(encodeValue(val))},
 			}
 		case meta.CrdtRGA:
-			// Append to end. Need to find tail?
-			// RGA Insert requires AnchorID.
-			// If we append, we need the ID of the last element.
-			// MapCRDT doesn't expose RGA structure directly via Value().
-			// We need to access the RGA instance.
-			rga, err := t.getRGA(currentMap, col)
-			if err != nil {
-				return err
-			}
-			// Find last element
-			lastID := rga.Head
-			// Traverse to find end. (O(N) - optimized later?)
-			curr := rga.Head
-			for curr != "" {
-				v := rga.Vertices[curr]
-				if v.Next == "" {
-					lastID = v.ID
-					break
-				}
-				curr = v.Next
-			}
-
 			op = crdt.OpMapUpdate{
 				Key: col,
-				Op:  crdt.OpRGAInsert[[]byte]{AnchorID: lastID, Value: encodeValue(val)},
+				Op:  crdt.OpRGAAppend[[]byte]{Value: encodeValue(val)},
 			}
 		default: // LWW or Unknown
 			colType := meta.ColTypeString

@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: test
+            command: go test -count=1 ./...
+          - name: race
+            command: go test -race -count=1 ./...
+          - name: bench-smoke
+            command: go test -run '^$' -bench '.' -benchmem -benchtime=100ms ./...
+    name: verify-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: ${{ matrix.command }}
+        run: ${{ matrix.command }}
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: regenerate protocol docs
+        run: go run ./cmd/gen_sync_docs
+      - name: verify generated docs are committed
+        run: git diff --exit-code -- docs/sync_protocol.md docs/network_message.md

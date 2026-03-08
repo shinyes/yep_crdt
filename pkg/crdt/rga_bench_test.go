@@ -25,6 +25,62 @@ func BenchmarkRGA_Apply(b *testing.B) {
 	}
 }
 
+func appendByLinearTailScan(r *RGA[[]byte], value []byte) error {
+	r.mu.RLock()
+	lastID := r.Head
+	curr := r.Head
+	for curr != "" {
+		v := r.Vertices[curr]
+		if v == nil {
+			break
+		}
+		lastID = v.ID
+		if v.Next == "" {
+			break
+		}
+		curr = v.Next
+	}
+	r.mu.RUnlock()
+	return r.Apply(OpRGAInsert[[]byte]{AnchorID: lastID, Value: value})
+}
+
+func BenchmarkRGA_AppendCompare(b *testing.B) {
+	const prefill = 2048
+	payload := []byte("x")
+
+	b.Run("LinearScanTail+Insert", func(b *testing.B) {
+		clock := hlc.New()
+		r := NewRGA[[]byte](clock)
+		for i := 0; i < prefill; i++ {
+			if err := r.Apply(OpRGAAppend[[]byte]{Value: payload}); err != nil {
+				b.Fatalf("prefill failed: %v", err)
+			}
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := appendByLinearTailScan(r, payload); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("TailPointerAppend", func(b *testing.B) {
+		clock := hlc.New()
+		r := NewRGA[[]byte](clock)
+		for i := 0; i < prefill; i++ {
+			if err := r.Apply(OpRGAAppend[[]byte]{Value: payload}); err != nil {
+				b.Fatalf("prefill failed: %v", err)
+			}
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := r.Apply(OpRGAAppend[[]byte]{Value: payload}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkRGA_Merge_Incremental(b *testing.B) {
 	// Setup: Two large independent RGAs
 	// Merging one into another.

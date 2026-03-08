@@ -183,6 +183,17 @@ func TestOpenBadgerWithConfig_DatabaseIDMismatchReturnsError(t *testing.T) {
 		DatabaseID: "tenant-b",
 	}); err == nil {
 		t.Fatalf("expected database id mismatch to return error")
+	} else {
+		if !errors.Is(err, ErrDatabaseIDMismatch) {
+			t.Fatalf("expected ErrDatabaseIDMismatch, got: %v", err)
+		}
+		var mismatch *DatabaseIDMismatchError
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("expected DatabaseIDMismatchError, got %T", err)
+		}
+		if mismatch.StoredDatabaseID != "tenant-a" || mismatch.ProvidedDatabaseID != "tenant-b" {
+			t.Fatalf("unexpected mismatch detail: %#v", mismatch)
+		}
 	}
 
 	// Ensure mismatch path does not leak open handles/locks.

@@ -5,6 +5,75 @@ import (
 	"sort"
 )
 
+func (r *RGA[T]) rebuildLinkedListLocked() {
+	headVertex, ok := r.Vertices[r.Head]
+	if !ok || headVertex == nil {
+		return
+	}
+
+	for _, v := range r.Vertices {
+		if v != nil {
+			v.Next = ""
+		}
+	}
+
+	visited := make(map[string]struct{}, len(r.Vertices))
+	prev := headVertex
+
+	var walk func(parentID string)
+	walk = func(parentID string) {
+		children := r.edges[parentID]
+		if len(children) == 0 {
+			return
+		}
+		sortChildren(children)
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			v, exists := r.Vertices[child.ID]
+			if !exists || v == nil {
+				continue
+			}
+			if _, seen := visited[v.ID]; seen {
+				continue
+			}
+			visited[v.ID] = struct{}{}
+			prev.Next = v.ID
+			prev = v
+			walk(v.ID)
+		}
+	}
+
+	walk(r.Head)
+
+	// Defensive fallback: append vertices not reachable from head in a stable order.
+	// This prevents persistent invisibility when merge order temporarily leaves
+	// orphaned nodes out of the linked list.
+	orphans := make([]*RGAVertex[T], 0)
+	for id, v := range r.Vertices {
+		if id == r.Head || v == nil {
+			continue
+		}
+		if _, seen := visited[id]; seen {
+			continue
+		}
+		orphans = append(orphans, v)
+	}
+	sortChildren(orphans)
+	for _, orphan := range orphans {
+		if orphan == nil {
+			continue
+		}
+		prev.Next = orphan.ID
+		prev = orphan
+		visited[orphan.ID] = struct{}{}
+		walk(orphan.ID)
+	}
+
+	r.Tail = prev.ID
+}
+
 func (r *RGA[T]) isTriviallyEmptyLocked() bool {
 	if len(r.Vertices) != 1 {
 		return false
@@ -43,6 +112,7 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	if nonHeadCount <= 0 {
 		r.Vertices = map[string]*RGAVertex[T]{localHead: localHeadVertex}
 		r.edges = make(map[string][]*RGAVertex[T])
+		r.Tail = localHead
 		return
 	}
 
@@ -84,6 +154,7 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	// Build edges lazily in ensureEdges(). This avoids heavy allocations on
 	// merge-into-empty hot paths while keeping behavior unchanged.
 	r.edges = make(map[string][]*RGAVertex[T])
+	r.recomputeTailLocked()
 }
 
 // Merge merges another RGA state using incremental updates.
@@ -138,6 +209,7 @@ func (r *RGA[T]) Merge(other CRDT) error {
 	}
 
 	if len(newVertices) == 0 {
+		r.rebuildLinkedListLocked()
 		return nil
 	}
 
@@ -216,6 +288,8 @@ func (r *RGA[T]) Merge(other CRDT) error {
 		v.Next = targetNext
 		insertPos.Next = v.ID
 	}
+
+	r.rebuildLinkedListLocked()
 
 	return nil
 }

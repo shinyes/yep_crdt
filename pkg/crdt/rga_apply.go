@@ -15,6 +15,13 @@ type OpRGAInsert[T any] struct {
 
 func (op OpRGAInsert[T]) Type() Type { return TypeRGA }
 
+// OpRGAAppend appends one value to the end of current linked list in O(1).
+type OpRGAAppend[T any] struct {
+	Value T
+}
+
+func (op OpRGAAppend[T]) Type() Type { return TypeRGA }
+
 type OpRGARemove struct {
 	ID string
 }
@@ -46,38 +53,14 @@ func (r *RGA[T]) Apply(op Op) error {
 	defer r.mu.Unlock()
 
 	r.ensureEdges()
+	r.ensureTailLocked()
 
 	switch o := op.(type) {
 	case OpRGAInsert[T]:
-		id, err := uuid.NewV7()
-		if err != nil {
-			return fmt.Errorf("generate uuidv7: %w", err)
-		}
-		newID := id.String()
-		var ts int64
-		if r.Clock != nil {
-			ts = r.Clock.Now()
-		} else {
-			ts = 0
-		}
+		return r.insertAfterLocked(o.AnchorID, o.Value)
 
-		if _, ok := r.Vertices[o.AnchorID]; !ok {
-			return fmt.Errorf("anchor %s not found", o.AnchorID)
-		}
-
-		v := &RGAVertex[T]{
-			ID:        newID,
-			Value:     o.Value,
-			Origin:    o.AnchorID,
-			Timestamp: ts,
-		}
-
-		r.Vertices[v.ID] = v
-		r.edges[o.AnchorID] = insertChildSorted(r.edges[o.AnchorID], v)
-
-		anchor := r.Vertices[o.AnchorID]
-		v.Next = anchor.Next
-		anchor.Next = v.ID
+	case OpRGAAppend[T]:
+		return r.insertAfterLocked(r.Tail, o.Value)
 
 	case OpRGARemove:
 		if v, ok := r.Vertices[o.ID]; ok {
@@ -91,6 +74,40 @@ func (r *RGA[T]) Apply(op Op) error {
 		}
 	default:
 		return ErrInvalidOp
+	}
+	return nil
+}
+
+func (r *RGA[T]) insertAfterLocked(anchorID string, value T) error {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate uuidv7: %w", err)
+	}
+	newID := id.String()
+	var ts int64
+	if r.Clock != nil {
+		ts = r.Clock.Now()
+	}
+
+	anchor, ok := r.Vertices[anchorID]
+	if !ok || anchor == nil {
+		return fmt.Errorf("anchor %s not found", anchorID)
+	}
+
+	v := &RGAVertex[T]{
+		ID:        newID,
+		Value:     value,
+		Origin:    anchorID,
+		Timestamp: ts,
+	}
+
+	r.Vertices[v.ID] = v
+	r.edges[anchorID] = insertChildSorted(r.edges[anchorID], v)
+
+	v.Next = anchor.Next
+	anchor.Next = v.ID
+	if v.Next == "" {
+		r.Tail = v.ID
 	}
 	return nil
 }

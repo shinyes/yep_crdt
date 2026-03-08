@@ -7,100 +7,153 @@ import (
 
 func (m *MapCRDT) Merge(other CRDT) error {
 	if other == nil {
-		return fmt.Errorf("%w: 合并的 CRDT 不能为 nil", ErrInvalidData)
+		return fmt.Errorf("%w: merged CRDT cannot be nil", ErrInvalidData)
 	}
 
 	o, ok := other.(*MapCRDT)
 	if !ok {
-		return fmt.Errorf("%w: 期望 *MapCRDT, 得到 %T", ErrTypeMismatch, other)
+		return fmt.Errorf("%w: expected *MapCRDT, got %T", ErrTypeMismatch, other)
+	}
+	if m == o {
+		return nil
 	}
 
-	// 合并前，我们需要确保本地 cache 中的脏数据已经持久化到 Entries 吗？
-	// 或者 Merge 直接操作 Entries？
-	// 远程过来的数据在 Entries 中。
-	// 本地的数据可能在 cache 中较新。
-	// 筀略：
-	// 1. 遍历远程 Entries。
-	// 2. 如果本地 cache 中有对应项，直接 Merge 到 cache 中。并标记为脏（虽然已经是脏的）。
-	// 3. 如果本地 cache 没有，但 Entries 有，反序列化到 cache，然后 Merge。
-	// 4. 如果本地都没有，直接拷贝 Entry 到本地 Entries（且不通过 cache，或者放入 cache）。
+	remoteEntries, err := o.snapshotEntriesForMerge()
+	if err != nil {
+		return err
+	}
 
-	// 简单起见，且为了正确性：
-	// 我们把远程的数据 merge 进本地的活跃对象 (cache) 中。
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	for k, remoteEntry := range o.Entries {
-		// 1. 尝试从缓存获取活跃对象
+	if m.Entries == nil {
+		m.Entries = make(map[string]*Entry)
+	}
+	m.ensureCacheInternalsLocked()
+
+	for k, remoteEntry := range remoteEntries {
 		localC, inCache := m.cache[k]
-
 		if inCache {
-			// 本地有活跃对象，必须反序列化远程对象并 Merge 进去
 			remoteC, err := DeserializeWithHint(remoteEntry.Type, remoteEntry.Data, remoteEntry.TypeHint)
 			if err != nil {
-				return fmt.Errorf("反序列化远程键 '%s' 失败: %w", k, err)
+				return fmt.Errorf("failed to deserialize remote key %q: %w", k, err)
 			}
-			// 注入 BaseDir 到远程对象 (虽然它只是用来读取数据的，但为了 Merge 安全?)
-			// Merge 通常只比较元数据，不需要 ReadAll。
+			injectBaseDirIntoCRDT(remoteC, m.baseDir)
 			if err := localC.Merge(remoteC); err != nil {
-				return fmt.Errorf("合并键 '%s' 失败: %w", k, err)
+				return fmt.Errorf("failed to merge key %q: %w", k, err)
 			}
-			// Merge 完成，localC 更新了。Entry.Data 仍是陈旧的。
+			m.updateLRU(k)
 			continue
 		}
 
-		// 2. 缓存无，检查本地 Entry
 		localEntry, exists := m.Entries[k]
-		if !exists {
-			// 本地完全没有，直接采纳远程 Entry
-			// 这种情况下，不需要反序列化，直接存 Entry 即可。cache 保持空白。
-			m.Entries[k] = remoteEntry
+		if !exists || localEntry == nil {
+			m.Entries[k] = cloneEntry(remoteEntry)
 			continue
 		}
 
-		// 3. 本地有 Entry 但无 Cache。需要比较/合并。
 		if localEntry.Type != remoteEntry.Type {
-			// 类型冲突，LWW 或其他策略。这里简单覆盖？或者保留本地？
-			// 假设类型一旦确定不变。如果变了，覆盖。
-			m.Entries[k] = remoteEntry
-		} else {
-			// 两个都是冷数据 (Bytes)。
-			// 反序列化 -> Merge -> 序列化 -> 存回 Entry?
-			// 还是反序列化 -> Merge -> 放入 Cache? (推荐后者，Lazy)
+			m.Entries[k] = cloneEntry(remoteEntry)
+			m.removeCacheKeyLocked(k)
+			continue
+		}
 
-			lC, err := DeserializeWithHint(localEntry.Type, localEntry.Data, localEntry.TypeHint)
-			if err != nil {
-				return fmt.Errorf("反序列化本地键 '%s' 失败: %w", k, err)
-			}
-			if lf, ok := lC.(*LocalFileCRDT); ok && m.baseDir != "" {
-				lf.SetBaseDir(m.baseDir)
-			} else if subMap, ok := lC.(*MapCRDT); ok && m.baseDir != "" {
-				subMap.SetBaseDir(m.baseDir)
-			}
+		localC, err := DeserializeWithHint(localEntry.Type, localEntry.Data, localEntry.TypeHint)
+		if err != nil {
+			return fmt.Errorf("failed to deserialize local key %q: %w", k, err)
+		}
+		injectBaseDirIntoCRDT(localC, m.baseDir)
 
-			rC, err := DeserializeWithHint(remoteEntry.Type, remoteEntry.Data, remoteEntry.TypeHint)
-			if err != nil {
-				return fmt.Errorf("反序列化远程键 '%s' (第二次) 失败: %w", k, err)
-			}
+		remoteC, err := DeserializeWithHint(remoteEntry.Type, remoteEntry.Data, remoteEntry.TypeHint)
+		if err != nil {
+			return fmt.Errorf("failed to deserialize remote key %q: %w", k, err)
+		}
+		injectBaseDirIntoCRDT(remoteC, m.baseDir)
 
-			if err := lC.Merge(rC); err != nil {
-				return fmt.Errorf("合并键 '%s' 失败: %w", k, err)
-			}
+		if err := localC.Merge(remoteC); err != nil {
+			return fmt.Errorf("failed to merge key %q: %w", k, err)
+		}
 
-			// 放入 Cache，标记为活跃/脏
-			m.cache[k] = lC
+		m.cache[k] = localC
+		m.updateLRU(k)
+	}
+
+	return nil
+}
+
+func (m *MapCRDT) snapshotEntriesForMerge() (map[string]*Entry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshot := make(map[string]*Entry, len(m.Entries)+len(m.cache))
+	for k, e := range m.Entries {
+		if e == nil {
+			continue
+		}
+		snapshot[k] = cloneEntry(e)
+	}
+
+	for k, c := range m.cache {
+		if c == nil {
+			continue
+		}
+		b, err := c.Bytes()
+		if err != nil {
+			return nil, fmt.Errorf("%w: serialize cached key %q failed: %v", ErrSerialization, k, err)
+		}
+		typeHint := ""
+		if existing, ok := snapshot[k]; ok {
+			typeHint = existing.TypeHint
+		}
+		snapshot[k] = &Entry{
+			Type:     c.Type(),
+			Data:     copyBytes(b),
+			TypeHint: typeHint,
 		}
 	}
-	return nil
+
+	return snapshot, nil
+}
+
+func cloneEntry(e *Entry) *Entry {
+	if e == nil {
+		return nil
+	}
+	return &Entry{
+		Type:     e.Type,
+		Data:     copyBytes(e.Data),
+		TypeHint: e.TypeHint,
+	}
+}
+
+func copyBytes(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	return append([]byte(nil), data...)
+}
+
+func injectBaseDirIntoCRDT(c CRDT, baseDir string) {
+	if c == nil || baseDir == "" {
+		return
+	}
+	if lf, ok := c.(*LocalFileCRDT); ok {
+		lf.SetBaseDir(baseDir)
+		return
+	}
+	if subMap, ok := c.(*MapCRDT); ok {
+		subMap.SetBaseDir(baseDir)
+	}
 }
 
 func (m *MapCRDT) Bytes() ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Flush cache into Entries in place, then serialize snapshot directly.
 	for k, c := range m.cache {
 		b, err := c.Bytes()
 		if err != nil {
-			return nil, fmt.Errorf("%w: 序列化键 '%s' 失败: %v", ErrSerialization, k, err)
+			return nil, fmt.Errorf("%w: serialize key %q failed: %v", ErrSerialization, k, err)
 		}
 		if existing, ok := m.Entries[k]; ok {
 			existing.Data = b
@@ -118,7 +171,7 @@ func (m *MapCRDT) Bytes() ([]byte, error) {
 
 	data, err := json.Marshal(state)
 	if err != nil {
-		return nil, fmt.Errorf("%w: JSON 序列化失败: %v", ErrSerialization, err)
+		return nil, fmt.Errorf("%w: json marshal failed: %v", ErrSerialization, err)
 	}
 	return data, nil
 }
@@ -128,11 +181,6 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 	defer m.mu.Unlock()
 
 	count := 0
-	// 遍历所有数据。优先遍历 Cache，再遍历 Entries 中不在 Cache 的。
-	// 或者：先 Flush？
-	// GC 可能不需要 Flush，但如果 GC 修改了数据，需要更新。
-
-	// 策略：遍历 Entries 的所有 Key。
 	for k, e := range m.Entries {
 		var c CRDT
 		var inCache bool
@@ -144,12 +192,8 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 			var err error
 			c, err = DeserializeWithHint(e.Type, e.Data, e.TypeHint)
 			if err != nil {
-				// Skip bad data
 				continue
 			}
-			// 不一定非要放入 Cache，除非 GC 发生了修改。
-			// 但为了简化，如果反序列化了，不妨放入 Cache？
-			// 算了，按需加载。
 		}
 
 		if c != nil {
@@ -157,10 +201,9 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 			count += removed
 			if removed > 0 {
 				if !inCache {
-					// 如果刚才不在 Cache 里，现在修改了，必须放入 Cache (变成脏数据)
 					m.cache[k] = c
+					m.updateLRU(k)
 				}
-				// 如果已经在 Cache 里，它已经被修改了，无需额外操作。
 			}
 		}
 	}
@@ -170,16 +213,15 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 
 func FromBytesMap(data []byte) (*MapCRDT, error) {
 	if data == nil {
-		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "输入数据为 nil", DataLength: 0}
+		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "input data is nil", DataLength: 0}
 	}
 	if len(data) == 0 {
-		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "输入数据为空", DataLength: 0}
+		return nil, &InvalidDataError{CRDTType: TypeMap, Reason: "input data is empty", DataLength: 0}
 	}
 
 	m := NewMapCRDT()
 	if err := json.Unmarshal(data, m); err != nil {
-		return nil, fmt.Errorf("%w: JSON 反序列化失败: %v", ErrDeserialization, err)
+		return nil, fmt.Errorf("%w: json unmarshal failed: %v", ErrDeserialization, err)
 	}
-	// Entries 已加载。Cache 为空。
 	return m, nil
 }

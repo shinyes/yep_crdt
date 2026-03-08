@@ -57,11 +57,11 @@ type pendingResponse struct {
 }
 
 type fetchRawResponseLite struct {
-	Type       string
-	RequestID  string
-	Key        string
-	RawData    []byte
-	LocalFiles []SyncedLocalFile
+	Type       string            `msgpack:"type"`
+	RequestID  string            `msgpack:"request_id,omitempty"`
+	Key        string            `msgpack:"key,omitempty"`
+	RawData    []byte            `msgpack:"raw_data,omitempty"`
+	LocalFiles []SyncedLocalFile `msgpack:"local_files,omitempty"`
 }
 
 const internalMsgTypePeerDisconnected = "__peer_disconnected__"

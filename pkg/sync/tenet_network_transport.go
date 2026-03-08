@@ -4,8 +4,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
-
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 func (tn *TenantNetwork) currentLocalID() string {
@@ -35,7 +33,7 @@ func (tn *TenantNetwork) sendValue(peerID string, msg NetworkMessage) error {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
 
-	payload, err := msgpack.Marshal(&msg)
+	payload, err := marshalSyncWire(&msg)
 	if err != nil {
 		return err
 	}
@@ -54,7 +52,7 @@ func (tn *TenantNetwork) broadcastValue(msg NetworkMessage) (int, error) {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
 
-	payload, err := msgpack.Marshal(&msg)
+	payload, err := marshalSyncWire(&msg)
 	if err != nil {
 		return 0, err
 	}

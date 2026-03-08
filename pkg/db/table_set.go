@@ -3,9 +3,7 @@ package db
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/crdt"
@@ -41,7 +39,7 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 			cleanupStagedFileImports(stagedImports)
 			return fmt.Errorf("FileStorageDir not configured, cannot import file")
 		}
-		relativePath, err := normalizeImportRelativePath(fImport.RelativePath)
+		relativePath, err := crdt.ValidateRelativePath(fImport.RelativePath)
 		if err != nil {
 			cleanupStagedFileImports(stagedImports)
 			return fmt.Errorf("invalid file import relative path: %w", err)
@@ -230,30 +228,4 @@ func (t *Table) Set(key uuid.UUID, data map[string]any) error {
 	// 写入成功后触发变更回调（用于自动广播）
 	t.notifyChangeAfterWrite(key, columnsFromMap(data))
 	return nil
-}
-
-func normalizeImportRelativePath(rawPath string) (string, error) {
-	trimmed := strings.TrimSpace(rawPath)
-	if trimmed == "" {
-		return "", fmt.Errorf("path cannot be empty")
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("path must be relative")
-	}
-
-	normalized := strings.ReplaceAll(trimmed, `\`, `/`)
-	relativePath := path.Clean(normalized)
-	if relativePath == "" || relativePath == "." {
-		return "", fmt.Errorf("path cannot be empty")
-	}
-	if strings.HasPrefix(relativePath, "/") {
-		return "", fmt.Errorf("path must be relative")
-	}
-	if strings.Contains(relativePath, ":") {
-		return "", fmt.Errorf("path contains invalid ':'")
-	}
-	if relativePath == ".." || strings.HasPrefix(relativePath, "../") {
-		return "", fmt.Errorf("path escapes storage directory")
-	}
-	return relativePath, nil
 }

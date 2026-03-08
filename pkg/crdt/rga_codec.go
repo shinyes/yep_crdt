@@ -52,6 +52,10 @@ func (r *RGA[T]) GC(safeTimestamp int64) int {
 		}
 	}
 
+	if count > 0 {
+		r.recomputeTailLocked()
+	}
+
 	return count
 }
 
@@ -62,9 +66,11 @@ func (r *RGA[T]) Bytes() ([]byte, error) {
 	state := &struct {
 		Vertices map[string]*RGAVertex[T] `msgpack:"vertices"`
 		Head     string                   `msgpack:"head"`
+		Tail     string                   `msgpack:"tail"`
 	}{
 		Vertices: r.Vertices,
 		Head:     r.Head,
+		Tail:     r.Tail,
 	}
 
 	return msgpack.Marshal(state)
@@ -74,6 +80,7 @@ func FromBytesRGA[T any](data []byte) (*RGA[T], error) {
 	state := &struct {
 		Vertices map[string]*RGAVertex[T] `msgpack:"vertices"`
 		Head     string                   `msgpack:"head"`
+		Tail     string                   `msgpack:"tail"`
 	}{}
 
 	if err := msgpack.Unmarshal(data, state); err != nil {
@@ -82,9 +89,12 @@ func FromBytesRGA[T any](data []byte) (*RGA[T], error) {
 	if state.Vertices == nil {
 		state.Vertices = make(map[string]*RGAVertex[T])
 	}
-	return &RGA[T]{
+	r := &RGA[T]{
 		Vertices: state.Vertices,
 		Head:     state.Head,
+		Tail:     state.Tail,
 		edges:    make(map[string][]*RGAVertex[T]),
-	}, nil
+	}
+	r.ensureTailLocked()
+	return r, nil
 }
