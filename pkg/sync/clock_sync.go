@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"time"
+
+	"github.com/shinyes/yep_crdt/pkg/hlc"
 )
 
 // ClockSync handles rejoin-time synchronization strategy.
@@ -33,7 +35,7 @@ func (cs *ClockSync) HandleNodeRejoin(nodeID string, remoteClock int64, offlineD
 	}
 
 	myClock := cs.nm.db.Clock().Now()
-	clockDiff := myClock - remoteClock
+	clockDiff := hlc.PhysicalDiff(myClock, remoteClock)
 
 	log.Printf("[ClockSync] rejoin clock diff: node=%s, local=%d, remote=%d, diff=%d",
 		nodeID, myClock, remoteClock, clockDiff)

@@ -102,6 +102,8 @@ type RawRowData struct {
 	LocalFiles []SyncedLocalFile `json:"local_files,omitempty"`
 }
 
+//go:generate go run ../../cmd/gen_sync_docs
+
 // Message type constants.
 const (
 	MsgTypeHeartbeat        = "heartbeat"

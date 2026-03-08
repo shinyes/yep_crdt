@@ -1,5 +1,7 @@
 package sync
 
+import "github.com/shinyes/yep_crdt/pkg/hlc"
+
 // GetNodeInfo returns one node record.
 func (nm *NodeManager) GetNodeInfo(nodeID string) (*NodeInfo, bool) {
 	nm.mu.RLock()
@@ -55,5 +57,5 @@ func (nm *NodeManager) CalculateSafeTimestamp() int64 {
 		}
 	}
 
-	return minClock - defaultSafeTimestampOffset.Milliseconds()
+	return hlc.SubPhysical(minClock, defaultSafeTimestampOffset.Milliseconds())
 }

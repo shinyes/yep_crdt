@@ -207,6 +207,7 @@ _ = err
 - peer `gc_floor` 领先本地时自动触发 full sync 追平
 - HLC 驱动的因果一致时序
 - 网络层连接状态作为在线/离线判定来源（应用层不再单独做离线超时判定）
+- 协议/消息结构稳定文档（自动生成）：`docs/sync_protocol.md`、`docs/network_message.md`
 
 ### 本地多租户一键启动（简化版）
 
@@ -409,8 +410,10 @@ fmt.Println("backup since:", sinceByTenant)
 ### 单节点/本地维护
 
 ```go
+import "github.com/shinyes/yep_crdt/pkg/hlc"
+
 // 方式 1：指定 safeTimestamp
-safeTs := myDB.Now() - 5000 // 5s
+safeTs := hlc.SubPhysical(myDB.Now(), 5000) // 5s
 result := myDB.GC(safeTs)
 
 // 方式 2：按时间偏移（推荐）
