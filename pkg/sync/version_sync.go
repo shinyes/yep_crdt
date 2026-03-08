@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/db"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 // VersionSync exchanges per-table digests when peers connect.
@@ -36,7 +35,7 @@ func (vs *VersionSync) OnPeerConnected(peerID string) {
 		return
 	}
 
-	digestBytes, err := msgpack.Marshal(digest)
+	digestBytes, err := marshalVersionDigest(digest)
 	if err != nil {
 		log.Printf("[VersionSync] marshal digest failed: %v", err)
 		return
@@ -118,7 +117,7 @@ func (vs *VersionSync) OnReceiveDigest(peerID string, msg *NetworkMessage) {
 	}
 
 	var remoteDigest VersionDigest
-	if err := msgpack.Unmarshal(msg.RawData, &remoteDigest); err != nil {
+	if err := unmarshalVersionDigest(msg.RawData, &remoteDigest); err != nil {
 		log.Printf("[VersionSync] unmarshal remote digest failed: %v", err)
 		return
 	}
