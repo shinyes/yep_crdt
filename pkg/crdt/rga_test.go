@@ -137,3 +137,87 @@ func TestRGAMergeIntoEmptyKeepsHeadUsable(t *testing.T) {
 		t.Fatalf("expected 3 values after append, got %d", len(values))
 	}
 }
+
+func TestRGAAppendOp_OrderAndTail(t *testing.T) {
+	r := NewRGA[[]byte](hlc.New())
+
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("A")}); err != nil {
+		t.Fatalf("append A failed: %v", err)
+	}
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("B")}); err != nil {
+		t.Fatalf("append B failed: %v", err)
+	}
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("C")}); err != nil {
+		t.Fatalf("append C failed: %v", err)
+	}
+
+	values := r.Value().([][]byte)
+	if len(values) != 3 || string(values[0]) != "A" || string(values[1]) != "B" || string(values[2]) != "C" {
+		t.Fatalf("unexpected append order: %v", values)
+	}
+
+	lastID := r.Head
+	curr := r.Head
+	for curr != "" {
+		v := r.Vertices[curr]
+		lastID = v.ID
+		curr = v.Next
+	}
+	if r.Tail != lastID {
+		t.Fatalf("tail mismatch: tail=%s last=%s", r.Tail, lastID)
+	}
+}
+
+func TestRGAAppendOp_WorksAfterDecodeAndGC(t *testing.T) {
+	r := NewRGA[[]byte](hlc.New())
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("A")}); err != nil {
+		t.Fatalf("append A failed: %v", err)
+	}
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("B")}); err != nil {
+		t.Fatalf("append B failed: %v", err)
+	}
+
+	// Remove B and GC it, then append C. Tail should move to A after GC.
+	var idB string
+	for id, v := range r.Vertices {
+		if id != r.Head && string(v.Value) == "B" {
+			idB = id
+			break
+		}
+	}
+	if idB == "" {
+		t.Fatal("failed to locate B")
+	}
+	if err := r.Apply(OpRGARemove{ID: idB}); err != nil {
+		t.Fatalf("remove B failed: %v", err)
+	}
+	safeTs := r.Clock.Now() + 1
+	removed := r.GC(safeTs)
+	if removed == 0 {
+		t.Fatal("expected GC to remove B")
+	}
+
+	if err := r.Apply(OpRGAAppend[[]byte]{Value: []byte("C")}); err != nil {
+		t.Fatalf("append C failed: %v", err)
+	}
+
+	raw, err := r.Bytes()
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	decoded, err := FromBytesRGA[[]byte](raw)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// Simulate old payload without tail metadata.
+	decoded.Tail = ""
+	if err := decoded.Apply(OpRGAAppend[[]byte]{Value: []byte("D")}); err != nil {
+		t.Fatalf("append D after decode failed: %v", err)
+	}
+
+	values := decoded.Value().([][]byte)
+	if len(values) != 3 || string(values[0]) != "A" || string(values[1]) != "C" || string(values[2]) != "D" {
+		t.Fatalf("unexpected values after decode+append: %v", values)
+	}
+}

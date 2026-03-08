@@ -70,6 +70,8 @@ func (r *RGA[T]) rebuildLinkedListLocked() {
 		visited[orphan.ID] = struct{}{}
 		walk(orphan.ID)
 	}
+
+	r.Tail = prev.ID
 }
 
 func (r *RGA[T]) isTriviallyEmptyLocked() bool {
@@ -110,6 +112,7 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	if nonHeadCount <= 0 {
 		r.Vertices = map[string]*RGAVertex[T]{localHead: localHeadVertex}
 		r.edges = make(map[string][]*RGAVertex[T])
+		r.Tail = localHead
 		return
 	}
 
@@ -151,6 +154,7 @@ func (r *RGA[T]) mergeIntoEmptyLocked(o *RGA[T]) {
 	// Build edges lazily in ensureEdges(). This avoids heavy allocations on
 	// merge-into-empty hot paths while keeping behavior unchanged.
 	r.edges = make(map[string][]*RGAVertex[T])
+	r.recomputeTailLocked()
 }
 
 // Merge merges another RGA state using incremental updates.

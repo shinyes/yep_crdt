@@ -12,6 +12,7 @@ type RGA[T any] struct {
 	mu       sync.RWMutex
 	Vertices map[string]*RGAVertex[T]
 	Head     string     // 虚拟头节点的 ID
+	Tail     string     // 当前链表尾节点 ID（包含删除节点），用于 O(1) append
 	Clock    *hlc.Clock // 混合逻辑时钟
 
 	// internal cache for tree structure: Origin -> List of Children
@@ -41,6 +42,7 @@ func NewRGA[T any](clock *hlc.Clock) *RGA[T] {
 	return &RGA[T]{
 		Vertices: map[string]*RGAVertex[T]{head.ID: head},
 		Head:     head.ID,
+		Tail:     head.ID,
 		Clock:    clock,
 		edges:    make(map[string][]*RGAVertex[T]),
 	}
@@ -117,4 +119,53 @@ func (r *RGA[T]) Iterator() func() (T, bool) {
 		var zero T
 		return zero, false
 	}
+}
+
+func (r *RGA[T]) ensureTailLocked() {
+	if len(r.Vertices) == 0 {
+		r.Tail = ""
+		return
+	}
+	if r.Head == "" {
+		for id := range r.Vertices {
+			r.Head = id
+			break
+		}
+	}
+	if tail := r.Tail; tail != "" {
+		if v, ok := r.Vertices[tail]; ok && v != nil && v.Next == "" {
+			return
+		}
+	}
+	r.recomputeTailLocked()
+}
+
+func (r *RGA[T]) recomputeTailLocked() {
+	if len(r.Vertices) == 0 {
+		r.Tail = ""
+		return
+	}
+	if r.Head == "" {
+		for id := range r.Vertices {
+			r.Head = id
+			break
+		}
+	}
+
+	curr := r.Head
+	last := r.Head
+	steps := 0
+	maxSteps := len(r.Vertices) + 1
+
+	for curr != "" && steps < maxSteps {
+		v, ok := r.Vertices[curr]
+		if !ok || v == nil {
+			break
+		}
+		last = v.ID
+		curr = v.Next
+		steps++
+	}
+
+	r.Tail = last
 }
