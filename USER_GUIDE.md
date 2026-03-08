@@ -435,6 +435,8 @@ if len(result.Errors) > 0 {
 #### GCByTimeOffset（推荐）
 
 更方便的方法是 `GCByTimeOffset`，由数据库根据偏移量自动计算 `safeTimestamp`。
+其计算等价于 `hlc.SubPhysical(db.clock.Now(), offsetMs)`：只回退 HLC 的物理毫秒部分，
+保留 logical 位，避免跨毫秒边界时出现 logical 借位导致的安全时间计算偏差。
 
 ```go
 // 清理 1 分钟前的数据

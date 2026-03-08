@@ -428,6 +428,10 @@ result := myDB.GC(safeTs)
 // 方式 2：按时间偏移（推荐）
 result2 := myDB.GCByTimeOffset(1 * time.Minute)
 
+// 语义说明：
+// GCByTimeOffset 通过 hlc.SubPhysical(db.clock.Now(), offsetMs) 只回退 HLC 的物理毫秒部分，
+// logical 部分保持不变，避免跨毫秒时发生 logical 借位导致 safeTimestamp 计算错误。
+
 fmt.Printf("tables=%d rows=%d removed=%d errors=%d\n",
 	result.TablesScanned,
 	result.RowsScanned,

@@ -33,6 +33,30 @@ func TestGCSafeTimestampByOffset_NonPositiveOffsetNoop(t *testing.T) {
 	}
 }
 
+func TestGCSafeTimestampByOffset_NoLogicalBorrowAcrossMillisecondBoundary(t *testing.T) {
+	now := hlc.Pack(10_000, 0)
+
+	got := gcSafeTimestampByOffset(now, time.Millisecond)
+	if hlc.Physical(got) != 9_999 {
+		t.Fatalf("physical should decrease by 1ms: want=%d got=%d", int64(9_999), hlc.Physical(got))
+	}
+	if hlc.Logical(got) != hlc.Logical(now) {
+		t.Fatalf("logical should stay unchanged: want=%d got=%d", hlc.Logical(now), hlc.Logical(got))
+	}
+}
+
+func TestGCSafeTimestampByOffset_CrossMillisecondBoundaryKeepsLogicalBits(t *testing.T) {
+	now := hlc.Pack(10_000, 0x7FFF)
+
+	got := gcSafeTimestampByOffset(now, 2*time.Millisecond)
+	if hlc.Physical(got) != 9_998 {
+		t.Fatalf("physical should cross ms boundary correctly: want=%d got=%d", int64(9_998), hlc.Physical(got))
+	}
+	if hlc.Logical(got) != hlc.Logical(now) {
+		t.Fatalf("logical should be preserved across ms boundary: want=%d got=%d", hlc.Logical(now), hlc.Logical(got))
+	}
+}
+
 func TestDB_GCByTimeOffset_RespectsPhysicalOffsetWindow(t *testing.T) {
 	s, err := store.NewBadgerStore(t.TempDir() + "/db")
 	if err != nil {

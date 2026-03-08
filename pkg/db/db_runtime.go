@@ -72,7 +72,11 @@ func (db *DB) GetStore() store.Store {
 // GCByTimeOffset 根据时间偏移量执行 GC。
 // offset 是从当前时间向后的偏移量，例如 60 * time.Second 表示清理 60 秒前的数据。
 func (db *DB) GCByTimeOffset(offset time.Duration) *GCResult {
-	safeTimestamp := gcSafeTimestampByOffset(db.clock.Now(), offset)
+	now := db.clock.Now()
+	if offset <= 0 {
+		return db.GC(now)
+	}
+	safeTimestamp := hlc.SubPhysical(now, offset.Milliseconds())
 	return db.GC(safeTimestamp)
 }
 
