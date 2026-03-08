@@ -116,6 +116,7 @@ func main() {
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 
@@ -140,6 +141,14 @@ func main() {
 
 	database, err := db.Open(s, "tenant-1")
 	if err != nil {
+		var mismatchErr *db.DatabaseIDMismatchError
+		if errors.As(err, &mismatchErr) {
+			log.Fatalf("database id mismatch: stored=%s provided=%s",
+				mismatchErr.StoredDatabaseID, mismatchErr.ProvidedDatabaseID)
+		}
+		if errors.Is(err, db.ErrDatabaseIDMismatch) {
+			log.Fatalf("database id mismatch: %v", err)
+		}
 		log.Fatal(err)
 	}
 	defer database.Close()

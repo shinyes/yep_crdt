@@ -104,4 +104,27 @@ func TestDB_DatabaseID(t *testing.T) {
 	if !errors.Is(err, ErrDatabaseIDMismatch) {
 		t.Fatalf("expected ErrDatabaseIDMismatch, got %v", err)
 	}
+	var mismatch *DatabaseIDMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected DatabaseIDMismatchError, got %T", err)
+	}
+	if mismatch.StoredDatabaseID != "my-tenant" || mismatch.ProvidedDatabaseID != "other-tenant" {
+		t.Fatalf("unexpected mismatch detail: %#v", mismatch)
+	}
+}
+
+func TestDB_Open_InvalidInput(t *testing.T) {
+	if _, err := Open(nil, "tenant-1"); !errors.Is(err, ErrNilStore) {
+		t.Fatalf("expected ErrNilStore, got %v", err)
+	}
+
+	s, err := store.NewBadgerStore(t.TempDir() + "/db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := Open(s, "   "); !errors.Is(err, ErrEmptyDatabaseID) {
+		t.Fatalf("expected ErrEmptyDatabaseID, got %v", err)
+	}
 }

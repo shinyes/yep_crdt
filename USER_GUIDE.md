@@ -39,6 +39,7 @@ Yep CRDT 需要一个本地目录来存储数据（基于 BadgerDB）。
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -67,6 +68,11 @@ func main() {
 	// Open 会启动后台服务（如 HLC 时钟），并校验 DatabaseID
 	myDB, err := db.Open(s, "my-database-id")
 	if err != nil {
+		var mismatchErr *db.DatabaseIDMismatchError
+		if errors.As(err, &mismatchErr) {
+			log.Fatalf("DatabaseID 不匹配，存量=%s，当前=%s",
+				mismatchErr.StoredDatabaseID, mismatchErr.ProvidedDatabaseID)
+		}
 		log.Fatal(err)
 	}
 	defer myDB.Close()
