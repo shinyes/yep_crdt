@@ -1,6 +1,7 @@
 package crdt
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -78,8 +79,12 @@ func (lf *LocalFileCRDT) Apply(op Op) error {
 	lf.mu.Lock()
 	defer lf.mu.Unlock()
 
-	// LWW 逻辑：如果时间戳更大则更新
-	if setOp.Timestamp > lf.timestamp {
+	// Deterministic winner: timestamp first, then metadata bytes as tie-breaker.
+	cmp, err := compareLocalFileState(setOp.Timestamp, setOp.Metadata, lf.timestamp, lf.metadata)
+	if err != nil {
+		return err
+	}
+	if cmp > 0 {
 		lf.metadata = setOp.Metadata
 		lf.timestamp = setOp.Timestamp
 	}
@@ -99,7 +104,11 @@ func (lf *LocalFileCRDT) Merge(other CRDT) error {
 	lf.mu.Lock()
 	defer lf.mu.Unlock()
 
-	if o.timestamp > lf.timestamp {
+	cmp, err := compareLocalFileState(o.timestamp, o.metadata, lf.timestamp, lf.metadata)
+	if err != nil {
+		return err
+	}
+	if cmp > 0 {
 		// 深度拷贝 metadata 以避免引用共享
 		lf.metadata = FileMetadata{
 			Path: o.metadata.Path,
@@ -109,6 +118,29 @@ func (lf *LocalFileCRDT) Merge(other CRDT) error {
 		lf.timestamp = o.timestamp
 	}
 	return nil
+}
+
+func compareLocalFileState(tsA int64, metaA FileMetadata, tsB int64, metaB FileMetadata) (int, error) {
+	if tsA > tsB {
+		return 1, nil
+	}
+	if tsA < tsB {
+		return -1, nil
+	}
+
+	// For equal timestamps, use stable deterministic order on encoded metadata bytes.
+	// FileMetadata is one fixed struct, so JSON field order is stable here.
+	metaABytes, err := json.Marshal(metaA)
+	if err != nil {
+		return 0, fmt.Errorf("marshal LocalFileCRDT metadata A failed: %w", err)
+	}
+	metaBBytes, err := json.Marshal(metaB)
+	if err != nil {
+		return 0, fmt.Errorf("marshal LocalFileCRDT metadata B failed: %w", err)
+	}
+
+	// Keep tie-break direction consistent with LWWRegister: lexicographically smaller wins.
+	return bytes.Compare(metaBBytes, metaABytes), nil
 }
 
 // GC 执行垃圾回收 (对于 LWW Register 不需要做任何事)。

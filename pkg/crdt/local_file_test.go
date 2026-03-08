@@ -161,3 +161,71 @@ func TestValidateRelativePath(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalFileCRDT_ApplySameTimestampUsesMetadataTieBreaker(t *testing.T) {
+	ts := int64(100)
+	lf := NewLocalFileCRDT(FileMetadata{
+		Path: "m.txt",
+		Hash: "m",
+		Size: 1,
+	}, ts)
+
+	if err := lf.Apply(OpLocalFileSet{
+		Metadata: FileMetadata{
+			Path: "a.txt",
+			Hash: "a",
+			Size: 1,
+		},
+		Timestamp: ts,
+	}); err != nil {
+		t.Fatalf("apply same timestamp (smaller metadata) failed: %v", err)
+	}
+
+	got := lf.Value().(FileMetadata)
+	if got.Path != "a.txt" {
+		t.Fatalf("expected a.txt to win tie-breaker, got %s", got.Path)
+	}
+
+	if err := lf.Apply(OpLocalFileSet{
+		Metadata: FileMetadata{
+			Path: "z.txt",
+			Hash: "z",
+			Size: 1,
+		},
+		Timestamp: ts,
+	}); err != nil {
+		t.Fatalf("apply same timestamp (larger metadata) failed: %v", err)
+	}
+
+	got = lf.Value().(FileMetadata)
+	if got.Path != "a.txt" {
+		t.Fatalf("expected winner to remain a.txt, got %s", got.Path)
+	}
+}
+
+func TestLocalFileCRDT_MergeSameTimestampConverges(t *testing.T) {
+	ts := int64(200)
+	a := NewLocalFileCRDT(FileMetadata{
+		Path: "alpha.txt",
+		Hash: "aa",
+		Size: 10,
+	}, ts)
+	b := NewLocalFileCRDT(FileMetadata{
+		Path: "beta.txt",
+		Hash: "bb",
+		Size: 20,
+	}, ts)
+
+	if err := a.Merge(b); err != nil {
+		t.Fatalf("a.Merge(b) failed: %v", err)
+	}
+	if err := b.Merge(a); err != nil {
+		t.Fatalf("b.Merge(a) failed: %v", err)
+	}
+
+	av := a.Value().(FileMetadata)
+	bv := b.Value().(FileMetadata)
+	if av != bv {
+		t.Fatalf("expected convergence, got a=%+v b=%+v", av, bv)
+	}
+}
