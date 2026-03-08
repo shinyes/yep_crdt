@@ -71,7 +71,9 @@ func (tn *TenantNetwork) nextRequestID() string {
 
 func isWaiterResponseType(msgType string) bool {
 	switch msgType {
-	case MsgTypeFetchRawResponse, MsgTypeGCPrepareAck, MsgTypeGCCommitAck, MsgTypeGCExecuteAck, MsgTypeGCAbortAck:
+	case MsgTypeFetchRawResponse,
+		MsgTypeGCPrepareAck, MsgTypeGCCommitAck, MsgTypeGCExecuteAck, MsgTypeGCAbortAck,
+		MsgTypeMerkleRootAck, MsgTypeMerkleNodeAck, MsgTypeMerkleLeafAck:
 		return true
 	default:
 		return false

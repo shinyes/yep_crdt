@@ -37,6 +37,15 @@ func (vs *VersionSync) OnPeerConnectedWithError(peerID string) error {
 		return ErrNoNetwork
 	}
 
+	if _, ok := network.(requestResponseNetwork); ok {
+		if err := vs.tryMerkleCompareAndSync(peerID); err == nil {
+			return nil
+		} else {
+			log.Printf("[VersionSync] merkle compare-and-sync failed, fallback legacy digest: peer=%s, err=%v",
+				shortPeerID(peerID), err)
+		}
+	}
+
 	digest, err := vs.buildDigest()
 	if err != nil {
 		return err

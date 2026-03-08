@@ -81,7 +81,13 @@ func (t *Table) saveRow(txn store.Tx, pk uuid.UUID, currentMap *crdt.MapCRDT, ol
 		return err
 	}
 	keyBytes := t.dataKey(pk)
-	return txn.Set(keyBytes, finalBytes, 0)
+	if err := txn.Set(keyBytes, finalBytes, 0); err != nil {
+		return err
+	}
+	if err := t.updateMerkleAfterRowSave(txn, pk, finalBytes); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (t *Table) getRGA(m *crdt.MapCRDT, col string) (*crdt.RGA[[]byte], error) {

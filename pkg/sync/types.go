@@ -113,6 +113,12 @@ const (
 	MsgTypeFetchRawRequest  = "fetch_raw_request"
 	MsgTypeFetchRawResponse = "fetch_raw_response"
 	MsgTypeVersionDigest    = "version_digest"
+	MsgTypeMerkleRootReq    = "merkle_root_req"
+	MsgTypeMerkleRootAck    = "merkle_root_ack"
+	MsgTypeMerkleNodeReq    = "merkle_node_req"
+	MsgTypeMerkleNodeAck    = "merkle_node_ack"
+	MsgTypeMerkleLeafReq    = "merkle_leaf_req"
+	MsgTypeMerkleLeafAck    = "merkle_leaf_ack"
 
 	// Manual GC coordination flow:
 	// 1) gc_prepare -> gc_prepare_ack
@@ -172,4 +178,43 @@ type TableDigest struct {
 type VersionDigest struct {
 	NodeID string        `json:"node_id" msgpack:"node_id"`
 	Tables []TableDigest `json:"tables" msgpack:"tables"`
+}
+
+// MerkleRootRequest requests table root hashes from a peer.
+type MerkleRootRequest struct {
+	Tables []string `json:"tables" msgpack:"tables"`
+}
+
+// MerkleRootResponse returns table root hashes.
+type MerkleRootResponse struct {
+	Roots map[string]string `json:"roots" msgpack:"roots"` // table -> root hash (hex)
+}
+
+// MerkleNodeRequest requests one node hash and its direct children hashes.
+type MerkleNodeRequest struct {
+	Table  string `json:"table" msgpack:"table"`
+	Level  int    `json:"level" msgpack:"level"`
+	Prefix string `json:"prefix" msgpack:"prefix"`
+}
+
+// MerkleNodeResponse returns one node hash and direct children hashes.
+type MerkleNodeResponse struct {
+	Table    string            `json:"table" msgpack:"table"`
+	Level    int               `json:"level" msgpack:"level"`
+	Prefix   string            `json:"prefix" msgpack:"prefix"`
+	NodeHash string            `json:"node_hash" msgpack:"node_hash"` // hex
+	Children map[string]string `json:"children" msgpack:"children"`   // child nibble -> hash hex
+}
+
+// MerkleLeafRequest requests row-level hashes under one leaf prefix.
+type MerkleLeafRequest struct {
+	Table  string `json:"table" msgpack:"table"`
+	Prefix string `json:"prefix" msgpack:"prefix"`
+}
+
+// MerkleLeafResponse returns row-level hashes under one leaf prefix.
+type MerkleLeafResponse struct {
+	Table  string            `json:"table" msgpack:"table"`
+	Prefix string            `json:"prefix" msgpack:"prefix"`
+	Rows   map[string]string `json:"rows" msgpack:"rows"` // row key -> hash hex
 }

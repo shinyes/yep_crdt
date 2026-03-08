@@ -74,6 +74,15 @@ func (n *tenantScopedNetwork) SendMessage(targetNodeID string, msg *NetworkMessa
 	return n.network.SendMessage(targetNodeID, &cloned)
 }
 
+func (n *tenantScopedNetwork) SendWithResponse(targetNodeID string, msg *NetworkMessage, timeout time.Duration) (*NetworkMessage, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("message is nil")
+	}
+	cloned := *msg
+	cloned.TenantID = n.tenantID
+	return n.network.SendWithResponse(targetNodeID, &cloned, timeout)
+}
+
 func (n *tenantScopedNetwork) Broadcast(msg *NetworkMessage) (int, error) {
 	if msg == nil {
 		return 0, fmt.Errorf("message is nil")

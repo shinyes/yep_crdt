@@ -135,6 +135,15 @@ func (rt *tenantRuntime) handleMessage(peerID string, msg NetworkMessage) {
 	case MsgTypeVersionDigest:
 		rt.vs.OnReceiveDigest(peerID, &msg)
 
+	case MsgTypeMerkleRootReq:
+		rt.vs.OnReceiveMerkleRootRequest(peerID, &msg)
+
+	case MsgTypeMerkleNodeReq:
+		rt.vs.OnReceiveMerkleNodeRequest(peerID, &msg)
+
+	case MsgTypeMerkleLeafReq:
+		rt.vs.OnReceiveMerkleLeafRequest(peerID, &msg)
+
 	case MsgTypeGCPrepare:
 		rt.nodeMgr.HandleManualGCPrepare(peerID, msg)
 
