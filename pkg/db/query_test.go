@@ -16,8 +16,8 @@ func TestQueryPlanner(t *testing.T) {
 	os.MkdirAll(dbPath, 0755)
 
 	s, _ := store.NewBadgerStore(dbPath)
-	defer s.Close()
 	defer os.RemoveAll(dbPath)
+	defer s.Close()
 
 	myDB, err := Open(s, "test-query-planner")
 	if err != nil {
@@ -110,8 +110,8 @@ func TestFindCRDTs_Iterator(t *testing.T) {
 	os.MkdirAll(dbPath, 0755)
 
 	s, _ := store.NewBadgerStore(dbPath)
-	defer s.Close()
 	defer os.RemoveAll(dbPath)
+	defer s.Close()
 
 	myDB, err := Open(s, "test-find-crdts")
 	if err != nil {
@@ -193,8 +193,8 @@ func TestGetCRDT(t *testing.T) {
 	os.MkdirAll(dbPath, 0755)
 
 	s, _ := store.NewBadgerStore(dbPath)
-	defer s.Close()
 	defer os.RemoveAll(dbPath)
+	defer s.Close()
 
 	myDB, err := Open(s, "test-get-crdt")
 	if err != nil {
@@ -261,8 +261,8 @@ func TestQueryRangeOnStringIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerStore failed: %v", err)
 	}
-	defer s.Close()
 	defer os.RemoveAll(dbPath)
+	defer s.Close()
 
 	myDB, err := Open(s, "test-query-range-string-index")
 	if err != nil {
