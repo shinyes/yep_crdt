@@ -1,6 +1,9 @@
 package crdt
 
-import "sync"
+import (
+	"container/list"
+	"sync"
+)
 
 // MapCRDT 实现列 -> CRDT 的映射。
 // 这是 "行" 容器。
@@ -15,8 +18,8 @@ type MapCRDT struct {
 
 	// 内存泄漏防护：最大缓存大小
 	maxCacheSize int
-	lruKeys      []string       // 简单的 LRU 键跟踪
-	lruIndex     map[string]int // 键到索引的映射，用于 O(1) 查找
+	lruList      *list.List
+	lruNodes     map[string]*list.Element
 }
 
 // Entry 表示 MapCRDT 中的一列数据。
@@ -28,13 +31,99 @@ type Entry struct {
 	TypeHint string // 可选的 Go 类型提示，如 "string", "int", "[]byte"
 }
 
-func NewMapCRDT() *MapCRDT {
-	return &MapCRDT{
+type MapOption func(*MapCRDT)
+
+func WithMaxCacheSize(size int) MapOption {
+	return func(m *MapCRDT) {
+		m.maxCacheSize = size
+	}
+}
+
+func NewMapCRDT(opts ...MapOption) *MapCRDT {
+	m := &MapCRDT{
 		Entries:      make(map[string]*Entry),
 		cache:        make(map[string]CRDT),
 		maxCacheSize: 1000, // 默认最大缓存大小
-		lruKeys:      make([]string, 0, 1000),
-		lruIndex:     make(map[string]int),
+		lruList:      list.New(),
+		lruNodes:     make(map[string]*list.Element),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	m.evictOverflowLocked()
+	return m
+}
+
+func (m *MapCRDT) SetMaxCacheSize(size int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxCacheSize = size
+	m.ensureCacheInternalsLocked()
+	m.evictOverflowLocked()
+}
+
+func (m *MapCRDT) MaxCacheSize() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxCacheSize
+}
+
+func (m *MapCRDT) ensureCacheInternalsLocked() {
+	if m.cache == nil {
+		m.cache = make(map[string]CRDT)
+	}
+	if m.lruList == nil {
+		m.lruList = list.New()
+	}
+	if m.lruNodes == nil {
+		m.lruNodes = make(map[string]*list.Element)
+	}
+}
+
+func (m *MapCRDT) touchLRULocked(key string) {
+	m.ensureCacheInternalsLocked()
+
+	if elem, ok := m.lruNodes[key]; ok {
+		m.lruList.MoveToFront(elem)
+	} else {
+		m.lruNodes[key] = m.lruList.PushFront(key)
+	}
+	m.evictOverflowLocked()
+}
+
+func (m *MapCRDT) removeCacheKeyLocked(key string) {
+	m.ensureCacheInternalsLocked()
+	delete(m.cache, key)
+	if elem, ok := m.lruNodes[key]; ok {
+		m.lruList.Remove(elem)
+		delete(m.lruNodes, key)
+	}
+}
+
+func (m *MapCRDT) touchCacheKey(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureCacheInternalsLocked()
+	if _, ok := m.cache[key]; ok {
+		m.touchLRULocked(key)
+	}
+}
+
+func (m *MapCRDT) evictOverflowLocked() {
+	if m.maxCacheSize <= 0 || m.lruList == nil {
+		return
+	}
+	for m.lruList.Len() > m.maxCacheSize {
+		oldest := m.lruList.Back()
+		if oldest == nil {
+			return
+		}
+		oldKey, ok := oldest.Value.(string)
+		m.lruList.Remove(oldest)
+		if ok {
+			delete(m.lruNodes, oldKey)
+			delete(m.cache, oldKey)
+		}
 	}
 }
 
@@ -56,34 +145,8 @@ func (m *MapCRDT) SetBaseDir(dir string) {
 
 func (m *MapCRDT) Type() Type { return TypeMap }
 
-// updateLRU 更新 LRU 缓存跟踪
-// 优化：使用 map 直接查找位置，避免 O(n) 遍历
 func (m *MapCRDT) updateLRU(key string) {
-	// 如果 key 已存在，直接移动到末尾
-	if pos, exists := m.lruIndex[key]; exists {
-		// 移除当前位置
-		m.lruKeys = append(m.lruKeys[:pos], m.lruKeys[pos+1:]...)
-		// 更新所有后续元素的位置
-		for i := pos; i < len(m.lruKeys); i++ {
-			m.lruIndex[m.lruKeys[i]] = i
-		}
-	}
-
-	// 添加到末尾
-	m.lruKeys = append(m.lruKeys, key)
-	m.lruIndex[key] = len(m.lruKeys) - 1
-
-	// 如果超过最大缓存大小，移除最旧的
-	if m.maxCacheSize > 0 && len(m.lruKeys) > m.maxCacheSize {
-		oldest := m.lruKeys[0]
-		m.lruKeys = m.lruKeys[1:]
-		delete(m.cache, oldest)
-		delete(m.lruIndex, oldest)
-		// 更新所有元素的位置
-		for i, k := range m.lruKeys {
-			m.lruIndex[k] = i
-		}
-	}
+	m.touchLRULocked(key)
 }
 
 func (m *MapCRDT) Value() any {

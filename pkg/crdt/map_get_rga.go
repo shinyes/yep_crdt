@@ -65,6 +65,7 @@ func GetRGA[T any](m *MapCRDT, key string) (*RGA[T], error) {
 	// Try cache
 	if c, ok := m.cache[key]; ok {
 		m.mu.RUnlock()
+		m.touchCacheKey(key)
 		if val, castOk := c.(*RGA[T]); castOk {
 			return val, nil
 		}

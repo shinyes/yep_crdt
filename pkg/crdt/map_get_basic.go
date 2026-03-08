@@ -11,6 +11,7 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 	// Try cache first
 	if c, ok := m.cache[key]; ok {
 		m.mu.RUnlock()
+		m.touchCacheKey(key)
 		return c
 	}
 
@@ -31,6 +32,7 @@ func (m *MapCRDT) GetCRDT(key string) CRDT {
 
 	// 检查在反序列化期间是否已被其他 goroutine 添加到缓存
 	if existing, ok := m.cache[key]; ok {
+		m.updateLRU(key)
 		return existing
 	}
 

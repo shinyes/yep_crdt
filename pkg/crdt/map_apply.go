@@ -44,6 +44,7 @@ func (m *MapCRDT) Apply(op Op) error {
 
 		// 更新缓存
 		m.cache[o.Key] = o.Value
+		m.updateLRU(o.Key)
 		// 同步更新 Entry，保证 Data 也是最新的（虽然有 Flush 机制，但 Set 较少见，稳妥起见）
 		b, err := o.Value.Bytes()
 		if err != nil {
@@ -84,12 +85,14 @@ func (m *MapCRDT) Apply(op Op) error {
 			}
 			// 放入缓存
 			m.cache[o.Key] = c
+			m.updateLRU(o.Key)
 		}
 
 		// 3. 应用操作到对象（内存中）
 		if err := c.Apply(o.Op); err != nil {
 			return fmt.Errorf("应用操作到键 '%s' 失败: %w", o.Key, err)
 		}
+		m.updateLRU(o.Key)
 
 		// 4. 不再立即序列化回 Entry.Data。
 		// Entry.Data 现在是脏数据，将在 Bytes() 或显式 Flush 时更新。

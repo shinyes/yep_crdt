@@ -29,15 +29,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 	if m.Entries == nil {
 		m.Entries = make(map[string]*Entry)
 	}
-	if m.cache == nil {
-		m.cache = make(map[string]CRDT)
-	}
-	if m.lruIndex == nil {
-		m.lruIndex = make(map[string]int)
-	}
-	if m.lruKeys == nil {
-		m.lruKeys = make([]string, 0)
-	}
+	m.ensureCacheInternalsLocked()
 
 	for k, remoteEntry := range remoteEntries {
 		localC, inCache := m.cache[k]
@@ -62,7 +54,7 @@ func (m *MapCRDT) Merge(other CRDT) error {
 
 		if localEntry.Type != remoteEntry.Type {
 			m.Entries[k] = cloneEntry(remoteEntry)
-			delete(m.cache, k)
+			m.removeCacheKeyLocked(k)
 			continue
 		}
 
@@ -210,6 +202,7 @@ func (m *MapCRDT) GC(safeTimestamp int64) int {
 			if removed > 0 {
 				if !inCache {
 					m.cache[k] = c
+					m.updateLRU(k)
 				}
 			}
 		}

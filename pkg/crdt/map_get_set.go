@@ -15,6 +15,7 @@ func GetORSet[T comparable](m *MapCRDT, key string) (*ORSet[T], error) {
 	// Try cache
 	if c, ok := m.cache[key]; ok {
 		m.mu.RUnlock()
+		m.touchCacheKey(key)
 		if val, castOk := c.(*ORSet[T]); castOk {
 			return val, nil
 		}
