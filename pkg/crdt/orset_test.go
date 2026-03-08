@@ -124,3 +124,63 @@ func TestORSet_AddRemoveAdd(t *testing.T) {
 		t.Fatalf("重新添加后预期 [A], 实际得到 %v", vals)
 	}
 }
+
+func TestORSet_RemoveObservedAddOnly(t *testing.T) {
+	a := NewORSet[string]()
+	b := NewORSet[string]()
+
+	// A 先添加并同步给 B，确保 B 观察到该 add-tag。
+	if err := a.Apply(OpORSetAdd[string]{Element: "x"}); err != nil {
+		t.Fatalf("A add failed: %v", err)
+	}
+	if err := b.Merge(a); err != nil {
+		t.Fatalf("B merge A failed: %v", err)
+	}
+
+	// B 删除已观察到的元素，删除信息回传给 A 后应生效。
+	if err := b.Apply(OpORSetRemove[string]{Element: "x"}); err != nil {
+		t.Fatalf("B remove failed: %v", err)
+	}
+	if err := a.Merge(b); err != nil {
+		t.Fatalf("A merge B failed: %v", err)
+	}
+
+	if a.Contains("x") || b.Contains("x") {
+		t.Fatalf("expected observed remove to delete element on both replicas")
+	}
+}
+
+func TestORSet_ConcurrentAddRemoveMayRetainElement(t *testing.T) {
+	a := NewORSet[string]()
+	b := NewORSet[string]()
+
+	// A 添加并同步给 B，建立一个共享 tag。
+	if err := a.Apply(OpORSetAdd[string]{Element: "x"}); err != nil {
+		t.Fatalf("A initial add failed: %v", err)
+	}
+	if err := b.Merge(a); err != nil {
+		t.Fatalf("B merge A failed: %v", err)
+	}
+
+	// 现在并发操作：
+	// A 再次 add("x") 产生新 tag（B 未观察到）；
+	// B remove("x") 只能移除其已观察到的 tag。
+	if err := a.Apply(OpORSetAdd[string]{Element: "x"}); err != nil {
+		t.Fatalf("A concurrent add failed: %v", err)
+	}
+	if err := b.Apply(OpORSetRemove[string]{Element: "x"}); err != nil {
+		t.Fatalf("B concurrent remove failed: %v", err)
+	}
+
+	if err := a.Merge(b); err != nil {
+		t.Fatalf("A merge B failed: %v", err)
+	}
+	if err := b.Merge(a); err != nil {
+		t.Fatalf("B merge A failed: %v", err)
+	}
+
+	// 并发 add 可能保留，最终两边应收敛为包含 x。
+	if !a.Contains("x") || !b.Contains("x") {
+		t.Fatalf("expected concurrent add to survive observed-remove semantics")
+	}
+}

@@ -201,7 +201,7 @@ table.Remove(id, "views", 1)
 
 ### 4.3 集合操作 (ORSet)
 
-适用于 `ORSet` 类型的字段。`ORSet` 允许并发添加和删除元素，且删除操作优先于添加操作（Observed-Remove）。
+适用于 `ORSet` 类型的字段。`ORSet` 允许并发添加和删除元素；删除只会移除已观察到的 add-tag。对同一元素的并发 add/remove 场景下，并发 add 可能在合并后保留（这是 Observed-Remove 语义，不是 remove-wins set）。
 
 ```go
 // 添加标签
