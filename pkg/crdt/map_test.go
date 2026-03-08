@@ -84,6 +84,48 @@ func TestMapCRDT_Merge(t *testing.T) {
 	}
 }
 
+func TestMapCRDT_Merge_UsesRemoteCacheLatestValue(t *testing.T) {
+	source := NewMapCRDT()
+	target := NewMapCRDT()
+
+	if err := source.Apply(OpMapSet{
+		Key:   "name",
+		Value: NewLWWRegister([]byte("Alice"), 100),
+	}); err != nil {
+		t.Fatalf("setup source set failed: %v", err)
+	}
+
+	// OpMapUpdate only mutates cache object; Entry bytes remain stale until Bytes().
+	if err := source.Apply(OpMapUpdate{
+		Key: "name",
+		Op: OpLWWSet{
+			Value:     []byte("Bob"),
+			Timestamp: 200,
+		},
+	}); err != nil {
+		t.Fatalf("setup source update failed: %v", err)
+	}
+
+	if err := target.Apply(OpMapSet{
+		Key:   "name",
+		Value: NewLWWRegister([]byte("TargetOld"), 50),
+	}); err != nil {
+		t.Fatalf("setup target set failed: %v", err)
+	}
+
+	if err := target.Merge(source); err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+
+	got := target.GetCRDT("name")
+	if got == nil {
+		t.Fatal("name missing after merge")
+	}
+	if string(got.Value().([]byte)) != "Bob" {
+		t.Fatalf("merge should use remote cache latest value, got=%q", string(got.Value().([]byte)))
+	}
+}
+
 func TestMapCRDT_NestedMerge(t *testing.T) {
 	// 测试嵌套 CRDT 的合并逻辑 (不仅仅是覆盖)
 	m1 := NewMapCRDT()
@@ -356,7 +398,7 @@ func TestMapCRDT_BasicCRDTTypes(t *testing.T) {
 		if err := m.Apply(OpMapSet{Key: "lww", Value: lww}); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		val := m.GetCRDT("lww")
 		if val.Type() != TypeLWW {
 			t.Error("Expected TypeLWW")
@@ -372,7 +414,7 @@ func TestMapCRDT_BasicCRDTTypes(t *testing.T) {
 		if err := m.Apply(OpMapSet{Key: "orset", Value: set}); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		val := m.GetCRDT("orset")
 		if val.Type() != TypeORSet {
 			t.Error("Expected TypeORSet")
@@ -386,7 +428,7 @@ func TestMapCRDT_BasicCRDTTypes(t *testing.T) {
 		if err := m.Apply(OpMapSet{Key: "counter", Value: counter}); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		val := m.GetCRDT("counter")
 		if val.Type() != TypePNCounter {
 			t.Error("Expected TypePNCounter")
@@ -404,7 +446,7 @@ func TestMapCRDT_BasicCRDTTypes(t *testing.T) {
 		if err := m.Apply(OpMapSet{Key: "rga", Value: rga}); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		val := m.GetCRDT("rga")
 		if val.Type() != TypeRGA {
 			t.Error("Expected TypeRGA")
@@ -416,11 +458,11 @@ func TestMapCRDT_BasicCRDTTypes(t *testing.T) {
 		nested := NewMapCRDT()
 		lww := NewLWWRegister([]byte("nested_value"), 100)
 		nested.Apply(OpMapSet{Key: "inner", Value: lww})
-		
+
 		if err := m.Apply(OpMapSet{Key: "nested_map", Value: nested}); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		val := m.GetCRDT("nested_map")
 		if val.Type() != TypeMap {
 			t.Error("Expected TypeMap")
@@ -542,7 +584,7 @@ func TestMapCRDT_ValueMethod(t *testing.T) {
 		if val == nil {
 			t.Error("Value() should not return nil for empty map")
 		}
-		
+
 		m, ok := val.(map[string]any)
 		if !ok {
 			t.Error("Value() should return map[string]any")

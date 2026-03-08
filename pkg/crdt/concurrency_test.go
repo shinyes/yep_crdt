@@ -119,8 +119,8 @@ func TestPNCounter_Concurrent(t *testing.T) {
 
 	// 验证最终值
 	finalValue := counter.Value().(int64)
-	expectedMin := int64(concurrency/2 * operationsPerGoroutine * -1)
-	expectedMax := int64(concurrency/2 * operationsPerGoroutine)
+	expectedMin := int64(concurrency / 2 * operationsPerGoroutine * -1)
+	expectedMax := int64(concurrency / 2 * operationsPerGoroutine)
 
 	if finalValue < expectedMin || finalValue > expectedMax {
 		t.Errorf("counter value %d out of expected range [%d, %d]", finalValue, expectedMin, expectedMax)
@@ -220,7 +220,7 @@ func TestCRDT_ConcurrentMerge(t *testing.T) {
 	// 创建一个目标寄存器和多个源寄存器
 	target := NewLWWRegister([]byte("initial"), 0)
 	sources := make([]*LWWRegister, 10)
-	
+
 	for i := 0; i < 10; i++ {
 		value := fmt.Sprintf("value-%d", i)
 		sources[i] = NewLWWRegister([]byte(value), int64(i))
@@ -293,9 +293,9 @@ func TestLocalFileCRDT_Concurrent(t *testing.T) {
 // TestMapCRDT_ConcurrentRace 测试 MapCRDT 并发读写同一个键
 func TestMapCRDT_ConcurrentRace(t *testing.T) {
 	m := NewMapCRDT()
-	
+
 	var wg sync.WaitGroup
-	
+
 	// 并发写入同一个 key
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -305,7 +305,7 @@ func TestMapCRDT_ConcurrentRace(t *testing.T) {
 			m.Apply(OpMapSet{Key: "same-key", Value: reg})
 		}(i)
 	}
-	
+
 	// 并发读取同一个 key
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -315,21 +315,105 @@ func TestMapCRDT_ConcurrentRace(t *testing.T) {
 			m.GetCRDT("same-key")
 		}()
 	}
-	
+
 	wg.Wait()
-	
+
 	// 验证最终状态
 	val, ok := m.GetString("same-key")
 	t.Logf("final value: %s, exists: %v", val, ok)
+}
+
+func TestMapCRDT_Merge_ConcurrentSafety(t *testing.T) {
+	source := NewMapCRDT()
+	target := NewMapCRDT()
+
+	if err := source.Apply(OpMapSet{
+		Key:   "name",
+		Value: NewLWWRegister([]byte("seed"), 1),
+	}); err != nil {
+		t.Fatalf("init source failed: %v", err)
+	}
+	if err := target.Apply(OpMapSet{
+		Key:   "name",
+		Value: NewLWWRegister([]byte("target-seed"), 1),
+	}); err != nil {
+		t.Fatalf("init target failed: %v", err)
+	}
+
+	const writerWorkers = 4
+	const mergerWorkers = 6
+	const loopsPerWorker = 200
+
+	errCh := make(chan error, writerWorkers+mergerWorkers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < writerWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < loopsPerWorker; j++ {
+				ts := int64(workerID*loopsPerWorker + j + 2)
+				value := []byte(fmt.Sprintf("source-%d-%d", workerID, j))
+				if err := source.Apply(OpMapSet{
+					Key:   "name",
+					Value: NewLWWRegister(value, ts),
+				}); err != nil {
+					errCh <- fmt.Errorf("source set failed: %w", err)
+					return
+				}
+				if err := source.Apply(OpMapUpdate{
+					Key: "name",
+					Op: OpLWWSet{
+						Value:     value,
+						Timestamp: ts + 1,
+					},
+				}); err != nil {
+					errCh <- fmt.Errorf("source update failed: %w", err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < mergerWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < loopsPerWorker; j++ {
+				if err := target.Merge(source); err != nil {
+					errCh <- fmt.Errorf("target merge failed: %w", err)
+					return
+				}
+				if _, err := target.Bytes(); err != nil {
+					errCh <- fmt.Errorf("target bytes failed: %w", err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	if err := target.Merge(source); err != nil {
+		t.Fatalf("final merge failed: %v", err)
+	}
+	finalCRDT := target.GetCRDT("name")
+	if finalCRDT == nil {
+		t.Fatal("expected key name after concurrent merges")
+	}
 }
 
 // TestORSet_ConcurrentAddRemove 测试 ORSet 并发添加和删除
 func TestORSet_ConcurrentAddRemove(t *testing.T) {
 	set := NewORSet[string]()
 	element := "test-element"
-	
+
 	var wg sync.WaitGroup
-	
+
 	// 并发添加
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -338,7 +422,7 @@ func TestORSet_ConcurrentAddRemove(t *testing.T) {
 			set.Apply(OpORSetAdd[string]{Element: element})
 		}()
 	}
-	
+
 	// 并发删除
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -347,7 +431,7 @@ func TestORSet_ConcurrentAddRemove(t *testing.T) {
 			set.Apply(OpORSetRemove[string]{Element: element})
 		}()
 	}
-	
+
 	// 并发查询
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -357,7 +441,7 @@ func TestORSet_ConcurrentAddRemove(t *testing.T) {
 			set.Elements()
 		}()
 	}
-	
+
 	wg.Wait()
 }
 
@@ -366,34 +450,34 @@ func TestRGA_DeepCopy(t *testing.T) {
 	clock := hlc.New()
 	rga1 := NewRGA[[]byte](clock)
 	rga2 := NewRGA[[]byte](clock)
-	
+
 	// 在 rga1 中插入数据
 	op1 := OpRGAInsert[[]byte]{AnchorID: rga1.Head, Value: []byte("hello")}
 	rga1.Apply(op1)
-	
+
 	t.Logf("rga1 after insert: %+v", rga1.Value())
-	
+
 	// Merge 到 rga2
 	err := rga2.Merge(rga1)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
-	
+
 	// 获取 rga2 的值
 	vals := rga2.Value().([][]byte)
 	t.Logf("rga2 after merge: %+v", vals)
-	
+
 	if len(vals) != 1 {
-		t.Logf("rga1 has %d values, rga2 has %d values", 
+		t.Logf("rga1 has %d values, rga2 has %d values",
 			len(rga1.Value().([][]byte)), len(vals))
 		// 不失败，只是记录
 		return
 	}
-	
+
 	// 修改原始数据
 	originalBytes := rga1.Value().([][]byte)[0]
 	originalBytes[0] = 'X'
-	
+
 	// rga2 的值应该不受影响（深拷贝）
 	if vals[0][0] == 'X' {
 		t.Errorf("deep copy failed: rga2's value was modified")
@@ -408,35 +492,35 @@ func TestLocalFileCRDT_ReadAtBounds(t *testing.T) {
 		Size: 100,
 	}
 	lf := NewLocalFileCRDT(metadata, 1)
-	
+
 	// 测试无效的 offset
 	_, err := lf.ReadAt(-1, 10)
 	if err == nil {
 		t.Error("expected error for negative offset")
 	}
-	
+
 	// 测试无效的 length
 	_, err = lf.ReadAt(0, 0)
 	if err == nil {
 		t.Error("expected error for zero length")
 	}
-	
+
 	_, err = lf.ReadAt(0, -1)
 	if err == nil {
 		t.Error("expected error for negative length")
 	}
-	
+
 	// 测试 offset 超出文件范围
 	_, err = lf.ReadAt(100, 10)
 	if err == nil {
 		t.Error("expected error for for offset >= file size")
 	}
-	
+
 	_, err = lf.ReadAt(101, 10)
 	if err == nil {
 		t.Error("expected error for offset > file size")
 	}
-	
+
 	t.Log("boundary checks passed")
 }
 
@@ -449,7 +533,7 @@ func TestORSet_DelayedRemoval(t *testing.T) {
 	// 添加元素
 	s.Apply(OpORSetAdd[string]{Element: "A"})
 	s.Apply(OpORSetAdd[string]{Element: "B"})
-	
+
 	// 验证元素存在
 	if !s.Contains("A") {
 		t.Error("expected A to exist")
@@ -457,48 +541,48 @@ func TestORSet_DelayedRemoval(t *testing.T) {
 	if !s.Contains("B") {
 		t.Error("expected B to exist")
 	}
-	
+
 	// 记录 AddSet 的大小
 	initialAddSetSize := len(s.AddSet)
 	t.Logf("Initial AddSet size: %d", initialAddSetSize)
-	
+
 	// 移除元素 A
 	s.Apply(OpORSetRemove[string]{Element: "A"})
-	
+
 	// 验证 A 已被标记为删除
 	if s.Contains("A") {
 		t.Error("expected A to not exist after removal")
 	}
-	
+
 	// 验证 AddSet 中仍然包含 A（延迟删除）
 	if len(s.AddSet) != initialAddSetSize {
 		t.Errorf("expected AddSet size to remain %d, got %d", initialAddSetSize, len(s.AddSet))
 	}
-	
+
 	// 验证 B 仍然存在
 	if !s.Contains("B") {
 		t.Error("expected B to still exist")
 	}
-	
+
 	// 获取当前时间戳
 	currentTime := clock.Now()
-	
+
 	// GC 之前的 tombstones
 	t.Logf("Tombstones before GC: %d", len(s.Tombstones))
-	
+
 	// 执行 GC（应该清理 AddSet 中的已删除元素）
 	removed := s.GC(currentTime + 1)
 	t.Logf("Removed %d items during GC", removed)
-	
+
 	// 验证 A 已从 AddSet 中移除
 	if len(s.AddSet) != 1 {
 		t.Errorf("expected AddSet size to be 1 after GC, got %d", len(s.AddSet))
 	}
-	
+
 	// 验证 tombstones 已被清理
 	if len(s.Tombstones) != 0 {
 		t.Errorf("expected 0 tombstones after GC, got %d", len(s.Tombstones))
 	}
-	
+
 	t.Log("test completed successfully")
 }

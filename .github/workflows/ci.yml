@@ -27,7 +27,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: go test -race
-        run: go test -race ./...
+        run: go test -race -count=1 ./...
 
   benchmark:
     runs-on: ubuntu-latest
