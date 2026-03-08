@@ -7,6 +7,28 @@ on:
   pull_request:
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: test
+            command: go test -count=1 ./...
+          - name: race
+            command: go test -race -count=1 ./...
+          - name: bench-smoke
+            command: go test -run '^$' -bench '.' -benchmem -benchtime=100ms ./...
+    name: verify-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: ${{ matrix.command }}
+        run: ${{ matrix.command }}
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -17,28 +39,6 @@ jobs:
           go-version-file: go.mod
       - name: go vet
         run: go vet ./...
-
-  test-race:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: go test -race
-        run: go test -race -count=1 ./...
-
-  benchmark:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: go test -bench
-        run: go test -run '^$' -bench '.' -benchmem -benchtime=100ms ./...
 
   docs:
     runs-on: ubuntu-latest
