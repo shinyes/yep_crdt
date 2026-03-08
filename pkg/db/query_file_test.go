@@ -108,7 +108,7 @@ func TestQueryLocalFile(t *testing.T) {
 	}
 }
 
-func TestQueryLocalFile_RejectFileImportPathTraversal(t *testing.T) {
+func TestQueryLocalFile_RejectInvalidFileImportPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	fileStoreDir := filepath.Join(tmpDir, "files")
 	if err := os.Mkdir(fileStoreDir, 0o755); err != nil {
@@ -145,19 +145,34 @@ func TestQueryLocalFile_RejectFileImportPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id, _ := uuid.NewV7()
-	err = d.Table("documents").Set(id, map[string]any{
-		"id": id.String(),
-		"file": FileImport{
-			LocalPath:    srcPath,
-			RelativePath: "../escape.txt",
-		},
-	})
-	if err == nil {
-		t.Fatal("expected file import traversal path to fail")
+	absPath := string(filepath.Separator) + filepath.Join("tmp", "abs.txt")
+	tests := []struct {
+		name         string
+		relativePath string
+	}{
+		{name: "path traversal", relativePath: "../escape.txt"},
+		{name: "absolute path", relativePath: absPath},
+		{name: "windows drive path", relativePath: `C:\escape.txt`},
 	}
-	if !strings.Contains(err.Error(), "invalid file import relative path") {
-		t.Fatalf("unexpected error: %v", err)
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			id, _ := uuid.NewV7()
+			setErr := d.Table("documents").Set(id, map[string]any{
+				"id": id.String(),
+				"file": FileImport{
+					LocalPath:    srcPath,
+					RelativePath: tc.relativePath,
+				},
+			})
+			if setErr == nil {
+				t.Fatalf("expected invalid file import path to fail: %q", tc.relativePath)
+			}
+			if !strings.Contains(setErr.Error(), "invalid file import relative path") {
+				t.Fatalf("unexpected error: %v", setErr)
+			}
+		})
 	}
 
 	if _, statErr := os.Stat(filepath.Join(tmpDir, "escape.txt")); !os.IsNotExist(statErr) {

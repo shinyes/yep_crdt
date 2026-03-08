@@ -251,7 +251,22 @@ func resolveLocalFilePath(baseDir string, relativePath string) (string, error) {
 		return "", fmt.Errorf("baseDir not set for LocalFileCRDT")
 	}
 
-	trimmed := strings.TrimSpace(relativePath)
+	clean, err := validateRelativePath(relativePath)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(baseDir, filepath.FromSlash(clean)), nil
+}
+
+// ValidateRelativePath normalizes and validates one relative file path used by LocalFileCRDT.
+// It rejects absolute paths, path traversal, and Windows drive-letter forms.
+func ValidateRelativePath(rawPath string) (string, error) {
+	return validateRelativePath(rawPath)
+}
+
+func validateRelativePath(rawPath string) (string, error) {
+	trimmed := strings.TrimSpace(rawPath)
 	if trimmed == "" {
 		return "", fmt.Errorf("invalid local file path")
 	}
@@ -273,6 +288,5 @@ func resolveLocalFilePath(baseDir string, relativePath string) (string, error) {
 	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("local file path escapes baseDir")
 	}
-
-	return filepath.Join(baseDir, filepath.FromSlash(clean)), nil
+	return clean, nil
 }
