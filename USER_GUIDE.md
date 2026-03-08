@@ -862,3 +862,32 @@ fmt.Printf("safeTs=%d prepared=%d committed=%d executed=%d removed=%d\n",
 - 若 `peer.gc_floor > local.gc_floor`，本地会自动从该 peer 触发 full sync 追平
 - full sync 成功后本地提升 `gc_floor`，恢复与该 peer 的增量同步
 - 该机制用于防止“落后节点误参与增量同步导致缺历史上下文”的风险
+
+### 9.7 CI/CD + 端到端同步测试矩阵（新增）
+
+GitHub Actions（`.github/workflows/ci.yml`）已包含以下任务：
+
+- `verify` 矩阵：
+  - `go test -count=1 ./...`
+  - `go test -race -count=1 ./...`
+  - `go test -run '^$' -bench '.' -benchmem -benchtime=100ms ./...`（bench smoke）
+- `lint`：`go vet ./...`
+- `docs`：执行 `go run ./cmd/gen_sync_docs` 并校验文档已提交
+
+新增最小两节点端到端同步测试：`pkg/sync/sync_e2e_matrix_test.go`。
+
+核心覆盖路径：
+
+1. Node-B 从 Node-A 执行 full sync 拉齐初始数据
+2. Node-A 发送 `raw_delta`，Node-B 按列增量合并
+3. 人为制造 `gc_floor` 不一致，验证增量消息被门控阻断
+4. 当 `peer.gc_floor > local.gc_floor` 时，触发 full sync 追平并恢复增量
+
+建议本地至少执行以下命令：
+
+```bash
+go test ./...
+go test -race ./pkg/sync -count=1
+go test -run '^$' -bench '.' -benchmem -benchtime=100ms ./...
+go test ./pkg/sync -run TestTwoNodeSyncMatrix_FullSyncDeltaAndGCFloor -count=1
+```
