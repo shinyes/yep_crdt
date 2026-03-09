@@ -184,10 +184,13 @@ func TestVersionSync_MerkleCompareAndSync_SendsOnlyDiffRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed local rows failed: %v", err)
 	}
-	if err := remoteDB.Update(func(tx *db.Tx) error {
-		return tx.Table("users").Set(k1, map[string]any{"name": "alice"})
-	}); err != nil {
-		t.Fatalf("seed remote rows failed: %v", err)
+
+	rawK1, err := localDB.Table("users").GetRawRow(k1)
+	if err != nil {
+		t.Fatalf("get local raw row failed: %v", err)
+	}
+	if err := remoteDB.Table("users").MergeRawRow(k1, rawK1); err != nil {
+		t.Fatalf("seed remote row from local raw data failed: %v", err)
 	}
 
 	net := &merkleMockNetwork{remoteDB: remoteDB}
