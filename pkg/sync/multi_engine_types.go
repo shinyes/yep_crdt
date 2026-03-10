@@ -12,6 +12,7 @@ type MultiEngine struct {
 	mu      sync.RWMutex
 	network *TenantNetwork
 	tenants map[string]*tenantRuntime
+	nodeOpts []Option
 }
 
 const engineChangeQueueSize = 1024

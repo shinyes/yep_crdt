@@ -40,6 +40,21 @@ func NewTenantNetwork(tenantID string, config *TenetConfig) (*TenantNetwork, err
 	if len(cfg.RelayNodes) > 0 {
 		opts = append(opts, api.WithRelayNodes(cfg.RelayNodes))
 	}
+	if cfg.EnableHolePunch != nil {
+		opts = append(opts, api.WithEnableHolePunch(*cfg.EnableHolePunch))
+	}
+	if cfg.EnableRelay != nil {
+		opts = append(opts, api.WithEnableRelay(*cfg.EnableRelay))
+	}
+	if cfg.EnableReconnect != nil {
+		opts = append(opts, api.WithEnableReconnect(*cfg.EnableReconnect))
+	}
+	if cfg.ReconnectMaxRetries != nil {
+		opts = append(opts, api.WithReconnectMaxRetries(*cfg.ReconnectMaxRetries))
+	}
+	if cfg.DialTimeout != nil {
+		opts = append(opts, api.WithDialTimeout(*cfg.DialTimeout))
+	}
 
 	if cfg.EnableDebug {
 		logger := tenetlog.NewStdLogger(

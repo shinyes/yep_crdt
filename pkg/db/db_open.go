@@ -106,6 +106,7 @@ func Open(s store.Store, databaseID string, opts ...Option) (*DB, error) {
 		tables:     make(map[string]*Table),
 		NodeID:     nodeID,
 		DatabaseID: databaseID,
+		observedCh: make(chan struct{}),
 	}
 
 	for _, opt := range opts {

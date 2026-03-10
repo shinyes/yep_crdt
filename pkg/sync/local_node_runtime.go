@@ -375,3 +375,163 @@ func (n *LocalNode) TenantIDs() []string {
 	copy(out, n.tenantIDs)
 	return out
 }
+
+// AddTenant opens a tenant database under data root and joins its sync channel.
+func (n *LocalNode) AddTenant(tenantID string) error {
+	normalizedTenantID, err := normalizeTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
+	n.mu.RLock()
+	closed := n.closed
+	_, exists := n.databases[normalizedTenantID]
+	dataRoot := n.dataRoot
+	engine := n.engine
+	vlogSize := n.badgerValueLogFileSize
+	ensureSchema := n.ensureSchema
+	n.mu.RUnlock()
+
+	if closed {
+		return fmt.Errorf("local node is closed")
+	}
+	if exists {
+		return nil
+	}
+	if engine == nil {
+		return fmt.Errorf("sync engine is not started")
+	}
+	if dataRoot == "" {
+		dataRoot = "."
+	}
+
+	database, err := db.OpenBadgerWithConfig(db.BadgerOpenConfig{
+		Path:                   filepath.Join(dataRoot, normalizedTenantID),
+		DatabaseID:             normalizedTenantID,
+		BadgerValueLogFileSize: vlogSize,
+		EnsureSchema:           ensureSchema,
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := engine.AddTenant(database); err != nil {
+		_ = database.Close()
+		return err
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		_ = engine.RemoveTenant(normalizedTenantID)
+		_ = database.Close()
+		return fmt.Errorf("local node is closed")
+	}
+	if _, alreadyExists := n.databases[normalizedTenantID]; alreadyExists {
+		_ = engine.RemoveTenant(normalizedTenantID)
+		_ = database.Close()
+		return nil
+	}
+
+	n.databases[normalizedTenantID] = database
+	n.tenantIDs = appendTenantIDSorted(n.tenantIDs, normalizedTenantID)
+	if err := n.persistTenantRegistryLocked(); err != nil {
+		delete(n.databases, normalizedTenantID)
+		n.tenantIDs = removeTenantID(n.tenantIDs, normalizedTenantID)
+		_ = engine.RemoveTenant(normalizedTenantID)
+		_ = database.Close()
+		return err
+	}
+	return nil
+}
+
+// RemoveTenant leaves tenant sync channel and closes its local database.
+func (n *LocalNode) RemoveTenant(opts RemoveTenantOptions) error {
+	normalizedTenantID, err := normalizeTenantID(opts.TenantID)
+	if err != nil {
+		return err
+	}
+
+	n.mu.RLock()
+	if n.closed {
+		n.mu.RUnlock()
+		return fmt.Errorf("local node is closed")
+	}
+	database, exists := n.databases[normalizedTenantID]
+	engine := n.engine
+	dataRoot := n.dataRoot
+	n.mu.RUnlock()
+
+	if !exists || database == nil {
+		return fmt.Errorf("tenant not started: %s", normalizedTenantID)
+	}
+	if engine == nil {
+		return fmt.Errorf("sync engine is not started")
+	}
+
+	if err := engine.RemoveTenant(normalizedTenantID); err != nil {
+		return err
+	}
+
+	closeErr := database.Close()
+	removeDataErr := error(nil)
+	if opts.RemoveData {
+		removeDataErr = os.RemoveAll(filepath.Join(dataRoot, normalizedTenantID))
+	}
+
+	n.mu.Lock()
+	delete(n.databases, normalizedTenantID)
+	n.tenantIDs = removeTenantID(n.tenantIDs, normalizedTenantID)
+	persistErr := n.persistTenantRegistryLocked()
+	n.mu.Unlock()
+
+	return errors.Join(closeErr, removeDataErr, persistErr)
+}
+
+func (n *LocalNode) persistTenantRegistry() error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.persistTenantRegistryLocked()
+}
+
+func (n *LocalNode) persistTenantRegistryLocked() error {
+	path := strings.TrimSpace(n.tenantRegistryPath)
+	if path == "" {
+		return nil
+	}
+
+	tenantIDs := append([]string(nil), n.tenantIDs...)
+	sort.Strings(tenantIDs)
+
+	payload, err := json.MarshalIndent(localNodeTenantRegistry{
+		Version: 1,
+		Tenants: tenantIDs,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, payload, 0o600)
+}
+
+func appendTenantIDSorted(tenantIDs []string, tenantID string) []string {
+	idx := sort.SearchStrings(tenantIDs, tenantID)
+	if idx < len(tenantIDs) && tenantIDs[idx] == tenantID {
+		return tenantIDs
+	}
+	tenantIDs = append(tenantIDs, "")
+	copy(tenantIDs[idx+1:], tenantIDs[idx:])
+	tenantIDs[idx] = tenantID
+	return tenantIDs
+}
+
+func removeTenantID(tenantIDs []string, tenantID string) []string {
+	idx := sort.SearchStrings(tenantIDs, tenantID)
+	if idx >= len(tenantIDs) || tenantIDs[idx] != tenantID {
+		return tenantIDs
+	}
+	return append(tenantIDs[:idx], tenantIDs[idx+1:]...)
+}

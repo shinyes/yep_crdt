@@ -9,6 +9,8 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 )
 
+replace github.com/shinyes/tenet => ../tenet
+
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect

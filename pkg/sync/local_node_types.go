@@ -30,6 +30,8 @@ type LocalNode struct {
 	databases map[string]*db.DB
 	tenantIDs []string
 	dataRoot  string
+	// persisted tenant subscription registry path.
+	tenantRegistryPath string
 	// startup defaults used by helper APIs like RestoreTenant.
 	badgerValueLogFileSize int64
 	ensureSchema           func(*db.DB) error
@@ -44,6 +46,12 @@ type TenantRestoreOptions struct {
 	MaxPendingWrites       int
 	BadgerValueLogFileSize int64 // 0 means use LocalNode startup default.
 	EnsureSchema           func(*db.DB) error
+}
+
+// RemoveTenantOptions configures RemoveTenant behavior.
+type RemoveTenantOptions struct {
+	TenantID   string
+	RemoveData bool
 }
 
 type tenantDiscovery struct {

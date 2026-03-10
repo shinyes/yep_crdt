@@ -1,13 +1,17 @@
 package sync
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
+
+const localNodeTenantRegistryFile = "_tenant_subscriptions.json"
 
 // StartNodeFromDataRoot discovers local tenant databases, opens them, and starts multi-tenant sync.
 func StartNodeFromDataRoot(opts NodeFromDataRootOptions) (*LocalNode, error) {
@@ -27,14 +31,29 @@ func StartNodeFromDataRoot(opts NodeFromDataRootOptions) (*LocalNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	tenantIDs := discovery.tenantIDs
-	if len(tenantIDs) == 0 {
-		return nil, fmt.Errorf("no tenant discovered in data root: %s", dataRoot)
-	}
-	tenantPaths := make(map[string]string, len(tenantIDs))
+	tenantIDs := append([]string(nil), discovery.tenantIDs...)
+	tenantPaths := make(map[string]string, len(discovery.tenantPaths))
 	for tenantID, path := range discovery.tenantPaths {
 		tenantPaths[tenantID] = path
 	}
+	tenantRegistryPath := filepath.Join(dataRoot, localNodeTenantRegistryFile)
+	subscribedTenantIDs, err := loadTenantRegistry(tenantRegistryPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(subscribedTenantIDs) > 0 {
+		tenantIDs = tenantIDs[:0]
+		for _, tenantID := range subscribedTenantIDs {
+			tenantIDs = append(tenantIDs, tenantID)
+			if _, exists := tenantPaths[tenantID]; !exists {
+				tenantPaths[tenantID] = filepath.Join(dataRoot, tenantID)
+			}
+		}
+	}
+	if len(tenantIDs) == 0 {
+		return nil, fmt.Errorf("no tenant discovered in data root: %s", dataRoot)
+	}
+	sort.Strings(tenantIDs)
 
 	identityPath := opts.IdentityPath
 	if identityPath == "" {
@@ -89,12 +108,53 @@ func StartNodeFromDataRoot(opts NodeFromDataRootOptions) (*LocalNode, error) {
 		return nil, err
 	}
 
-	return &LocalNode{
+	node := &LocalNode{
 		engine:                 engine,
 		databases:              databases,
 		tenantIDs:              tenantIDs,
 		dataRoot:               dataRoot,
+		tenantRegistryPath:     tenantRegistryPath,
 		badgerValueLogFileSize: opts.BadgerValueLogFileSize,
 		ensureSchema:           opts.EnsureSchema,
-	}, nil
+	}
+	if err := node.persistTenantRegistry(); err != nil {
+		engine.Stop()
+		closeDatabases(openOrder)
+		return nil, err
+	}
+	return node, nil
+}
+
+type localNodeTenantRegistry struct {
+	Version int      `json:"version"`
+	Tenants []string `json:"tenants"`
+}
+
+func loadTenantRegistry(path string) ([]string, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var data localNodeTenantRegistry
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return nil, err
+	}
+	tenants := make([]string, 0, len(data.Tenants))
+	seen := make(map[string]struct{}, len(data.Tenants))
+	for _, rawTenantID := range data.Tenants {
+		tenantID, err := normalizeTenantID(rawTenantID)
+		if err != nil {
+			continue
+		}
+		if _, exists := seen[tenantID]; exists {
+			continue
+		}
+		seen[tenantID] = struct{}{}
+		tenants = append(tenants, tenantID)
+	}
+	sort.Strings(tenants)
+	return tenants, nil
 }

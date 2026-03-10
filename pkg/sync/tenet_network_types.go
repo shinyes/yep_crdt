@@ -37,6 +37,11 @@ type TenetConfig struct {
 	Password                 string
 	ListenPort               int
 	RelayNodes               []string
+	EnableHolePunch          *bool
+	EnableRelay              *bool
+	EnableReconnect          *bool
+	ReconnectMaxRetries      *int
+	DialTimeout              *time.Duration
 	EnableDebug              bool
 	IdentityPath             string
 	ChannelIDs               []string

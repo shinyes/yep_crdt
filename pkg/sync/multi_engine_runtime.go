@@ -44,14 +44,16 @@ func (m *MultiEngine) snapshotRuntimes() []*tenantRuntime {
 func (m *MultiEngine) Stop() {
 	runtimes := m.snapshotRuntimes()
 	for _, rt := range runtimes {
-		rt.cancel()
+		_ = m.stopTenantRuntime(rt, false)
 	}
-	for _, rt := range runtimes {
-		rt.workerWg.Wait()
-		rt.nodeMgr.Stop()
-	}
-	if m.network != nil {
-		m.network.Stop()
+
+	m.mu.Lock()
+	m.tenants = make(map[string]*tenantRuntime)
+	network := m.network
+	m.mu.Unlock()
+
+	if network != nil {
+		network.Stop()
 	}
 }
 

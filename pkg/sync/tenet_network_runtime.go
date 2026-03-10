@@ -3,6 +3,7 @@ package sync
 import (
 	"fmt"
 	stdlog "log"
+	"strings"
 )
 
 // Start starts the tenant network.
@@ -88,6 +89,48 @@ func (tn *TenantNetwork) RemoveTenantBroadcastHandler(tenantID string) {
 	tn.mu.Lock()
 	delete(tn.tenantHandlers, tenantID)
 	tn.mu.Unlock()
+}
+
+// JoinTenant subscribes local transport channel for one tenant.
+func (tn *TenantNetwork) JoinTenant(tenantID string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Errorf("tenant id is required")
+	}
+	tn.mu.Lock()
+	for _, existing := range tn.config.ChannelIDs {
+		if existing == tenantID {
+			tn.mu.Unlock()
+			return nil
+		}
+	}
+	tn.config.ChannelIDs = append(tn.config.ChannelIDs, tenantID)
+	tn.mu.Unlock()
+	return tn.tunnel.JoinChannel(tenantID)
+}
+
+// LeaveTenant unsubscribes local transport channel for one tenant.
+func (tn *TenantNetwork) LeaveTenant(tenantID string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Errorf("tenant id is required")
+	}
+	tn.mu.Lock()
+	removed := false
+	next := make([]string, 0, len(tn.config.ChannelIDs))
+	for _, existing := range tn.config.ChannelIDs {
+		if existing == tenantID {
+			removed = true
+			continue
+		}
+		next = append(next, existing)
+	}
+	tn.config.ChannelIDs = next
+	tn.mu.Unlock()
+	if !removed {
+		return nil
+	}
+	return tn.tunnel.LeaveChannel(tenantID)
 }
 
 // AddPeerConnectedHandler adds a callback without overriding internal callbacks.

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shinyes/yep_crdt/pkg/hlc"
@@ -24,6 +25,14 @@ type SyncConfig struct {
 	ConnectTo    string // 初始连接地址（可选，格式 host:port）
 	Debug        bool   // 启用调试日志
 	IdentityPath string // tenet identity JSON 路径；为空则使用临时身份
+
+	// Optional tenet transport overrides.
+	RelayNodes          []string
+	EnableHolePunch     *bool
+	EnableRelay         *bool
+	EnableReconnect     *bool
+	ReconnectMaxRetries *int
+	DialTimeout         *time.Duration
 }
 
 // ChangeCallback 数据变更回调
@@ -36,6 +45,13 @@ type ChangeEvent struct {
 	TableName string
 	Key       uuid.UUID
 	Columns   []string
+}
+
+// ObservedChange is the latest committed change observed by the database.
+// Sequence is a local monotonic counter used for waiter progression only.
+type ObservedChange struct {
+	Sequence uint64
+	Event    ChangeEvent
 }
 
 // ChangeEventCallback is invoked after a successful local write.
@@ -73,9 +89,14 @@ type DB struct {
 	syncEngine SyncEngine
 
 	// 变更回调（数据写入时通知）
-	onChangeMu             sync.RWMutex
-	onChangeCallbacks      []ChangeCallback
-	onChangeEventCallbacks []ChangeEventCallback
+	onChangeMu               sync.RWMutex
+	onChangeCallbacks        []ChangeCallback
+	onChangeEventCallbacks   []ChangeEventCallback
+	onObservedEventCallbacks []ChangeEventCallback
+
+	observedMu    sync.Mutex
+	observedCh    chan struct{}
+	observedState ObservedChange
 }
 
 type Option func(*DB)

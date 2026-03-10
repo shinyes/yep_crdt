@@ -92,6 +92,123 @@ func TestIncrementalSync_BasicMerge(t *testing.T) {
 	t.Logf("✓ 增量同步成功，数据一致")
 }
 
+func TestIncrementalSync_RemoteMergeTriggersObservedChange(t *testing.T) {
+	_, db1 := createTestNode(t, "node-observed-1")
+	node2, db2 := createTestNode(t, "node-observed-2")
+	defer db1.Close()
+	defer db2.Close()
+
+	schema := &meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}
+	if err := db1.DefineTable(schema); err != nil {
+		t.Fatalf("节点1定义表失败: %v", err)
+	}
+	if err := db2.DefineTable(schema); err != nil {
+		t.Fatalf("节点2定义表失败: %v", err)
+	}
+
+	userID, _ := uuid.NewV7()
+	if err := db1.Update(func(tx *db.Tx) error {
+		return tx.Table("users").Set(userID, map[string]any{
+			"name": "Observed",
+		})
+	}); err != nil {
+		t.Fatalf("节点1写入失败: %v", err)
+	}
+
+	var rawData []byte
+	db1.View(func(tx *db.Tx) error {
+		rawData, _ = tx.Table("users").GetRawRow(userID)
+		return nil
+	})
+	if len(rawData) == 0 {
+		t.Fatal("expected raw row data")
+	}
+
+	observedCh := make(chan db.ChangeEvent, 1)
+	db2.OnObservedChangeDetailed(func(event db.ChangeEvent) {
+		if event.TableName == "users" && event.Key == userID {
+			observedCh <- event
+		}
+	})
+
+	if err := node2.dataSync.OnReceiveMerge("users", userID.String(), rawData, db1.Clock().Now()); err != nil {
+		t.Fatalf("节点2 Merge 失败: %v", err)
+	}
+
+	select {
+	case event := <-observedCh:
+		if event.TableName != "users" || event.Key != userID {
+			t.Fatalf("unexpected observed event: %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected observed change callback for remote merge")
+	}
+}
+
+func TestIncrementalSync_RemoteMergeAdvancesObservedWaiter(t *testing.T) {
+	_, db1 := createTestNode(t, "node-observed-wait-1")
+	node2, db2 := createTestNode(t, "node-observed-wait-2")
+	defer db1.Close()
+	defer db2.Close()
+
+	schema := &meta.TableSchema{
+		Name: "users",
+		Columns: []meta.ColumnSchema{
+			{Name: "name", Type: meta.ColTypeString, CrdtType: meta.CrdtLWW},
+		},
+	}
+	if err := db1.DefineTable(schema); err != nil {
+		t.Fatalf("节点1定义表失败: %v", err)
+	}
+	if err := db2.DefineTable(schema); err != nil {
+		t.Fatalf("节点2定义表失败: %v", err)
+	}
+
+	userID, _ := uuid.NewV7()
+	if err := db1.Update(func(tx *db.Tx) error {
+		return tx.Table("users").Set(userID, map[string]any{
+			"name": "ObservedWait",
+		})
+	}); err != nil {
+		t.Fatalf("节点1写入失败: %v", err)
+	}
+
+	var rawData []byte
+	db1.View(func(tx *db.Tx) error {
+		rawData, _ = tx.Table("users").GetRawRow(userID)
+		return nil
+	})
+	if len(rawData) == 0 {
+		t.Fatal("expected raw row data")
+	}
+
+	done := make(chan db.ObservedChange, 1)
+	go func() {
+		change, ok := db2.WaitObservedChangeForTableColumns("users", []string{"name"}, 0, 2*time.Second)
+		if ok {
+			done <- change
+		}
+	}()
+
+	if err := node2.dataSync.OnReceiveMerge("users", userID.String(), rawData, db1.Clock().Now()); err != nil {
+		t.Fatalf("节点2 Merge 失败: %v", err)
+	}
+
+	select {
+	case change := <-done:
+		if change.Event.TableName != "users" || change.Event.Key != userID {
+			t.Fatalf("unexpected observed change: %+v", change)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected observed waiter to unblock for remote merge")
+	}
+}
+
 // TestIncrementalSync_LWWConflict 测试 LWW 冲突解决
 func TestIncrementalSync_LWWConflict(t *testing.T) {
 	node1, db1 := createTestNode(t, "node-1")

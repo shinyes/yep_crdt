@@ -51,6 +51,7 @@ func (dsm *DataSyncManager) applyIncomingRaw(tableName string, keyStr string, ra
 		return fmt.Errorf("merge row failed: %w", err)
 	}
 	cleanupMaterializedSyncedLocalFileBackups(materializedFiles)
+	dsm.db.NotifyObservedChangeDetailed(tableName, key, columns)
 
 	// Merge succeeded; now it is safe to merge transport timestamp into local HLC.
 	if timestamp > 0 {

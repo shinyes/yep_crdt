@@ -1,11 +1,9 @@
 package sync
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"sort"
-	"sync/atomic"
 
 	"github.com/shinyes/yep_crdt/pkg/db"
 )
@@ -38,11 +36,17 @@ func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig, nodeOpts ..
 	sort.Strings(tenantIDs)
 
 	tenetConfig := &TenetConfig{
-		Password:     config.Password,
-		ListenPort:   config.ListenPort,
-		EnableDebug:  config.Debug,
-		IdentityPath: config.IdentityPath,
-		ChannelIDs:   tenantIDs,
+		Password:            config.Password,
+		ListenPort:          config.ListenPort,
+		RelayNodes:          append([]string(nil), config.RelayNodes...),
+		EnableHolePunch:     config.EnableHolePunch,
+		EnableRelay:         config.EnableRelay,
+		EnableReconnect:     config.EnableReconnect,
+		ReconnectMaxRetries: config.ReconnectMaxRetries,
+		DialTimeout:         config.DialTimeout,
+		EnableDebug:         config.Debug,
+		IdentityPath:        config.IdentityPath,
+		ChannelIDs:          tenantIDs,
 	}
 
 	network, err := NewTenantNetwork(tenantIDs[0], tenetConfig)
@@ -56,59 +60,17 @@ func EnableMultiTenantSync(databases []*db.DB, config db.SyncConfig, nodeOpts ..
 	engine := &MultiEngine{
 		network: network,
 		tenants: make(map[string]*tenantRuntime, len(tenantIDs)),
+		nodeOpts: append([]Option(nil), nodeOpts...),
 	}
 
 	for _, tenantID := range tenantIDs {
 		database := tenantDBs[tenantID]
-		tenantCtx, tenantCancel := context.WithCancel(context.Background())
-		scopedNetwork := &tenantScopedNetwork{
-			tenantID: tenantID,
-			network:  network,
+		rt, err := engine.addTenantRuntime(database, false)
+		if err != nil {
+			engine.Stop()
+			return nil, err
 		}
-		nodeMgr := NewNodeManager(database, network.LocalID(), nodeOpts...)
-		nodeMgr.RegisterNetwork(scopedNetwork)
-
-		rt := &tenantRuntime{
-			tenantID: tenantID,
-			db:       database,
-			network:  scopedNetwork,
-			nodeMgr:  nodeMgr,
-			ctx:      tenantCtx,
-			cancel:   tenantCancel,
-			changeQ:  make(chan db.ChangeEvent, engineChangeQueueSize),
-			chunks:   newLocalFileChunkReceiver(),
-		}
-		rt.vs = NewVersionSync(database, nodeMgr)
-		engine.tenants[tenantID] = rt
-
-		runtime := rt
-		network.SetTenantBroadcastHandler(tenantID, PeerMessageHandler{
-			OnReceive: func(peerID string, msg NetworkMessage) {
-				runtime.handleMessage(peerID, msg)
-			},
-		})
-
-		database.OnChangeDetailed(func(event db.ChangeEvent) {
-			if runtime.ctx.Err() != nil {
-				return
-			}
-
-			select {
-			case runtime.changeQ <- event:
-				atomic.AddUint64(&runtime.stats.changeEnqueued, 1)
-			default:
-				// Apply backpressure on local writes when queue is saturated.
-				atomic.AddUint64(&runtime.stats.changeBackpressure, 1)
-				log.Printf("[MultiEngine:%s] change queue saturated, applying backpressure: table=%s, key=%s",
-					runtime.tenantID, event.TableName, shortPeerID(event.Key.String()))
-				runtime.onDataChangedDetailed(event.TableName, event.Key, event.Columns)
-				atomic.AddUint64(&runtime.stats.changeProcessed, 1)
-			}
-		})
-
-		runtime.workerWg.Add(1)
-		go runtime.runChangeWorker()
-		runtime.nodeMgr.Start(runtime.ctx)
+		engine.startTenantRuntime(rt, false)
 	}
 
 	network.AddPeerConnectedHandler(engine.onPeerConnected)
